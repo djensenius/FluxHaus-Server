@@ -1,4 +1,4 @@
-import 'dotenv/config'
+import 'dotenv/config';
 import express, { Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
@@ -44,13 +44,13 @@ async function createServer(): Promise<Express> {
   app.get('/', cors(corsOptions), (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     const data = {
-      "mieleClientId": process.env.mieleClientId,
-      "mieleSecretId": process.env.mieleSecretId,
-      "mieleAppliances": process.env.mieleAppliances!.split(", "),
-      "boschClientId": process.env.boschClientId,
-      "boschSecretId": process.env.boschSecretId,
-      "boschAppliance": process.env.boschAppliance,
-      "favouriteHomeKit": process.env.favouriteHomeKit!.split(", "),
+      mieleClientId: process.env.mieleClientId,
+      mieleSecretId: process.env.mieleSecretId,
+      mieleAppliances: process.env.mieleAppliances!.split(', '),
+      boschClientId: process.env.boschClientId,
+      boschSecretId: process.env.boschSecretId,
+      boschAppliance: process.env.boschAppliance,
+      favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
     };
     res.end(JSON.stringify(data));
   });
