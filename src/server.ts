@@ -3,6 +3,7 @@ import express, { Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
+import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
 
@@ -23,6 +24,11 @@ async function createServer(): Promise<Express> {
     limiter,
     nocache(),
     express.urlencoded({ extended: true }),
+    basicAuth({
+      users: { admin: process.env.BASIC_AUTH_PASSWORD! },
+      challenge: true,
+      realm: 'fluxhaus',
+    }),
   );
   const allowedOrigins = [
     'http://localhost:8080',
