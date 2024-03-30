@@ -19,6 +19,8 @@ export default class Car {
 
   vehicle?: Vehicle;
 
+  odometer: number;
+
   private client: BlueLinky;
 
   constructor(carConfig: CarConfig) {
@@ -29,6 +31,7 @@ export default class Car {
       brand: carConfig.brand,
       pin: carConfig.pin,
     });
+    this.odometer = 0;
     this.client.on('ready', this.onReadyHandler);
   }
 
@@ -54,6 +57,11 @@ export default class Car {
         if (this.status.evStatus) {
           fs.writeFileSync('cache/evStatus.json', JSON.stringify(this.status.evStatus, null, 2));
         }
+      }
+
+      const odometer = await this.vehicle.odometer();
+      if (odometer) {
+        this.odometer = odometer.unit;
       }
     }
   };

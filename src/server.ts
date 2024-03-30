@@ -107,7 +107,8 @@ async function createServer(): Promise<Express> {
       broombot: broombot.cachedStatus,
       mopbot: mopbot.cachedStatus,
       car: car.status,
-      evStatus,
+      carEvStatus: evStatus,
+      carOdometer: car.odometer,
     };
     res.end(JSON.stringify(data));
   });
