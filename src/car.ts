@@ -107,7 +107,7 @@ export default class Car {
 
   resync = async () => {
     if (this.vehicle !== undefined) {
-      await this.setStatus();
+      await this.setStatus(true);
     }
   };
 }
