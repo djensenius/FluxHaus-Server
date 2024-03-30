@@ -55,7 +55,10 @@ export default class Car {
         // Check if evStatus is null, and call again with refresh
         this.status = status as RawVehicleStatus;
         if (this.status.evStatus) {
-          fs.writeFileSync('cache/evStatus.json', JSON.stringify(this.status.evStatus, null, 2));
+          fs.writeFileSync(
+            'cache/evStatus.json',
+            JSON.stringify({ timestamp: Date.now(), ...this.status.evStatus }, null, 2),
+          );
         }
       }
 
