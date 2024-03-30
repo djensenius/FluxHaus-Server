@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'fs';
 import express, { Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
@@ -90,6 +91,11 @@ async function createServer(): Promise<Express> {
 
   app.get('/', cors(corsOptions), (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
+    // Check if file exists and read it
+    let evStatus = null;
+    if (fs.existsSync('cache/evStatus.json')) {
+      evStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
+    }
     const data = {
       mieleClientId: process.env.mieleClientId,
       mieleSecretId: process.env.mieleSecretId,
@@ -101,6 +107,7 @@ async function createServer(): Promise<Express> {
       broombot: broombot.cachedStatus,
       mopbot: mopbot.cachedStatus,
       car: car.status,
+      evStatus,
     };
     res.end(JSON.stringify(data));
   });

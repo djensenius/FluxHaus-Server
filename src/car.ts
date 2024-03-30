@@ -1,3 +1,4 @@
+import fs from 'fs';
 import { BlueLinky } from 'dfj-bluelinky';
 // eslint-disable-next-line import/no-unresolved
 import { Vehicle } from 'dfj-bluelinky/dist/vehicles/vehicle';
@@ -50,8 +51,8 @@ export default class Car {
       if (status !== null) {
         // Check if evStatus is null, and call again with refresh
         this.status = status as RawVehicleStatus;
-        if (this.status.evStatus === null) {
-          this.setStatus(true);
+        if (this.status.evStatus) {
+          fs.writeFileSync('cache/evStatus.json', JSON.stringify(this.status.evStatus, null, 2));
         }
       }
     }
