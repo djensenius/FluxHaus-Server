@@ -115,11 +115,17 @@ async function createServer(): Promise<Express> {
   app.get('/startCar', cors(corsOptions), async (_req, res) => {
     const result = car.start();
     res.send(result);
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.get('/stopCar', cors(corsOptions), async (_req, res) => {
     const result = car.stop();
     res.send(JSON.stringify({ result }));
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.get('/resyncCar', cors(corsOptions), async (_req, res) => {
@@ -130,11 +136,17 @@ async function createServer(): Promise<Express> {
   app.get('/lockCar', cors(corsOptions), async (_req, res) => {
     const result = car.lock();
     res.send(JSON.stringify({ result }));
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.get('/unlockCar', cors(corsOptions), async (_req, res) => {
     const result = car.unlock();
     res.send(result);
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.use(notFoundHandler);
