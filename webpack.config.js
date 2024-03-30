@@ -1,5 +1,6 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const path = require('path');
+const nodeExternals = require('webpack-node-externals');
 //
 // Host
 // const host = process.env.HOST || 'localhost';
@@ -24,6 +25,7 @@ module.exports = {
       },
     ],
   },
+  externals: [nodeExternals()],
   resolve: {
     extensions: ['.tsx', '.ts', '.js'],
   },

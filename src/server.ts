@@ -6,6 +6,7 @@ import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
+import Car, { CarConfig } from './car';
 
 const port = process.env.PORT || 8080;
 
@@ -76,6 +77,17 @@ async function createServer(): Promise<Express> {
 
   const mopbot = new Robot(mopbotConfig);
 
+  const carConfig: CarConfig = {
+    username: process.env.carLogin!,
+    password: process.env.carPassword!,
+    pin: process.env.carPin!,
+    region: 'CA',
+    useInfo: true,
+    brand: 'kia',
+  };
+
+  const car = new Car(carConfig);
+
   app.get('/', cors(corsOptions), (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
     const data = {
@@ -88,8 +100,34 @@ async function createServer(): Promise<Express> {
       favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
       broombot: broombot.cachedStatus,
       mopbot: mopbot.cachedStatus,
+      car: car.status,
     };
     res.end(JSON.stringify(data));
+  });
+
+  app.get('/startCar', cors(corsOptions), async (_req, res) => {
+    const result = car.start();
+    res.send(result);
+  });
+
+  app.get('/stopCar', cors(corsOptions), async (_req, res) => {
+    const result = car.stop();
+    res.send(JSON.stringify({ result }));
+  });
+
+  app.get('/resyncCar', cors(corsOptions), async (_req, res) => {
+    car.resync();
+    res.send('Resyncing car');
+  });
+
+  app.get('/lockCar', cors(corsOptions), async (_req, res) => {
+    const result = car.lock();
+    res.send(JSON.stringify({ result }));
+  });
+
+  app.get('/unlockCar', cors(corsOptions), async (_req, res) => {
+    const result = car.unlock();
+    res.send(result);
   });
 
   app.use(notFoundHandler);
