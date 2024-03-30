@@ -1,6 +1,6 @@
 {
   "name": "fluxhaus-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "",
   "main": "index.js",
   "type": "commonjs",
@@ -21,7 +21,7 @@
   "license": "MIT",
   "devDependencies": {
     "@types/cors": "^2.8.17",
-    "@types/node": "^20.11.30",
+    "@types/node": "^20.12.2",
     "@typescript-eslint/eslint-plugin": "^7.4.0",
     "eslint": "^8.57.0",
     "eslint-config-airbnb": "^19.0.4",
