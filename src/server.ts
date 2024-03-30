@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'fs';
 import express, { Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
@@ -90,6 +91,11 @@ async function createServer(): Promise<Express> {
 
   app.get('/', cors(corsOptions), (_req, res) => {
     res.setHeader('Content-Type', 'application/json');
+    // Check if file exists and read it
+    let evStatus = null;
+    if (fs.existsSync('cache/evStatus.json')) {
+      evStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
+    }
     const data = {
       mieleClientId: process.env.mieleClientId,
       mieleSecretId: process.env.mieleSecretId,
@@ -101,6 +107,7 @@ async function createServer(): Promise<Express> {
       broombot: broombot.cachedStatus,
       mopbot: mopbot.cachedStatus,
       car: car.status,
+      evStatus,
     };
     res.end(JSON.stringify(data));
   });
@@ -108,11 +115,17 @@ async function createServer(): Promise<Express> {
   app.get('/startCar', cors(corsOptions), async (_req, res) => {
     const result = car.start();
     res.send(result);
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.get('/stopCar', cors(corsOptions), async (_req, res) => {
     const result = car.stop();
     res.send(JSON.stringify({ result }));
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.get('/resyncCar', cors(corsOptions), async (_req, res) => {
@@ -123,11 +136,17 @@ async function createServer(): Promise<Express> {
   app.get('/lockCar', cors(corsOptions), async (_req, res) => {
     const result = car.lock();
     res.send(JSON.stringify({ result }));
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.get('/unlockCar', cors(corsOptions), async (_req, res) => {
     const result = car.unlock();
     res.send(result);
+    setTimeout(() => {
+      car.resync();
+    }, 5000);
   });
 
   app.use(notFoundHandler);

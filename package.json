@@ -14,7 +14,7 @@
     "build-production": "npx webpack --mode=production",
     "build-development": "npx webpack --mode=development",
     "build-analyze": "npx webpack --profile --json > stats.json && webpack-bundle-analyzer ./stats.json",
-    "server": "npx nodemon ./dist/server.js"
+    "server": "npx nodemon --ignore cache/ ./dist/server.js"
   },
   "keywords": [],
   "author": "David Jensenius <david@jensenius.com>",
