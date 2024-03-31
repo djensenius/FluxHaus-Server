@@ -5,6 +5,10 @@ import { Vehicle } from 'dfj-bluelinky/dist/vehicles/vehicle';
 // eslint-disable-next-line import/no-unresolved
 import { RawVehicleStatus } from 'dfj-bluelinky/dist/interfaces/common.interfaces';
 
+export interface CarStatus extends RawVehicleStatus {
+  timestamp: Date;
+}
+
 export interface CarConfig {
   username: string;
   password: string;
@@ -14,8 +18,14 @@ export interface CarConfig {
   useInfo: boolean;
 }
 
+function strDateToDateTime(strDate: string): Date {
+  const parsedDate = strDate.replace(/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/g, '$1-$2-$3T$4:$5:$6.000Z');
+  const date = new Date(parsedDate);
+  return date;
+}
+
 export default class Car {
-  status?: RawVehicleStatus;
+  status?: CarStatus;
 
   vehicle?: Vehicle;
 
@@ -53,11 +63,19 @@ export default class Car {
 
       if (status !== null) {
         // Check if evStatus is null, and call again with refresh
-        this.status = status as RawVehicleStatus;
+        const timestamp = strDateToDateTime((status as RawVehicleStatus).lastStatusDate);
+        this.status = { timestamp, ...status as RawVehicleStatus };
         if (this.status.evStatus) {
+          const oldEvStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
+          const newEvStatus = this.status.evStatus;
+          const combinedEvStatus = newEvStatus;
+          if (newEvStatus.drvDistance[0].rangeByFuel.evModeRange.unit === 0) {
+            combinedEvStatus.drvDistance = oldEvStatus.drvDistance;
+          }
+
           fs.writeFileSync(
             'cache/evStatus.json',
-            JSON.stringify({ timestamp: Date.now(), ...this.status.evStatus }, null, 2),
+            JSON.stringify({ timestamp, ...this.status.evStatus }, null, 2),
           );
         }
       }
@@ -114,3 +132,4 @@ export default class Car {
     }
   };
 }
+
