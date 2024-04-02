@@ -22,7 +22,7 @@
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/node": "^20.12.2",
-    "@typescript-eslint/eslint-plugin": "^7.4.0",
+    "@typescript-eslint/eslint-plugin": "^7.5.0",
     "eslint": "^8.57.0",
     "eslint-config-airbnb": "^19.0.4",
     "eslint-import-resolver-typescript": "^3.6.1",
@@ -42,9 +42,8 @@
     "webpack-node-externals": "^3.0.0"
   },
   "dependencies": {
-    "bluelinky": "^8.3.0",
+    "bluelinky": "^8.3.1",
     "cors": "^2.8.5",
-    "dfj-bluelinky": "^8.3.1",
     "dorita980": "npm:@karlvr/dorita980@3.2.1",
     "dotenv": "^16.4.5",
     "express": "^4.19.2",

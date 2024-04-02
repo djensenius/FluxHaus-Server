@@ -1,9 +1,9 @@
 import fs from 'fs';
-import { BlueLinky } from 'dfj-bluelinky';
+import { BlueLinky } from 'bluelinky';
 // eslint-disable-next-line import/no-unresolved
-import { Vehicle } from 'dfj-bluelinky/dist/vehicles/vehicle';
+import { Vehicle } from 'bluelinky/dist/vehicles/vehicle';
 // eslint-disable-next-line import/no-unresolved
-import { RawVehicleStatus } from 'dfj-bluelinky/dist/interfaces/common.interfaces';
+import { RawVehicleStatus } from 'bluelinky/dist/interfaces/common.interfaces';
 
 export interface CarStatus extends RawVehicleStatus {
   timestamp: Date;
