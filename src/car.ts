@@ -31,6 +31,8 @@ export default class Car {
 
   odometer: number;
 
+  count: number;
+
   private client: BlueLinky;
 
   constructor(carConfig: CarConfig) {
@@ -41,6 +43,7 @@ export default class Car {
       brand: carConfig.brand,
       pin: carConfig.pin,
     });
+    this.count = 0;
     this.odometer = 0;
     this.client.on('ready', this.onReadyHandler);
   }
@@ -49,8 +52,15 @@ export default class Car {
     [this.vehicle] = vehicles;
     this.setStatus();
     setInterval(() => {
-      this.setStatus();
-    }, 1000 * 60 * 15);
+      let refresh = false;
+      if (this.count === 1) {
+        refresh = true;
+        this.count = 0;
+      } else {
+        this.count += 1;
+      }
+      this.setStatus(refresh);
+    }, 1000 * 60 * 120);
   };
 
   setStatus = async (refresh = false) => {
