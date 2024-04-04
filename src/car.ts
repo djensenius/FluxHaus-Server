@@ -46,6 +46,9 @@ export default class Car {
     this.count = 0;
     this.odometer = 0;
     this.client.on('ready', this.onReadyHandler);
+    setInterval(() => {
+      this.client.login();
+    }, 1000 * 60 * 60 * 12);
   }
 
   onReadyHandler = <T extends Vehicle>(vehicles: T[]) => {
