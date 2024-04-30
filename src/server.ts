@@ -113,6 +113,30 @@ async function createServer(): Promise<Express> {
     res.end(JSON.stringify(data));
   });
 
+  // Route handler for turning on mopbot
+  app.get('/turnOnMopbot', cors(corsOptions), async (_req, res) => {
+    await mopbot.turnOn();
+    res.send('Mopbot is turned on.');
+  });
+
+  // Route handler for turning off mopbot
+  app.get('/turnOffMopbot', cors(corsOptions), async (_req, res) => {
+    await mopbot.turnOff();
+    res.send('Mopbot is turned off.');
+  });
+
+  // Route handler for turning on broombot
+  app.get('/turnOnBroombot', cors(corsOptions), async (_req, res) => {
+    await broombot.turnOn();
+    res.send('Broombot is turned on.');
+  });
+
+  // Route handler for turning off broombot
+  app.get('/turnOffBroombot', cors(corsOptions), async (_req, res) => {
+    await broombot.turnOff();
+    res.send('Broombot is turned off.');
+  });
+
   app.get('/startCar', cors(corsOptions), async (_req, res) => {
     const result = car.start();
     res.send(result);

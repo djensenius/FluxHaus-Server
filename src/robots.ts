@@ -483,4 +483,40 @@ export default class RoombaAccessory {
     }
     return status.batteryLevel <= 20 ? 'Low' : 'Normal';
   };
+
+  /**
+   * Method to turn on the Roomba, starting its cleaning cycle.
+   */
+  async turnOn() {
+    this.connect(async (error, roomba) => {
+      if (error || !roomba) {
+        console.error('Failed to connect to Roomba to turn it on.');
+        return;
+      }
+      try {
+        await roomba.start();
+        console.log('Roomba has been turned on.');
+      } catch (err) {
+        console.error('Failed to start Roomba:', err);
+      }
+    });
+  }
+
+  /**
+   * Method to turn off the Roomba, stopping its cleaning cycle.
+   */
+  async turnOff() {
+    this.connect(async (error, roomba) => {
+      if (error || !roomba) {
+        console.error('Failed to connect to Roomba to turn it off.');
+        return;
+      }
+      try {
+        await roomba.stop();
+        console.log('Roomba has been turned off.');
+      } catch (err) {
+        console.error('Failed to stop Roomba:', err);
+      }
+    });
+  }
 }
