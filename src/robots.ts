@@ -301,6 +301,90 @@ export default class RoombaAccessory {
     });
   }
 
+  private setRunningState(powerOn: boolean, callback: (error: Error | void) => void) {
+    if (powerOn) {
+      this.connect(async (error, roomba) => {
+        if (error || !roomba) {
+          callback(error || new Error('Unknown error'));
+          return;
+        }
+
+        try {
+          /* If Roomba is paused in a clean cycle we need to instruct it to resume instead,
+           * otherwise we just start a clean. */
+          if (this.cachedStatus.paused) {
+            await roomba.resume();
+          } else if (this.cleanBehaviour === 'rooms') {
+            console.warn('We cannot do rooms yet');
+            // await roomba.cleanRoom(this.mission);
+          } else {
+            await roomba.clean();
+          }
+
+          callback();
+
+          /* After sending an action to Roomba, we start polling to ensure HomeKit has up to date status */
+          this.refreshStatusForUser();
+        } catch (theError) {
+          callback(theError as Error);
+        }
+      });
+    } else {
+      this.connect(async (error, roomba) => {
+        if (error || !roomba) {
+          callback(error || new Error('Unknown error'));
+          return;
+        }
+
+        try {
+          const response = await roomba.getRobotState(['cleanMissionStatus']);
+          const state = RoombaAccessory.parseState(response);
+
+          if (state.running) {
+            await roomba.pause();
+
+            callback();
+
+            await this.dockWhenStopped(roomba, 3000);
+          } else if (state.docking) {
+            await roomba.pause();
+
+            callback();
+          } else if (state.charging) {
+            callback();
+          } else {
+            callback();
+          }
+
+          this.refreshStatusForUser();
+        } catch (theError) {
+          callback(theError as Error);
+        }
+      });
+    }
+  }
+
+  private async dockWhenStopped(roomba: Roomba, pollingInterval: number) {
+    try {
+      const state = await roomba.getRobotState(['cleanMissionStatus']);
+
+      switch (state.cleanMissionStatus!.phase) {
+      case 'stop':
+        await roomba.dock();
+        this.refreshStatusForUser();
+        break;
+      case 'run':
+        await RoombaAccessory.delay(pollingInterval);
+        await this.dockWhenStopped(roomba, pollingInterval);
+        break;
+      default:
+        break;
+      }
+    } catch (error) {
+      console.error('Roomba failed to dock: %s', (error as Error).message);
+    }
+  }
+
   /**
      * Merge in changes to the cached status, and update our characteristics so the plugin
      * preemptively reports state back to Homebridge.
@@ -441,6 +525,13 @@ export default class RoombaAccessory {
     return this.idlePollIntervalMillis;
   };
 
+  static async delay(duration: number): Promise<void> {
+    return new Promise((resolve) => {
+      setTimeout(resolve, duration);
+    });
+  }
+
+
   isActive(): boolean {
     return this.cachedStatus.running || this.cachedStatus.docking || false;
   }
@@ -488,35 +579,13 @@ export default class RoombaAccessory {
    * Method to turn on the Roomba, starting its cleaning cycle.
    */
   async turnOn() {
-    this.connect(async (error, roomba) => {
-      if (error || !roomba) {
-        console.error('Failed to connect to Roomba to turn it on.');
-        return;
-      }
-      try {
-        await roomba.start();
-        console.log('Roomba has been turned on.');
-      } catch (err) {
-        console.error('Failed to start Roomba:', err);
-      }
-    });
+    this.setRunningState(true, () => {});
   }
 
   /**
    * Method to turn off the Roomba, stopping its cleaning cycle.
    */
   async turnOff() {
-    this.connect(async (error, roomba) => {
-      if (error || !roomba) {
-        console.error('Failed to connect to Roomba to turn it off.');
-        return;
-      }
-      try {
-        await roomba.stop();
-        console.log('Roomba has been turned off.');
-      } catch (err) {
-        console.error('Failed to stop Roomba:', err);
-      }
-    });
+    this.setRunningState(false, () => {});
   }
 }
