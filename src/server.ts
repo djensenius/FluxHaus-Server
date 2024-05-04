@@ -78,6 +78,8 @@ async function createServer(): Promise<Express> {
 
   const mopbot = new Robot(mopbotConfig);
 
+  let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
+
   const carConfig: CarConfig = {
     username: process.env.carLogin!,
     password: process.env.carPassword!,
@@ -134,6 +136,25 @@ async function createServer(): Promise<Express> {
   // Route handler for turning off broombot
   app.get('/turnOffBroombot', cors(corsOptions), async (_req, res) => {
     await broombot.turnOff();
+    res.send('Broombot is turned off.');
+  });
+
+  // Route handler for starting a deep clean
+  app.get('/turnOnDeepClean', cors(corsOptions), async (_req, res) => {
+    await broombot.turnOn();
+    cleanTimeout = setTimeout(() => {
+      mopbot.turnOn();
+    }, 1200000);
+    res.send('Broombot is turned on.');
+  });
+
+  // Route handler for stopping a deep clean
+  app.get('/turnOffDeepClean', cors(corsOptions), async (_req, res) => {
+    await broombot.turnOff();
+    if (cleanTimeout) {
+      clearTimeout(cleanTimeout);
+    }
+    await mopbot.turnOff();
     res.send('Broombot is turned off.');
   });
 
