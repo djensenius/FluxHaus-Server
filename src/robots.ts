@@ -63,6 +63,13 @@ interface Status {
     paused?: boolean
     batteryLevel?: number
     binFull?: boolean
+    timeStarted?: Date
+}
+
+interface RobotStatePlus extends RobotState {
+  lastCommand?: {
+    time: number;
+  }
 }
 
 const EMPTY_STATUS: Status = {
@@ -409,7 +416,7 @@ export default class RoombaAccessory {
     this.cachedStatus = status;
   }
 
-  static parseState(state: RobotState) {
+  static parseState(state: RobotStatePlus) {
     const status: Status = {
       timestamp: Date.now(),
     };
@@ -417,6 +424,12 @@ export default class RoombaAccessory {
     if (state.batPct !== undefined) {
       status.batteryLevel = state.batPct;
     }
+
+    console.log('state', JSON.stringify(state));
+    if (state?.lastCommand?.time !== undefined) {
+      status.timeStarted = new Date(state.lastCommand.time * 1000);
+    }
+
     if (state.bin !== undefined) {
       status.binFull = state.bin.full;
     }
