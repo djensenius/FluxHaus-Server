@@ -425,7 +425,6 @@ export default class RoombaAccessory {
       status.batteryLevel = state.batPct;
     }
 
-    console.log('state', JSON.stringify(state));
     if (state?.lastCommand?.time !== undefined) {
       status.timeStarted = new Date(state.lastCommand.time * 1000);
     }
