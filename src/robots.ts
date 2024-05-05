@@ -53,7 +53,7 @@ export interface AccessoryConfig {
 }
 
 interface Status {
-    timestamp: number
+    timestamp: Date
     running?: boolean
     docking?: boolean
     charging?: boolean
@@ -73,7 +73,7 @@ interface RobotStatePlus extends RobotState {
 }
 
 const EMPTY_STATUS: Status = {
-  timestamp: 0,
+  timestamp: new Date(),
 };
 
 function shouldTryDifferentCipher(error: Error) {
@@ -399,7 +399,7 @@ export default class RoombaAccessory {
   private mergeCachedStatus(status: Partial<Status>) {
     this.setCachedStatus({
       ...this.cachedStatus,
-      timestamp: Date.now(),
+      timestamp: new Date(),
       ...status,
     });
 
@@ -418,7 +418,7 @@ export default class RoombaAccessory {
 
   static parseState(state: RobotStatePlus) {
     const status: Status = {
-      timestamp: Date.now(),
+      timestamp: new Date(),
     };
 
     if (state.batPct !== undefined) {
