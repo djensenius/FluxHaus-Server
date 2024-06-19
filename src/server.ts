@@ -93,7 +93,7 @@ async function createServer(): Promise<Express> {
   };
 
   const car = new Car(carConfig);
-  const cameraURL = 'https://stream-uc2-delta.dropcam.com/nexus_aac/94cabc14ffc2409f86662a9f7bd9ca5a/playlist.m3u8?public=EDvH1b9kI6';
+  const cameraURL = process.env.CAMERA_URL || '';
 
   app.get('/', cors(corsOptions), (req, res) => {
     const authReq = req as basicAuth.IBasicAuthedRequest;
@@ -221,12 +221,12 @@ async function createServer(): Promise<Express> {
   return app;
 }
 
-setInterval(() => {
+const fetchSchedule = () => {
   const startDate = new Date();
   const endDate = new Date();
   endDate.setFullYear(endDate.getFullYear() + 1);
 
-  fetch(`https://us-central1-com-dogtopia-app.cloudfunctions.net/executive/appointments/daycare/9ModppBlHziAa5p3HluC?startDate=${startDate.getTime()}&endDate=${endDate.getTime()}`, {
+  fetch(`https://us-central1-com-dogtopia-app.cloudfunctions.net/executive/appointments/daycare/${process.env.DOGTOPIA_SCHEDULE_CODE}?startDate=${startDate.getTime()}&endDate=${endDate.getTime()}`, {
     method: 'GET',
     headers: {
       'Content-Type': 'application/json',
@@ -251,6 +251,11 @@ setInterval(() => {
         JSON.stringify({ timestamp: new Date(), ...json }, null, 2),
       );
     });
+};
+
+fetchSchedule();
+setInterval(() => {
+  fetchSchedule();
 }, 1000 * 60 * 60);
 
 
