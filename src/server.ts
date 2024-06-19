@@ -27,7 +27,10 @@ async function createServer(): Promise<Express> {
     nocache(),
     express.urlencoded({ extended: true }),
     basicAuth({
-      users: { admin: process.env.BASIC_AUTH_PASSWORD! },
+      users: {
+        admin: process.env.BASIC_AUTH_PASSWORD!,
+        rhizome: process.env.RHIZOME_PASSWORD!,
+      },
       challenge: true,
       realm: 'fluxhaus',
     }),
@@ -90,28 +93,39 @@ async function createServer(): Promise<Express> {
   };
 
   const car = new Car(carConfig);
+  const cameraURL = 'https://stream-uc2-delta.dropcam.com/nexus_aac/94cabc14ffc2409f86662a9f7bd9ca5a/playlist.m3u8?public=EDvH1b9kI6';
 
-  app.get('/', cors(corsOptions), (_req, res) => {
+  app.get('/', cors(corsOptions), (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
     res.setHeader('Content-Type', 'application/json');
     // Check if file exists and read it
     let evStatus = null;
     if (fs.existsSync('cache/evStatus.json')) {
       evStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
     }
-    const data = {
-      mieleClientId: process.env.mieleClientId,
-      mieleSecretId: process.env.mieleSecretId,
-      mieleAppliances: process.env.mieleAppliances!.split(', '),
-      boschClientId: process.env.boschClientId,
-      boschSecretId: process.env.boschSecretId,
-      boschAppliance: process.env.boschAppliance,
-      favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
-      broombot: broombot.cachedStatus,
-      mopbot: mopbot.cachedStatus,
-      car: car.status,
-      carEvStatus: evStatus,
-      carOdometer: car.odometer,
-    };
+    let data = {};
+
+    if (authReq.auth.user === 'admin') {
+      data = {
+        mieleClientId: process.env.mieleClientId,
+        mieleSecretId: process.env.mieleSecretId,
+        mieleAppliances: process.env.mieleAppliances!.split(', '),
+        boschClientId: process.env.boschClientId,
+        boschSecretId: process.env.boschSecretId,
+        boschAppliance: process.env.boschAppliance,
+        favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
+        broombot: broombot.cachedStatus,
+        mopbot: mopbot.cachedStatus,
+        car: car.status,
+        carEvStatus: evStatus,
+        carOdometer: car.odometer,
+        cameraURL,
+      };
+    } else if (authReq.auth.user === 'rhizome') {
+      data = {
+        cameraURL,
+      };
+    }
     res.end(JSON.stringify(data));
   });
 
@@ -199,6 +213,39 @@ async function createServer(): Promise<Express> {
 
   return app;
 }
+
+setInterval(() => {
+  const startDate = new Date();
+  const endDate = new Date();
+  endDate.setFullYear(endDate.getFullYear() + 1);
+
+  fetch(`https://us-central1-com-dogtopia-app.cloudfunctions.net/executive/appointments/daycare/9ModppBlHziAa5p3HluC?startDate=${startDate.getTime()}&endDate=${endDate.getTime()}`, {
+    method: 'GET',
+    headers: {
+      'Content-Type': 'application/json',
+      'Sec-Fetch-Site': 'cross-site',
+      'Accept-Language': 'en-CA,en-US;q=0.9,en;q=0.8',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Sec-Fetch-Mode': 'cors',
+      Host: 'us-central1-com-dogtopia-app.cloudfunctions.net',
+      Origin: 'https://www.dogtopia.com',
+      // eslint-disable-next-line max-len
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
+      Referer: 'https://www.dogtopia.com/',
+      Connection: 'keep-alive',
+      'Sec-Fetch-Dest': 'empty',
+      Priority: 'u=3, i',
+      Authorization: `Bearer ${process.env.DOGTOPIA_TOKEN}`,
+    },
+  }).then((response) => response.json())
+    .then((json) => {
+      fs.writeFileSync(
+        'cache/rhizome.json',
+        JSON.stringify({ timestamp: new Date(), ...json }, null, 2),
+      );
+    });
+}, 1000 * 60 * 60);
+
 
 createServer().then((app) => {
   app.listen(port, () => {

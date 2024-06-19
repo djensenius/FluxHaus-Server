@@ -44,7 +44,7 @@ module.exports = {
     'jest/prefer-to-have-length': 'warn',
     'jest/valid-expect': 'error',
     'no-console': ['error', { allow: ['warn', 'error'] }],
-    'max-len': ['error', { code: 120 }],
+    'max-len': ['error', { code: 120, ignoreUrls: true }],
     'react/jsx-filename-extension': [1, { extensions: ['.jsx', '.tsx'] }],
     '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
     indent: ['error', 2],
