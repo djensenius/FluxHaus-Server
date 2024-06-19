@@ -103,6 +103,11 @@ async function createServer(): Promise<Express> {
     if (fs.existsSync('cache/evStatus.json')) {
       evStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
     }
+
+    let rhizomeSchedule = null;
+    if (fs.existsSync('cache/rhizome.json')) {
+      rhizomeSchedule = JSON.parse(fs.readFileSync('cache/rhizome.json', 'utf8'));
+    }
     let data = {};
 
     if (authReq.auth.user === 'admin') {
@@ -120,10 +125,12 @@ async function createServer(): Promise<Express> {
         carEvStatus: evStatus,
         carOdometer: car.odometer,
         cameraURL,
+        rhizomeSchedule,
       };
     } else if (authReq.auth.user === 'rhizome') {
       data = {
         cameraURL,
+        rhizomeSchedule,
       };
     }
     res.end(JSON.stringify(data));
