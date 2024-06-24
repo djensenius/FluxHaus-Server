@@ -258,6 +258,30 @@ setInterval(() => {
   fetchSchedule();
 }, 1000 * 60 * 60);
 
+const newsURL = 'https://raw.githubusercontent.com/djensenius/Rhizome-Data/main/news.md';
+
+interface GitHubFile {
+  name: string;
+  download_url: string;
+}
+
+const fetchRhizomePhotos = () => {
+  fetch('https://api.github.com/repos/djensenius/Rhizome-Data/contents/photos?ref=main')
+    .then((response) => response.json())
+    .then((json) => {
+      const photos = json.map((file: GitHubFile) => file.download_url);
+      fs.writeFileSync(
+        'cache/rhizomePhotos.json',
+        JSON.stringify({ timestamp: new Date(), news: newsURL, ...photos }, null, 2),
+      );
+    });
+};
+
+fetchRhizomePhotos();
+
+setInterval(() => {
+  fetchRhizomePhotos();
+}, 1000 * 60 * 60);
 
 createServer().then((app) => {
   app.listen(port, () => {
