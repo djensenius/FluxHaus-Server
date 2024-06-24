@@ -108,6 +108,11 @@ async function createServer(): Promise<Express> {
     if (fs.existsSync('cache/rhizome.json')) {
       rhizomeSchedule = JSON.parse(fs.readFileSync('cache/rhizome.json', 'utf8'));
     }
+
+    let rhizomeData = null;
+    if (fs.existsSync('cache/rhizomePhotos.json')) {
+      rhizomeData = JSON.parse(fs.readFileSync('cache/rhizomePhotos.json', 'utf8'));
+    }
     let data = {};
 
     if (authReq.auth.user === 'admin') {
@@ -126,11 +131,13 @@ async function createServer(): Promise<Express> {
         carOdometer: car.odometer,
         cameraURL,
         rhizomeSchedule,
+        rhizomeData,
       };
     } else if (authReq.auth.user === 'rhizome') {
       data = {
         cameraURL,
         rhizomeSchedule,
+        rhizomeData,
       };
     }
     res.end(JSON.stringify(data));
@@ -258,6 +265,30 @@ setInterval(() => {
   fetchSchedule();
 }, 1000 * 60 * 60);
 
+const newsURL = 'https://raw.githubusercontent.com/djensenius/Rhizome-Data/main/news.md';
+
+interface GitHubFile {
+  name: string;
+  download_url: string;
+}
+
+const fetchRhizomePhotos = () => {
+  fetch('https://api.github.com/repos/djensenius/Rhizome-Data/contents/photos?ref=main')
+    .then((response) => response.json())
+    .then((json) => {
+      const photos = json.map((file: GitHubFile) => file.download_url);
+      fs.writeFileSync(
+        'cache/rhizomePhotos.json',
+        JSON.stringify({ timestamp: new Date(), news: newsURL, ...photos }, null, 2),
+      );
+    });
+};
+
+fetchRhizomePhotos();
+
+setInterval(() => {
+  fetchRhizomePhotos();
+}, 1000 * 60 * 60);
 
 createServer().then((app) => {
   app.listen(port, () => {
