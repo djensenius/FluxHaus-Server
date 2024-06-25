@@ -279,7 +279,7 @@ const fetchRhizomePhotos = () => {
       const photos = json.map((file: GitHubFile) => file.download_url);
       fs.writeFileSync(
         'cache/rhizomePhotos.json',
-        JSON.stringify({ timestamp: new Date(), news: newsURL, ...photos }, null, 2),
+        JSON.stringify({ timestamp: new Date(), news: newsURL, photos: [...photos] }, null, 2),
       );
     });
 };
