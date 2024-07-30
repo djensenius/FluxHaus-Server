@@ -32,7 +32,7 @@ export default class HomeConnect {
 
     const formBody = [];
     formBody.push(`client_id=${encodeURIComponent(this.clientId)}`);
-    formBody.push(`scope=${encodeURIComponent('IdentifyAppliance Monitor')}`);
+    formBody.push(`scope=${encodeURIComponent('IdentifyAppliance Monitor Control Settings')}`);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -118,6 +118,38 @@ export default class HomeConnect {
     }
   }
 
+  public async getActiveProgram(): Promise<void> {
+    if (!fs.existsSync('cache/homeconnect-token.json')) {
+      console.warn('You need to authorize your HomeConnect account first');
+      writeError('HomeConnect', 'HomeConnect needs authorized');
+      return;
+    }
+    let tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
+    const dateIssued = new Date(tokenInfo.timestamp);
+    const expiresIn = tokenInfo.expires_in;
+    const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
+
+    if (expireDate <= new Date()) {
+      await this.refreshToken();
+      tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
+    }
+
+    this.HOMECONNECT_TOKEN = tokenInfo.id_token;
+    const url = `${this.serverURL}/api/homeappliances/${process.env.boschAppliance}/programs/active`;
+    const headers = {
+      Authorization: `Bearer ${this.HOMECONNECT_TOKEN}`,
+      Accept: 'application/vnd.bsh.sdk.v1+json',
+      'Accept-Language': 'en-US',
+    };
+
+    const response = await fetch(url, { headers });
+    const body = await response.json();
+    fs.writeFileSync(
+      'cache/homeconnect.json',
+      JSON.stringify(body, null, 2),
+    );
+  }
+
   public async listenEvents(): Promise<void> {
     if (!fs.existsSync('cache/homeconnect-token.json')) {
       console.warn('You need to authorize your HomeConnect account first');
@@ -149,6 +181,7 @@ export default class HomeConnect {
         clearError('HomeConnect');
       },
       onOpen() {
+        clearError('HomeConnect');
       },
       onClose() {
         console.warn('Connection closed');

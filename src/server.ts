@@ -9,6 +9,7 @@ import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
 import Car, { CarConfig } from './car';
 import Miele from './miele';
+import HomeConnect from './homeconnect';
 
 const port = process.env.PORT || 8080;
 
@@ -114,6 +115,17 @@ async function createServer(): Promise<Express> {
     if (fs.existsSync('cache/rhizomePhotos.json')) {
       rhizomeData = JSON.parse(fs.readFileSync('cache/rhizomePhotos.json', 'utf8'));
     }
+
+    let miele = null;
+    if (fs.existsSync('cache/miele.json')) {
+      miele = JSON.parse(fs.readFileSync('cache/miele.json', 'utf8'));
+    }
+
+    let homeConnect = null;
+    if (fs.existsSync('cache/homeconnect.json')) {
+      homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
+    }
+
     let data = {};
 
     if (authReq.auth.user === 'admin') {
@@ -133,6 +145,8 @@ async function createServer(): Promise<Express> {
         cameraURL,
         rhizomeSchedule,
         rhizomeData,
+        miele,
+        homeConnect,
       };
     } else if (authReq.auth.user === 'rhizome') {
       data = {
@@ -290,6 +304,20 @@ fetchRhizomePhotos();
 const clientId = process.env.mieleClientId || '';
 const secretId = process.env.mieleSecretId || '';
 const miele = new Miele(clientId, secretId);
+miele.getActivePrograms();
+miele.listenEvents();
+setInterval(() => {
+  miele.getActivePrograms();
+}, 600000);
+
+const homeConnectClientId = process.env.boschClientId || '';
+const homeConnectSecretId = process.env.boschSecretId || '';
+const homeConnect = new HomeConnect(homeConnectClientId, homeConnectSecretId);
+homeConnect.getActiveProgram();
+homeConnect.listenEvents();
+setInterval(() => {
+  homeConnect.getActiveProgram();
+}, 600000);
 
 setInterval(() => {
   fetchRhizomePhotos();

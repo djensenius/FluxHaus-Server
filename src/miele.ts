@@ -1,6 +1,7 @@
+import fs from 'fs';
 import 'dotenv/config';
 import { fetchEventData } from 'fetch-sse';
-import fs from 'fs';
+import { clearError, writeError } from './errors';
 
 export default class Miele {
   private clientId: string;
@@ -57,6 +58,7 @@ export default class Miele {
   public async refreshToken(): Promise<void> {
     if (!fs.existsSync('cache/miele-token.json')) {
       console.warn('You need to authorize your Miele account first');
+      writeError('Miele', 'Miele needs authorized');
       return;
     }
 
@@ -90,9 +92,43 @@ export default class Miele {
     }
   }
 
+  public async getActivePrograms(): Promise<void> {
+    if (!fs.existsSync('cache/miele-token.json')) {
+      console.warn('You need to authorize your Miele account first');
+      writeError('Miele', 'Miele needs authorized');
+      return;
+    }
+
+    let tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
+    const dateIssued = new Date(tokenInfo.timestamp);
+    const expiresIn = tokenInfo.expires_in;
+    const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
+
+    if (expireDate <= new Date()) {
+      console.warn('Token has expired, please re-authorize your account');
+      await this.refreshToken();
+      tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
+    }
+
+    this.MIELE_TOKEN = tokenInfo.access_token;
+    const url = 'https://api.mcs3.miele.com/v1/devices';
+    const headers = {
+      'Accept-Language': 'en-CA',
+      Authorization: `Bearer ${this.MIELE_TOKEN}`,
+    };
+
+    const response = await fetch(url, { method: 'GET', headers });
+    const body = await response.json();
+    fs.writeFileSync(
+      'cache/miele.json',
+      JSON.stringify(body, null, 2),
+    );
+  }
+
   public async listenEvents(): Promise<void> {
     if (!fs.existsSync('cache/miele-token.json')) {
       console.warn('You need to authorize your Miele account first');
+      writeError('Miele', 'Miele needs authorized');
       return;
     }
     let tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
@@ -118,16 +154,23 @@ export default class Miele {
       onMessage(msg) {
         const event = (msg?.event || '').trim();
         if (event === 'devices') {
+          clearError('Miele');
           fs.writeFileSync(
             'cache/miele.json',
             JSON.stringify(JSON.parse(msg!.data), null, 2),
           );
         }
       },
+      onOpen() {
+        clearError('Miele');
+        console.warn('Connected to Miele');
+      },
       onClose() {
+        writeError('Miele', 'Miele connection closed');
         console.warn('Connection closed');
       },
       onError(err: Error) {
+        writeError('Miele', 'Miele connection errored');
         console.error(err);
       },
     });
