@@ -8,6 +8,7 @@ import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
 import Car, { CarConfig } from './car';
+import Miele from './miele';
 
 const port = process.env.PORT || 8080;
 
@@ -286,6 +287,10 @@ const fetchRhizomePhotos = () => {
 
 fetchRhizomePhotos();
 
+const clientId = process.env.mieleClientId || '';
+const secretId = process.env.mieleSecretId || '';
+const miele = new Miele(clientId, secretId);
+
 setInterval(() => {
   fetchRhizomePhotos();
 }, 1000 * 60 * 60);
@@ -293,5 +298,6 @@ setInterval(() => {
 createServer().then((app) => {
   app.listen(port, () => {
     console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
+    miele.listenEvents();
   });
 });
