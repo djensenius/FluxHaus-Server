@@ -1,6 +1,7 @@
 import { fetchEventData } from 'fetch-sse';
 import fs from 'fs';
 import 'dotenv/config';
+import { clearError, writeError } from './errors';
 
 export default class HomeConnect {
   private clientId: string;
@@ -77,6 +78,7 @@ export default class HomeConnect {
   public async refreshToken(): Promise<void> {
     if (!fs.existsSync('cache/homeconnect-token.json')) {
       console.warn('You need to authorize your HomeConnect account first');
+      writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
 
@@ -103,7 +105,7 @@ export default class HomeConnect {
     const body = await response.json();
     if (body.error) {
       console.warn('You need to authorize your HomeConnect account first');
-      console.error(body);
+      writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
 
@@ -119,6 +121,7 @@ export default class HomeConnect {
   public async listenEvents(): Promise<void> {
     if (!fs.existsSync('cache/homeconnect-token.json')) {
       console.warn('You need to authorize your HomeConnect account first');
+      writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
     let tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
@@ -127,7 +130,6 @@ export default class HomeConnect {
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
 
     if (expireDate <= new Date()) {
-      console.warn('Token has expired, please re-authorize your account');
       await this.refreshToken();
       tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
     }
@@ -139,18 +141,24 @@ export default class HomeConnect {
       Accept: 'text/event-stream',
       'Accept-Language': 'en-US',
     };
-    console.warn('HERE FUCKER');
 
     await fetchEventData(url, {
       headers,
       onMessage(msg) {
         console.warn(msg);
+        clearError('HomeConnect');
+      },
+      onOpen() {
       },
       onClose() {
         console.warn('Connection closed');
+        const message = 'Connection closed';
+        writeError('HomeConnect', message);
       },
       onError(err: Error) {
         console.error(err);
+        const message = 'Connection error';
+        writeError('HomeConnect', message);
       },
     });
   }
