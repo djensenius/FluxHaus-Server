@@ -1,0 +1,16 @@
+{
+  "staticStrings": {
+    "notFound": "No encontrado",
+    "mopbotOn": "Mopbot está encendido.",
+    "mopbotOff": "Mopbot está apagado.",
+    "broombotOn": "Broombot está encendido.",
+    "broombotOff": "Broombot está apagado.",
+    "deepCleanOn": "Broombot está encendido.",
+    "deepCleanOff": "Broombot está apagado.",
+    "carStart": "El coche está encendido.",
+    "carStop": "El coche está apagado.",
+    "carResync": "Resincronizando coche",
+    "carLock": "El coche está bloqueado.",
+    "carUnlock": "El coche está desbloqueado."
+  }
+}

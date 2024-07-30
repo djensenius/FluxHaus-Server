@@ -1,0 +1,16 @@
+{
+  "staticStrings": {
+    "notFound": "Not Found",
+    "mopbotOn": "Mopbot is turned on.",
+    "mopbotOff": "Mopbot is turned off.",
+    "broombotOn": "Broombot is turned on.",
+    "broombotOff": "Broombot is turned off.",
+    "deepCleanOn": "Broombot is turned on.",
+    "deepCleanOff": "Broombot is turned off.",
+    "carStart": "Car is started.",
+    "carStop": "Car is stopped.",
+    "carResync": "Resyncing car",
+    "carLock": "Car is locked.",
+    "carUnlock": "Car is unlocked."
+  }
+}

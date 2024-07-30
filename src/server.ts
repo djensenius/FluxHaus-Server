@@ -8,11 +8,27 @@ import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
 import Car, { CarConfig } from './car';
+import i18next from 'i18next';
+import i18nextMiddleware from 'i18next-express-middleware';
+import Backend from 'i18next-fs-backend';
 
 const port = process.env.PORT || 8080;
 
 async function createServer(): Promise<Express> {
   const app: Express = express();
+
+  i18next
+    .use(Backend)
+    .use(i18nextMiddleware.LanguageDetector)
+    .init({
+      fallbackLng: 'en',
+      preload: ['en', 'es'],
+      backend: {
+        loadPath: 'src/locales/{{lng}}/translation.json',
+      },
+    });
+
+  app.use(i18nextMiddleware.handle(i18next));
 
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -144,83 +160,89 @@ async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning on mopbot
-  app.get('/turnOnMopbot', cors(corsOptions), async (_req, res) => {
+  app.get('/turnOnMopbot', cors(corsOptions), async (req, res) => {
     await mopbot.turnOn();
-    res.send('Mopbot is turned on.');
+    res.send(req.t('staticStrings.mopbotOn'));
   });
 
   // Route handler for turning off mopbot
-  app.get('/turnOffMopbot', cors(corsOptions), async (_req, res) => {
+  app.get('/turnOffMopbot', cors(corsOptions), async (req, res) => {
     await mopbot.turnOff();
-    res.send('Mopbot is turned off.');
+    res.send(req.t('staticStrings.mopbotOff'));
   });
 
   // Route handler for turning on broombot
-  app.get('/turnOnBroombot', cors(corsOptions), async (_req, res) => {
+  app.get('/turnOnBroombot', cors(corsOptions), async (req, res) => {
     await broombot.turnOn();
-    res.send('Broombot is turned on.');
+    res.send(req.t('staticStrings.broombotOn'));
   });
 
   // Route handler for turning off broombot
-  app.get('/turnOffBroombot', cors(corsOptions), async (_req, res) => {
+  app.get('/turnOffBroombot', cors(corsOptions), async (req, res) => {
     await broombot.turnOff();
-    res.send('Broombot is turned off.');
+    res.send(req.t('staticStrings.broombotOff'));
   });
 
   // Route handler for starting a deep clean
-  app.get('/turnOnDeepClean', cors(corsOptions), async (_req, res) => {
+  app.get('/turnOnDeepClean', cors(corsOptions), async (req, res) => {
     await broombot.turnOn();
     cleanTimeout = setTimeout(() => {
       mopbot.turnOn();
     }, 1200000);
-    res.send('Broombot is turned on.');
+    res.send(req.t('staticStrings.deepCleanOn'));
   });
 
   // Route handler for stopping a deep clean
-  app.get('/turnOffDeepClean', cors(corsOptions), async (_req, res) => {
+  app.get('/turnOffDeepClean', cors(corsOptions), async (req, res) => {
     await broombot.turnOff();
     if (cleanTimeout) {
       clearTimeout(cleanTimeout);
     }
     await mopbot.turnOff();
-    res.send('Broombot is turned off.');
+    res.send(req.t('staticStrings.deepCleanOff'));
   });
 
-  app.get('/startCar', cors(corsOptions), async (_req, res) => {
+  app.get('/startCar', cors(corsOptions), async (req, res) => {
     const result = car.start();
-    res.send(result);
+    res.send(req.t('staticStrings.carStart'));
     setTimeout(() => {
       car.resync();
     }, 5000);
   });
 
-  app.get('/stopCar', cors(corsOptions), async (_req, res) => {
+  app.get('/stopCar', cors(corsOptions), async (req, res) => {
     const result = car.stop();
-    res.send(JSON.stringify({ result }));
+    res.send(req.t('staticStrings.carStop'));
     setTimeout(() => {
       car.resync();
     }, 5000);
   });
 
-  app.get('/resyncCar', cors(corsOptions), async (_req, res) => {
+  app.get('/resyncCar', cors(corsOptions), async (req, res) => {
     car.resync();
-    res.send('Resyncing car');
+    res.send(req.t('staticStrings.carResync'));
   });
 
-  app.get('/lockCar', cors(corsOptions), async (_req, res) => {
+  app.get('/lockCar', cors(corsOptions), async (req, res) => {
     const result = car.lock();
-    res.send(JSON.stringify({ result }));
+    res.send(req.t('staticStrings.carLock'));
     setTimeout(() => {
       car.resync();
     }, 5000);
   });
 
-  app.get('/unlockCar', cors(corsOptions), async (_req, res) => {
+  app.get('/unlockCar', cors(corsOptions), async (req, res) => {
     const result = car.unlock();
-    res.send(result);
+    res.send(req.t('staticStrings.carUnlock'));
     setTimeout(() => {
       car.resync();
     }, 5000);
+  });
+
+  app.get('/changeLanguage/:lng', (req, res) => {
+    const { lng } = req.params;
+    req.i18n.changeLanguage(lng);
+    res.send(`Language changed to ${lng}`);
   });
 
   app.use(notFoundHandler);
