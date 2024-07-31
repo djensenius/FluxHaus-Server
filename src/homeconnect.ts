@@ -152,10 +152,6 @@ export default class HomeConnect {
 
     const response = await fetch(url, { headers });
     const body = await response.json() as StatusesWrapper;
-    fs.writeFileSync(
-      'cache/dishwasher.json',
-      JSON.stringify(body, null, 2),
-    );
 
     body.data.status.forEach((item) => {
       if (item.key === 'BSH.Common.Status.OperationState') {
