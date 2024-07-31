@@ -290,7 +290,6 @@ export default class HomeConnect {
     await fetchEventData(url, {
       headers,
       onMessage(msg) {
-        console.warn(msg);
         parseMessage(msg);
         clearError('HomeConnect');
       },
