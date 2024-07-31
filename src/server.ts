@@ -126,6 +126,33 @@ async function createServer(): Promise<Express> {
       homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
     }
 
+    const clientId = process.env.mieleClientId || '';
+    const secretId = process.env.mieleSecretId || '';
+    const mieleClient = new Miele(clientId, secretId);
+    mieleClient.getActivePrograms();
+    mieleClient.listenEvents();
+    setInterval(() => {
+      mieleClient.getActivePrograms();
+    }, 600000);
+    mieleClient.listenEvents();
+
+
+    const homeConnectClientId = process.env.boschClientId || '';
+    const homeConnectSecretId = process.env.boschSecretId || '';
+    const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
+    hc.getActiveProgram();
+    hc.listenEvents();
+    setInterval(() => {
+      hc.getActiveProgram();
+    }, 600000);
+
+    setInterval(() => {
+      fs.writeFileSync(
+        'cache/dishwasher.json',
+        JSON.stringify(hc.dishwasher),
+      );
+    }, 1000 * 60 * 60);
+
     let data = {};
 
     if (authReq.auth.user === 'admin') {
@@ -147,7 +174,7 @@ async function createServer(): Promise<Express> {
         rhizomeData,
         miele,
         homeConnect,
-        dishwasher: homeConnect.dishwasher,
+        dishwasher: hc.dishwasher,
       };
     } else if (authReq.auth.user === 'rhizome') {
       data = {
@@ -302,31 +329,6 @@ const fetchRhizomePhotos = () => {
 
 fetchRhizomePhotos();
 
-const clientId = process.env.mieleClientId || '';
-const secretId = process.env.mieleSecretId || '';
-const miele = new Miele(clientId, secretId);
-miele.getActivePrograms();
-miele.listenEvents();
-setInterval(() => {
-  miele.getActivePrograms();
-}, 600000);
-
-const homeConnectClientId = process.env.boschClientId || '';
-const homeConnectSecretId = process.env.boschSecretId || '';
-const homeConnect = new HomeConnect(homeConnectClientId, homeConnectSecretId);
-homeConnect.getActiveProgram();
-homeConnect.listenEvents();
-setInterval(() => {
-  homeConnect.getActiveProgram();
-}, 600000);
-
-setInterval(() => {
-  fs.writeFileSync(
-    'cache/dishwasher.json',
-    JSON.stringify(homeConnect.dishwasher),
-  );
-}, 1000 * 60 * 60);
-
 setInterval(() => {
   fetchRhizomePhotos();
 }, 1000 * 60 * 60);
@@ -334,6 +336,5 @@ setInterval(() => {
 createServer().then((app) => {
   app.listen(port, () => {
     console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
-    miele.listenEvents();
   });
 });
