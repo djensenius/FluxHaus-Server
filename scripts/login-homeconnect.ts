@@ -1,4 +1,4 @@
-import HomeConnect from './homeconnect';
+import HomeConnect from '../src/homeconnect';
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function getToken(hc: HomeConnect) {
