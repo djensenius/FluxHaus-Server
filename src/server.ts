@@ -96,6 +96,32 @@ async function createServer(): Promise<Express> {
 
   const car = new Car(carConfig);
   const cameraURL = process.env.CAMERA_URL || '';
+  const clientId = process.env.mieleClientId || '';
+  const secretId = process.env.mieleSecretId || '';
+  const mieleClient = new Miele(clientId, secretId);
+  mieleClient.getActivePrograms();
+  mieleClient.listenEvents();
+  setInterval(() => {
+    mieleClient.getActivePrograms();
+  }, 600000);
+  mieleClient.listenEvents();
+
+  const homeConnectClientId = process.env.boschClientId || '';
+  const homeConnectSecretId = process.env.boschSecretId || '';
+  const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
+  hc.getActiveProgram();
+  hc.listenEvents();
+  setInterval(() => {
+    hc.getActiveProgram();
+  }, 600000);
+
+  setInterval(() => {
+    fs.writeFileSync(
+      'cache/dishwasher.json',
+      JSON.stringify(hc.dishwasher),
+    );
+  }, 1000 * 60 * 60);
+
 
   app.get('/', cors(corsOptions), (req, res) => {
     const authReq = req as basicAuth.IBasicAuthedRequest;
@@ -125,33 +151,6 @@ async function createServer(): Promise<Express> {
     if (fs.existsSync('cache/homeconnect.json')) {
       homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
     }
-
-    const clientId = process.env.mieleClientId || '';
-    const secretId = process.env.mieleSecretId || '';
-    const mieleClient = new Miele(clientId, secretId);
-    mieleClient.getActivePrograms();
-    mieleClient.listenEvents();
-    setInterval(() => {
-      mieleClient.getActivePrograms();
-    }, 600000);
-    mieleClient.listenEvents();
-
-
-    const homeConnectClientId = process.env.boschClientId || '';
-    const homeConnectSecretId = process.env.boschSecretId || '';
-    const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
-    hc.getActiveProgram();
-    hc.listenEvents();
-    setInterval(() => {
-      hc.getActiveProgram();
-    }, 600000);
-
-    setInterval(() => {
-      fs.writeFileSync(
-        'cache/dishwasher.json',
-        JSON.stringify(hc.dishwasher),
-      );
-    }, 1000 * 60 * 60);
 
     let data = {};
 
