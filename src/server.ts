@@ -147,6 +147,7 @@ async function createServer(): Promise<Express> {
         rhizomeData,
         miele,
         homeConnect,
+        dishwasher: homeConnect.dishwasher,
       };
     } else if (authReq.auth.user === 'rhizome') {
       data = {
@@ -318,6 +319,13 @@ homeConnect.listenEvents();
 setInterval(() => {
   homeConnect.getActiveProgram();
 }, 600000);
+
+setInterval(() => {
+  fs.writeFileSync(
+    'cache/dishwasher.json',
+    JSON.stringify(homeConnect.dishwasher),
+  );
+}, 1000 * 60 * 60);
 
 setInterval(() => {
   fetchRhizomePhotos();

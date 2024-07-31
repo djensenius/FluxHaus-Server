@@ -16,3 +16,9 @@ const hc = new HomeConnect(clientId, secretId);
 
 hc.authorize();
 getToken(hc);
+/*
+listenEvents(hc);
+setInterval(() => {
+  console.warn(hc.dishwasher);
+}, 5000);
+*/
