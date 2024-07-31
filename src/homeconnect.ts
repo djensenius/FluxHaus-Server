@@ -2,7 +2,8 @@ import { ServerSentEvent, fetchEventData } from 'fetch-sse';
 import fs from 'fs';
 import 'dotenv/config';
 import { clearError, writeError } from './errors';
-import { EventData, StatusesWrapper } from './homeconnect-types';
+import { EventData, StatusesWrapper } from './types/homeconnect';
+import { DishWasher, DishWasherProgram, OperationState } from './types/types';
 
 export default class HomeConnect {
   public dishwasher: DishWasher;
@@ -25,7 +26,6 @@ export default class HomeConnect {
     this.deviceCode = '';
     this.HOMECONNECT_TOKEN = '';
     this.dishwasher = {
-      status: 'Finished',
       operationState: 'Inactive',
       doorState: 'Closed',
     };
@@ -186,7 +186,10 @@ export default class HomeConnect {
     case 'EVENT':
       items.forEach((item: EventData) => {
         if (item.key === 'BSH.Common.Event.ProgramFinished') {
-          this.dishwasher.status = 'Finished';
+          this.dishwasher = {
+            operationState: 'Inactive',
+            doorState: 'Closed',
+          };
         } else if (item.key === 'BSH.Common.Event.ProgramAborted') {
           this.dishwasher.status = 'Aborted';
         }
@@ -303,40 +306,15 @@ export default class HomeConnect {
         clearError('HomeConnect');
       },
       onClose() {
-        console.warn('Connection closed');
+        console.warn('HomeConnect: Connection closed');
         const message = 'Connection closed';
         writeError('HomeConnect', message);
       },
       onError(err: Error) {
         console.error(err);
-        const message = 'Connection error';
+        const message = 'Homeconnect: Connection error';
         writeError('HomeConnect', message);
       },
     });
   }
 }
-
-type DishWasherProgram =
-  'PreRinse' | 'Auto1' | 'Auto2' | 'Auto3' | 'Eco50' | 'Quick45' | 'Intensiv70' | 'Normal65' | 'Glas40' |
-  'GlassCare' | 'NightWash' | 'Quick65' | 'Normal45' | 'Intensiv45' | 'AutoHalfLoad' | 'IntensivPower' |
-  'MagicDaily' | 'Super60' | 'Kurz60' | 'ExpressSparkle65' | 'MachineCare' | 'SteamFresh' | 'MaximumCleaning' |
-  'MixedLoad';
-
-type OperationState =
-  'Inactive' | 'Ready' | 'DelayedStart' | 'Run' | 'Pause' | 'ActionRequired' | 'Finished' | 'Error' | 'Aborting';
-
-interface DishWasher {
-  status: 'Running' | 'Paused' | 'Finished' | 'Aborted';
-  program?: string;
-  remainingTime?: number;
-  remainingTimeUnit?: 'seconds' | 'minutes' | 'hours';
-  remainingTimeEstimate?: boolean;
-  programProgress?: number;
-  operationState: OperationState;
-  doorState: 'Open' | 'Closed';
-  selectedProgram?: string;
-  activeProgram?: DishWasherProgram;
-  startInRelative?: number;
-  startInRelativeUnit?: 'seconds' | 'minutes' | 'hours';
-}
-

@@ -1,5 +1,5 @@
 import express, { Express } from 'express';
-import Miele from './miele';
+import Miele from '../src/miele';
 
 
 const clientId = process.env.mieleClientId || '';
