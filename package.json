@@ -14,8 +14,8 @@
     "build-production": "npx webpack --mode=production",
     "build-development": "npx webpack --mode=development",
     "build-analyze": "npx webpack --profile --json > stats.json && webpack-bundle-analyzer ./stats.json",
-    "login-homeconnect": "npx ts-node src/login-homeconnect.ts",
-    "login-miele": "npx ts-node src/login-miele.ts",
+    "login-homeconnect": "npx ts-node scripts/login-homeconnect.ts",
+    "login-miele": "npx ts-node scripts/login-miele.ts",
     "server": "npx nodemon --ignore cache/ ./dist/server.js"
   },
   "keywords": [],

@@ -174,6 +174,8 @@ async function createServer(): Promise<Express> {
         miele,
         homeConnect,
         dishwasher: hc.dishwasher,
+        washer: mieleClient.washer,
+        dryer: mieleClient.dryer,
       };
     } else if (authReq.auth.user === 'rhizome') {
       data = {
