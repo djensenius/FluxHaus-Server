@@ -151,7 +151,12 @@ export default class HomeConnect {
     };
 
     const response = await fetch(url, { headers });
-    const body = await response.json() as StatusesWrapper;
+    let body;
+    try {
+      body = await response.json() as StatusesWrapper;
+    } catch {
+      return;
+    }
 
     body.data.status.forEach((item) => {
       if (item.key === 'BSH.Common.Status.OperationState') {
@@ -169,7 +174,12 @@ export default class HomeConnect {
     }
 
     const { event, data } = msg;
-    const parsedData = JSON.parse(data);
+    let parsedData;
+    try {
+      parsedData = JSON.parse(data);
+    } catch {
+      return;
+    }
     const { items } = parsedData;
 
     switch (event) {
