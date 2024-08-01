@@ -192,11 +192,14 @@ export default class Miele {
       headers,
       onMessage(msg) {
         const event = (msg?.event || '').trim();
+        if (msg?.data.trim() === 'ping') {
+          return;
+        }
         let body;
         try {
           body = JSON.parse(msg!.data);
         } catch {
-          console.warn('Could not parse Miele body');
+          console.warn(`Could not parse Miele body ${msg!.data}`);
           return;
         }
         parseMessage(body);
