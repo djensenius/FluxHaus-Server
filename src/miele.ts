@@ -121,9 +121,9 @@ export default class Miele {
           device.state.status.value_localized !== 'Off' && device.state.status.value_localized !== 'Not Connected',
       };
 
-      if (device.ident.type.value_localized === 'Washing Machine') {
+      if (device.ident.type.value_localized === 'Washing machine') {
         this.washer = myDevice;
-      } else if (device.ident.type.value_localized === 'Clothes Dryer') {
+      } else if (device.ident.type.value_localized === 'Tumble dryer') {
         this.dryer = myDevice;
       }
     });
@@ -192,11 +192,14 @@ export default class Miele {
       headers,
       onMessage(msg) {
         const event = (msg?.event || '').trim();
+        if (msg?.data.trim() === 'ping') {
+          return;
+        }
         let body;
         try {
           body = JSON.parse(msg!.data);
         } catch {
-          console.warn('Could not parse Miele body');
+          console.warn(`Could not parse Miele body ${msg!.data}`);
           return;
         }
         parseMessage(body);
