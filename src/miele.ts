@@ -121,9 +121,9 @@ export default class Miele {
           device.state.status.value_localized !== 'Off' && device.state.status.value_localized !== 'Not Connected',
       };
 
-      if (device.ident.type.value_localized === 'Washing Machine') {
+      if (device.ident.type.value_localized === 'Washing machine') {
         this.washer = myDevice;
-      } else if (device.ident.type.value_localized === 'Clothes Dryer') {
+      } else if (device.ident.type.value_localized === 'Tumble dryer') {
         this.dryer = myDevice;
       }
     });
