@@ -108,7 +108,7 @@ export default class Miele {
   }
 
   public parseMessage(parsedData: MieleRoot): void {
-    Object.values(parsedData).forEach((device) => {
+    Object.values(parsedData).filter((dev) => dev.state).forEach((device) => {
       const myDevice: MieleDevice = {
         name: device.ident.type.value_localized,
         timeRunning: device.state.elapsedTime.length > 0
@@ -194,7 +194,7 @@ export default class Miele {
         const event = (msg?.event || '').trim();
         let body;
         try {
-          body = JSON.parse(msg!.data) as MieleRoot;
+          body = JSON.parse(msg!.data);
         } catch {
           console.warn('Could not parse Miele body');
           return;
