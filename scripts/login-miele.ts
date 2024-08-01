@@ -20,6 +20,8 @@ async function createServer(): Promise<Express> {
 createServer().then((app) => {
   app.listen(port, () => {
     miele.authorize();
+    // miele.listenEvents();
+    // miele.getActivePrograms();
     console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
   });
 });
