@@ -208,21 +208,21 @@ export default class HomeConnect {
     case 'NOTIFY':
       items.forEach((item: EventData) => {
         switch (item.key) {
-        case 'BSH.Common.Status.ProgramProgress':
+        case 'BSH.Common.Option.ProgramProgress':
           this.dishwasher.programProgress = item.value as number;
           break;
-        case 'BSH.Common.Status.SelectedProgram':
+        case 'BSH.Common.Root.SelectedProgram':
           this.dishwasher.selectedProgram = item.value as string;
           break;
-        case 'BSH.Common.Status.ActiveProgram':
+        case 'BSH.Common.Root.ActiveProgram':
           this.dishwasher.activeProgram = (item.value as string)
             .replace('Dishcare.Dishwasher.Program.', '') as DishWasherProgram;
           break;
-        case 'BSH.Common.Status.RemainingProgramTime':
+        case 'BSH.Common.Option.RemainingProgramTime':
           this.dishwasher.remainingTime = item.value as number;
           this.dishwasher.remainingTimeUnit = item.unit as 'seconds' | 'minutes' | 'hours';
           break;
-        case 'BSH.Common.Status.StartInRelative':
+        case 'BSH.Common.Option.StartInRelative':
           this.dishwasher.startInRelative = item.value as number;
           this.dishwasher.startInRelativeUnit = item.unit as 'seconds' | 'minutes' | 'hours';
           break;
