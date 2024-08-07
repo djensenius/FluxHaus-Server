@@ -157,6 +157,7 @@ async function createServer(): Promise<Express> {
 
     if (authReq.auth.user === 'admin') {
       data = {
+        timestamp: new Date(),
         mieleClientId: process.env.mieleClientId,
         mieleSecretId: process.env.mieleSecretId,
         mieleAppliances: process.env.mieleAppliances!.split(', '),
@@ -186,6 +187,7 @@ async function createServer(): Promise<Express> {
       };
     } else if (authReq.auth.user === 'demo') {
       data = {
+        timestamp: new Date(),
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
         broombot: broombot.cachedStatus,
         mopbot: mopbot.cachedStatus,
