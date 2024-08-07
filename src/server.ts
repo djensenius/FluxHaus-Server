@@ -32,6 +32,7 @@ async function createServer(): Promise<Express> {
       users: {
         admin: process.env.BASIC_AUTH_PASSWORD!,
         rhizome: process.env.RHIZOME_PASSWORD!,
+        demo: process.env.DEMO_PASSWORD!,
       },
       challenge: true,
       realm: 'fluxhaus',
@@ -156,6 +157,7 @@ async function createServer(): Promise<Express> {
 
     if (authReq.auth.user === 'admin') {
       data = {
+        timestamp: new Date(),
         mieleClientId: process.env.mieleClientId,
         mieleSecretId: process.env.mieleSecretId,
         mieleAppliances: process.env.mieleAppliances!.split(', '),
@@ -183,37 +185,67 @@ async function createServer(): Promise<Express> {
         rhizomeSchedule,
         rhizomeData,
       };
+    } else if (authReq.auth.user === 'demo') {
+      data = {
+        timestamp: new Date(),
+        favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
+        broombot: broombot.cachedStatus,
+        mopbot: mopbot.cachedStatus,
+        car: car.status,
+        carEvStatus: evStatus,
+        carOdometer: car.odometer,
+        miele,
+        homeConnect,
+        dishwasher: hc.dishwasher,
+        washer: mieleClient.washer,
+        dryer: mieleClient.dryer,
+      };
     }
     res.end(JSON.stringify(data));
   });
 
   // Route handler for turning on mopbot
-  app.get('/turnOnMopbot', cors(corsOptions), async (_req, res) => {
-    await mopbot.turnOn();
+  app.get('/turnOnMopbot', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      await mopbot.turnOn();
+    }
     res.send('Mopbot is turned on.');
   });
 
   // Route handler for turning off mopbot
-  app.get('/turnOffMopbot', cors(corsOptions), async (_req, res) => {
-    await mopbot.turnOff();
+  app.get('/turnOffMopbot', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      await mopbot.turnOff();
+    }
     res.send('Mopbot is turned off.');
   });
 
   // Route handler for turning on broombot
-  app.get('/turnOnBroombot', cors(corsOptions), async (_req, res) => {
-    await broombot.turnOn();
+  app.get('/turnOnBroombot', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      await broombot.turnOn();
+    }
     res.send('Broombot is turned on.');
   });
 
   // Route handler for turning off broombot
-  app.get('/turnOffBroombot', cors(corsOptions), async (_req, res) => {
-    await broombot.turnOff();
+  app.get('/turnOffBroombot', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      await broombot.turnOff();
+    }
     res.send('Broombot is turned off.');
   });
 
   // Route handler for starting a deep clean
-  app.get('/turnOnDeepClean', cors(corsOptions), async (_req, res) => {
-    await broombot.turnOn();
+  app.get('/turnOnDeepClean', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      await broombot.turnOn();
+    }
     cleanTimeout = setTimeout(() => {
       mopbot.turnOn();
     }, 1200000);
@@ -221,8 +253,11 @@ async function createServer(): Promise<Express> {
   });
 
   // Route handler for stopping a deep clean
-  app.get('/turnOffDeepClean', cors(corsOptions), async (_req, res) => {
-    await broombot.turnOff();
+  app.get('/turnOffDeepClean', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      await broombot.turnOff();
+    }
     if (cleanTimeout) {
       clearTimeout(cleanTimeout);
     }
@@ -230,41 +265,56 @@ async function createServer(): Promise<Express> {
     res.send('Broombot is turned off.');
   });
 
-  app.get('/startCar', cors(corsOptions), async (_req, res) => {
-    const result = car.start();
-    res.send(result);
-    setTimeout(() => {
-      car.resync();
-    }, 5000);
+  app.get('/startCar', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      const result = car.start();
+      res.send(result);
+      setTimeout(() => {
+        car.resync();
+      }, 5000);
+    }
   });
 
-  app.get('/stopCar', cors(corsOptions), async (_req, res) => {
-    const result = car.stop();
-    res.send(JSON.stringify({ result }));
-    setTimeout(() => {
-      car.resync();
-    }, 5000);
+  app.get('/stopCar', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      const result = car.stop();
+      res.send(JSON.stringify({ result }));
+      setTimeout(() => {
+        car.resync();
+      }, 5000);
+    }
   });
 
-  app.get('/resyncCar', cors(corsOptions), async (_req, res) => {
-    car.resync();
+  app.get('/resyncCar', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      car.resync();
+    }
     res.send('Resyncing car');
   });
 
-  app.get('/lockCar', cors(corsOptions), async (_req, res) => {
-    const result = car.lock();
-    res.send(JSON.stringify({ result }));
-    setTimeout(() => {
-      car.resync();
-    }, 5000);
+  app.get('/lockCar', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      const result = car.lock();
+      res.send(JSON.stringify({ result }));
+      setTimeout(() => {
+        car.resync();
+      }, 5000);
+    }
   });
 
-  app.get('/unlockCar', cors(corsOptions), async (_req, res) => {
-    const result = car.unlock();
-    res.send(result);
-    setTimeout(() => {
-      car.resync();
-    }, 5000);
+  app.get('/unlockCar', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user === 'admin') {
+      const result = car.unlock();
+      res.send(result);
+      setTimeout(() => {
+        car.resync();
+      }, 5000);
+    }
   });
 
   app.use(notFoundHandler);
