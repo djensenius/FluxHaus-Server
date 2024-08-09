@@ -154,18 +154,17 @@ export default class HomeConnect {
     let body;
     try {
       body = await response.json() as StatusesWrapper;
+      body.data.status.forEach((item) => {
+        if (item.key === 'BSH.Common.Status.OperationState') {
+          this.dishwasher.operationState = (item.value as string)
+            .replace('BSH.Common.EnumType.OperationState.', '') as OperationState;
+        } else if (item.key === 'BSH.Common.Status.DoorState') {
+          this.dishwasher.doorState = item.value === 'BSH.Common.EnumType.DoorState.Open' ? 'Open' : 'Closed';
+        }
+      });
     } catch {
-      return;
+      console.warn('Homeconnect: Could not parse body');
     }
-
-    body.data.status.forEach((item) => {
-      if (item.key === 'BSH.Common.Status.OperationState') {
-        this.dishwasher.operationState = (item.value as string)
-          .replace('BSH.Common.EnumType.OperationState.', '') as OperationState;
-      } else if (item.key === 'BSH.Common.Status.DoorState') {
-        this.dishwasher.doorState = item.value === 'BSH.Common.EnumType.DoorState.Open' ? 'Open' : 'Closed';
-      }
-    });
   }
 
   public parseMessage(msg: ServerSentEvent | null): void {
@@ -177,62 +176,62 @@ export default class HomeConnect {
     let parsedData;
     try {
       parsedData = JSON.parse(data);
-    } catch {
-      return;
-    }
-    const { items } = parsedData;
+      const { items } = parsedData;
 
-    switch (event) {
-    case 'EVENT':
-      items.forEach((item: EventData) => {
-        if (item.key === 'BSH.Common.Event.ProgramFinished') {
-          this.dishwasher = {
-            operationState: 'Inactive',
-            doorState: 'Closed',
-          };
-        } else if (item.key === 'BSH.Common.Event.ProgramAborted') {
-          this.dishwasher.status = 'Aborted';
-        }
-      });
-      break;
-    case 'STATUS':
-      items.forEach((item: EventData) => {
-        if (item.key === 'BSH.Common.Status.OperationState') {
-          this.dishwasher.operationState = (item.value as string)
-            .replace('BSH.Common.EnumType.OperationState.', '') as OperationState;
-        } else if (item.key === 'BSH.Common.Status.DoorState') {
-          this.dishwasher.doorState = item.value === 'BSH.Common.EnumType.DoorState.Open' ? 'Open' : 'Closed';
-        }
-      });
-      break;
-    case 'NOTIFY':
-      items.forEach((item: EventData) => {
-        switch (item.key) {
-        case 'BSH.Common.Option.ProgramProgress':
-          this.dishwasher.programProgress = item.value as number;
-          break;
-        case 'BSH.Common.Root.SelectedProgram':
-          this.dishwasher.selectedProgram = item.value as string;
-          break;
-        case 'BSH.Common.Root.ActiveProgram':
-          this.dishwasher.activeProgram = (item.value as string)
-            .replace('Dishcare.Dishwasher.Program.', '') as DishWasherProgram;
-          break;
-        case 'BSH.Common.Option.RemainingProgramTime':
-          this.dishwasher.remainingTime = item.value as number;
-          this.dishwasher.remainingTimeUnit = item.unit as 'seconds' | 'minutes' | 'hours';
-          break;
-        case 'BSH.Common.Option.StartInRelative':
-          this.dishwasher.startInRelative = item.value as number;
-          this.dishwasher.startInRelativeUnit = item.unit as 'seconds' | 'minutes' | 'hours';
-          break;
-        default:
-          break;
-        }
-      });
-      break;
-    default:
-      break;
+      switch (event) {
+      case 'EVENT':
+        items.forEach((item: EventData) => {
+          if (item.key === 'BSH.Common.Event.ProgramFinished') {
+            this.dishwasher = {
+              operationState: 'Inactive',
+              doorState: 'Closed',
+            };
+          } else if (item.key === 'BSH.Common.Event.ProgramAborted') {
+            this.dishwasher.status = 'Aborted';
+          }
+        });
+        break;
+      case 'STATUS':
+        items.forEach((item: EventData) => {
+          if (item.key === 'BSH.Common.Status.OperationState') {
+            this.dishwasher.operationState = (item.value as string)
+              .replace('BSH.Common.EnumType.OperationState.', '') as OperationState;
+          } else if (item.key === 'BSH.Common.Status.DoorState') {
+            this.dishwasher.doorState = item.value === 'BSH.Common.EnumType.DoorState.Open' ? 'Open' : 'Closed';
+          }
+        });
+        break;
+      case 'NOTIFY':
+        items.forEach((item: EventData) => {
+          switch (item.key) {
+          case 'BSH.Common.Option.ProgramProgress':
+            this.dishwasher.programProgress = item.value as number;
+            break;
+          case 'BSH.Common.Root.SelectedProgram':
+            this.dishwasher.selectedProgram = item.value as string;
+            break;
+          case 'BSH.Common.Root.ActiveProgram':
+            this.dishwasher.activeProgram = (item.value as string)
+              .replace('Dishcare.Dishwasher.Program.', '') as DishWasherProgram;
+            break;
+          case 'BSH.Common.Option.RemainingProgramTime':
+            this.dishwasher.remainingTime = item.value as number;
+            this.dishwasher.remainingTimeUnit = item.unit as 'seconds' | 'minutes' | 'hours';
+            break;
+          case 'BSH.Common.Option.StartInRelative':
+            this.dishwasher.startInRelative = item.value as number;
+            this.dishwasher.startInRelativeUnit = item.unit as 'seconds' | 'minutes' | 'hours';
+            break;
+          default:
+            break;
+          }
+        });
+        break;
+      default:
+        break;
+      }
+    } catch {
+      console.warn('HomeConnect: Could not parse body');
     }
   }
 
