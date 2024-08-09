@@ -198,17 +198,16 @@ export default class Miele {
         let body;
         try {
           body = JSON.parse(msg!.data);
+          parseMessage(body);
+          if (event === 'devices') {
+            clearError('Miele');
+            fs.writeFileSync(
+              'cache/miele.json',
+              JSON.stringify(JSON.parse(msg!.data), null, 2),
+            );
+          }
         } catch {
           console.warn(`Could not parse Miele body ${msg!.data}`);
-          return;
-        }
-        parseMessage(body);
-        if (event === 'devices') {
-          clearError('Miele');
-          fs.writeFileSync(
-            'cache/miele.json',
-            JSON.stringify(JSON.parse(msg!.data), null, 2),
-          );
         }
       },
       onOpen() {
