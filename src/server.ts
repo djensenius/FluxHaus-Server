@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
+import apn from '@parse/node-apn';
 import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
 import Car, { CarConfig } from './car';
@@ -15,6 +16,16 @@ const port = process.env.PORT || 8080;
 
 async function createServer(): Promise<Express> {
   const app: Express = express();
+  // Setup apns stuff
+
+  const apnProvider = new apn.Provider({
+    token: {
+      key: 'AuthKey.p8',
+      keyId: process.env.APNS_KEY_ID!,
+      teamId: process.env.APNS_TEAM_ID!,
+    },
+    production: false,
+  });
 
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
@@ -99,7 +110,7 @@ async function createServer(): Promise<Express> {
   const cameraURL = process.env.CAMERA_URL || '';
   const clientId = process.env.mieleClientId || '';
   const secretId = process.env.mieleSecretId || '';
-  const mieleClient = new Miele(clientId, secretId);
+  const mieleClient = new Miele(clientId, secretId, apnProvider);
   mieleClient.getActivePrograms();
   mieleClient.listenEvents();
   setInterval(() => {

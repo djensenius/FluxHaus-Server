@@ -1,4 +1,5 @@
 import fs from 'fs';
+import apn from '@parse/node-apn';
 import 'dotenv/config';
 import { fetchEventData } from 'fetch-sse';
 import { clearError, writeError } from './errors';
@@ -18,9 +19,12 @@ export default class Miele {
 
   private MIELE_TOKEN: string;
 
-  constructor(clientId: string, clientSecret: string) {
+  private apnProvider: apn.Provider;
+
+  constructor(clientId: string, clientSecret: string, apnProvider: apn.Provider) {
     this.clientId = clientId;
     this.clientSecret = clientSecret;
+    this.apnProvider = apnProvider;
     this.redirectUri = 'https://fluxhaus.io/auth/miele/callback';
     this.MIELE_TOKEN = '';
     this.washer = {
@@ -107,6 +111,37 @@ export default class Miele {
     }
   }
 
+  public newParseMessage(parsedData: MieleRoot): void {
+    Object.values(parsedData).filter((dev) => dev.state).forEach((device) => {
+      const myDevice: MieleDevice = {
+        name: device.ident.type.value_localized,
+        timeRunning: device.state.elapsedTime.length > 0
+          ? (device.state.elapsedTime[0] * 60) + device.state.elapsedTime[1] : 0,
+        timeRemaining: (device.state.remainingTime[0] * 60) + device.state.remainingTime[1],
+        step: device.state.programPhase.value_localized,
+        programName: device.state.ProgramID.value_localized,
+        status: device.state.status.value_localized,
+        inUse: device.state.status.value_localized !== 'Off' && device.state.status.value_localized !== 'Not Connected',
+      };
+
+      // Send push notification
+      const notification = new apn.Notification();
+      notification.topic = 'org.davidjensenius.FluxHaus';
+      notification.alert = `${myDevice.name} is now ${myDevice.status}`;
+      notification.payload = { device: myDevice };
+
+      this.apnProvider.send(notification, 'user-device-token').then((_result) => {
+        // console.log(result);
+      });
+
+      if (device.ident.type.value_localized === 'Washing machine') {
+        this.washer = myDevice;
+      } else if (device.ident.type.value_localized === 'Tumble dryer') {
+        this.dryer = myDevice;
+      }
+    });
+  }
+
   public parseMessage(parsedData: MieleRoot): void {
     Object.values(parsedData).filter((dev) => dev.state).forEach((device) => {
       const myDevice: MieleDevice = {
@@ -156,7 +191,7 @@ export default class Miele {
 
     const response = await fetch(url, { method: 'GET', headers });
     const body = await response.json();
-    this.parseMessage(body);
+    this.newParseMessage(body);
     fs.writeFileSync(
       'cache/miele.json',
       JSON.stringify(body, null, 2),
@@ -181,7 +216,7 @@ export default class Miele {
     }
 
     this.MIELE_TOKEN = tokenInfo.access_token;
-    const parseMessage = this.parseMessage.bind(this);
+    const parseMessage = this.newParseMessage.bind(this);
     const url = 'https://api.mcs3.miele.com/v1/devices/all/events';
     const headers = {
       'Accept-Language': 'en-CA',
