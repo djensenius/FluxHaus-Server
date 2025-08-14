@@ -323,27 +323,22 @@ async function createServer(): Promise<Express> {
 }
 
 const fetchSchedule = () => {
-  const startDate = new Date();
-  const endDate = new Date();
-  endDate.setFullYear(endDate.getFullYear() + 1);
-
-  fetch(`https://us-central1-com-dogtopia-app.cloudfunctions.net/executive/appointments/daycare/${process.env.DOGTOPIA_SCHEDULE_CODE}?startDate=${startDate.getTime()}&endDate=${endDate.getTime()}`, {
+  fetch(process.env.MODERN_DOG_URL || '', {
     method: 'GET',
     headers: {
-      'Content-Type': 'application/json',
-      'Sec-Fetch-Site': 'cross-site',
+      Accept: 'application/json, text/plain, */*',
+      Authorization: `bearer ${process.env.MODERN_DOG_TOKEN}`,
+      'Sec-Fetch-Site': 'same-origin',
       'Accept-Language': 'en-CA,en-US;q=0.9,en;q=0.8',
       'Accept-Encoding': 'gzip, deflate, br',
       'Sec-Fetch-Mode': 'cors',
-      Host: 'us-central1-com-dogtopia-app.cloudfunctions.net',
-      Origin: 'https://www.dogtopia.com',
       // eslint-disable-next-line max-len
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
-      Referer: 'https://www.dogtopia.com/',
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15',
+      Referer: 'https://moddogkitchener.portal.gingrapp.com/',
       Connection: 'keep-alive',
+      Cookie: process.env.MODERN_DOG_COOKIE || '',
       'Sec-Fetch-Dest': 'empty',
       Priority: 'u=3, i',
-      Authorization: `Bearer ${process.env.DOGTOPIA_TOKEN}`,
     },
   }).then((response) => response.json())
     .then((json) => {
