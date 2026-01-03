@@ -279,4 +279,94 @@ describe('HomeAssistantRobot', () => {
     expect(testRobot.cachedStatus.docked).toBe(true);
     expect(HomeAssistantRobot.dockedStatus(testRobot.cachedStatus)).toBe('CONTACT_DETECTED');
   });
+
+  it('should handle undefined bin_full attribute', async () => {
+    mockClient.getState.mockResolvedValue({
+      state: 'docked',
+      attributes: {
+        battery_level: 100,
+        // bin_full is missing
+      },
+    });
+
+    robot = new HomeAssistantRobot({
+      name: 'Test Robot',
+      entityId,
+      client: mockClient,
+    });
+
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+
+    expect(robot.cachedStatus.binFull).toBeUndefined();
+    expect(HomeAssistantRobot.binStatus(robot.cachedStatus)).toBeUndefined();
+  });
+
+  it('should calculate timeStarted from cleaning_time attribute', async () => {
+    const cleaningTime = 60; // 1 minute
+    mockClient.getState.mockResolvedValue({
+      state: 'cleaning',
+      attributes: {
+        battery_level: 80,
+        cleaning_time: cleaningTime,
+      },
+    });
+
+    robot = new HomeAssistantRobot({
+      name: 'Test Robot',
+      entityId,
+      client: mockClient,
+    });
+
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+
+    expect(robot.cachedStatus.running).toBe(true);
+    expect(robot.cachedStatus.timeStarted).toBeDefined();
+    expect(robot.cachedStatus.timeStarted?.getTime()).toBe(now - cleaningTime * 1000);
+
+    jest.restoreAllMocks();
+  });
+
+  it('should set timeStarted when starting to run if cleaning_time is missing', async () => {
+    // Start as docked
+    mockClient.getState.mockResolvedValueOnce({
+      state: 'docked',
+      attributes: { battery_level: 100 },
+    });
+
+    robot = new HomeAssistantRobot({
+      name: 'Test Robot',
+      entityId,
+      client: mockClient,
+    });
+
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    expect(robot.cachedStatus.running).toBe(false);
+    expect(robot.cachedStatus.timeStarted).toBeUndefined();
+
+    // Transition to cleaning
+    mockClient.getState.mockResolvedValueOnce({
+      state: 'cleaning',
+      attributes: { battery_level: 99 },
+    });
+
+    const now = Date.now();
+    jest.spyOn(Date, 'now').mockReturnValue(now);
+
+    // Trigger poll manually or wait for interval (but we mocked timers in other tests,
+    // here we rely on manual poll or just calling updateStatus logic via poll)
+    // Since we can't easily trigger the interval without fake timers which might conflict
+    // with other tests if not careful,
+    // let's just call poll manually via casting.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (robot as any).poll();
+
+    expect(robot.cachedStatus.running).toBe(true);
+    expect(robot.cachedStatus.timeStarted).toBeDefined();
+    expect(robot.cachedStatus.timeStarted?.getTime()).toBe(now);
+
+    jest.restoreAllMocks();
+  });
 });

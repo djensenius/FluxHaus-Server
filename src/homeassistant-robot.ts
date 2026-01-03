@@ -92,7 +92,21 @@ export default class HomeAssistantRobot {
 
     // Some vacuums expose bin_full attribute, others don't.
     // eslint-disable-next-line camelcase
-    const binFull = attributes.bin_full || false;
+    const binFull = attributes.bin_full;
+
+    // Try to determine start time
+    // eslint-disable-next-line camelcase
+    const cleaningTime = attributes.cleaning_time; // seconds
+    let { timeStarted } = this.cachedStatus;
+
+    if (running) {
+      if (cleaningTime !== undefined) {
+        timeStarted = new Date(Date.now() - cleaningTime * 1000);
+      } else if (!this.cachedStatus.running) {
+        // Just started running and no cleaning_time available
+        timeStarted = new Date();
+      }
+    }
 
     this.cachedStatus = {
       timestamp: new Date(),
@@ -103,6 +117,7 @@ export default class HomeAssistantRobot {
       charging,
       batteryLevel,
       binFull,
+      timeStarted,
     };
   }
 
