@@ -31,7 +31,9 @@ const UUIDS = {
 
 export default class HomebridgeRobot {
   public cachedStatus: Status = EMPTY_STATUS;
+
   private config: HomebridgeRobotConfig;
+
   private pollInterval: NodeJS.Timeout | null = null;
 
   constructor(config: HomebridgeRobotConfig) {
@@ -39,8 +41,10 @@ export default class HomebridgeRobot {
     this.startPolling();
   }
 
+  // eslint-disable-next-line class-methods-use-this
   public identify() {
     // Not implemented for Homebridge
+    console.warn('Identify not implemented for Homebridge robot');
   }
 
   public isActive(): boolean {
@@ -62,35 +66,41 @@ export default class HomebridgeRobot {
     }
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private updateStatus(accessory: any) {
     const services = accessory.serviceCharacteristics || [];
-    
+
     let running = false;
     let batteryLevel = 0;
     let charging = false;
     let binFull = false;
 
-    for (const service of services) {
-        const onChar = service.characteristics.find((c: any) => c.type === UUIDS.On);
-        if (onChar) {
-            running = onChar.value;
-        }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    services.forEach((service: any) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const onChar = service.characteristics.find((c: any) => c.type === UUIDS.On);
+      if (onChar) {
+        running = onChar.value;
+      }
 
-        const batteryChar = service.characteristics.find((c: any) => c.type === UUIDS.BatteryLevel);
-        if (batteryChar) {
-            batteryLevel = batteryChar.value;
-        }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const batteryChar = service.characteristics.find((c: any) => c.type === UUIDS.BatteryLevel);
+      if (batteryChar) {
+        batteryLevel = batteryChar.value;
+      }
 
-        const chargingChar = service.characteristics.find((c: any) => c.type === UUIDS.ChargingState);
-        if (chargingChar) {
-            charging = chargingChar.value === 1;
-        }
-        
-        const filterChar = service.characteristics.find((c: any) => c.type === UUIDS.FilterChangeIndication);
-        if (filterChar) {
-            binFull = filterChar.value === 1;
-        }
-    }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const chargingChar = service.characteristics.find((c: any) => c.type === UUIDS.ChargingState);
+      if (chargingChar) {
+        charging = chargingChar.value === 1;
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const filterChar = service.characteristics.find((c: any) => c.type === UUIDS.FilterChangeIndication);
+      if (filterChar) {
+        binFull = filterChar.value === 1;
+      }
+    });
 
     this.cachedStatus = {
       timestamp: new Date(),
@@ -98,7 +108,7 @@ export default class HomebridgeRobot {
       batteryLevel,
       charging,
       binFull,
-      docking: false, 
+      docking: false,
       paused: false,
     };
   }

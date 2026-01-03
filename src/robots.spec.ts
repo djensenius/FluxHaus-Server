@@ -1,21 +1,19 @@
-import Robot, { AccessoryConfig } from './robots';
 import dorita980 from 'dorita980';
+import Robot, { AccessoryConfig } from './robots';
 
 // Mock dorita980
-jest.mock('dorita980', () => {
-  return {
-    Local: jest.fn().mockImplementation(() => ({
-      on: jest.fn(),
-      off: jest.fn(),
-      end: jest.fn(),
-      getRobotState: jest.fn(),
-      clean: jest.fn(),
-      pause: jest.fn(),
-      resume: jest.fn(),
-      dock: jest.fn(),
-    })),
-  };
-});
+jest.mock('dorita980', () => ({
+  Local: jest.fn().mockImplementation(() => ({
+    on: jest.fn(),
+    off: jest.fn(),
+    end: jest.fn(),
+    getRobotState: jest.fn(),
+    clean: jest.fn(),
+    pause: jest.fn(),
+    resume: jest.fn(),
+    dock: jest.fn(),
+  })),
+}));
 
 describe('Robot (Direct Connection)', () => {
   const mockConfig: AccessoryConfig = {
@@ -49,23 +47,24 @@ describe('Robot (Direct Connection)', () => {
 
   it('should attempt to connect when refreshing state', () => {
     robot = new Robot(mockConfig);
-    
+
     // Trigger a refresh (private method, but called via startPolling -> checkStatus)
     // We can simulate this by advancing timers as startPolling is called in constructor
     jest.advanceTimersByTime(1000);
 
-    // Since we can't easily spy on the private connect method or the internal roomba instance 
-    // without more complex mocking or exposing internals, we'll verify the side effects 
+    // Since we can't easily spy on the private connect method or the internal roomba instance
+    // without more complex mocking or exposing internals, we'll verify the side effects
     // or public methods if possible.
-    
+
     // However, the Robot class is quite complex and encapsulates the connection logic deeply.
     // A better approach for this specific class might be to test the public methods like turnOn/turnOff
   });
 
   it('should turn on the robot', async () => {
     robot = new Robot(mockConfig);
-    
+
     // Mock the connect method to yield a mock roomba
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const mockRoomba = {
       clean: jest.fn().mockResolvedValue(undefined),
       resume: jest.fn().mockResolvedValue(undefined),
@@ -76,35 +75,35 @@ describe('Robot (Direct Connection)', () => {
 
     // We need to intercept the private connect method or mock the Local constructor to return our mock
     // The current mock at the top does this for new instances.
-    
+
     // Let's refine the mock to be usable
     const MockLocal = dorita980.Local as unknown as jest.Mock;
-    MockLocal.mockImplementation((blid, pwd, ip) => {
-        // Simulate connection success
-        const instance = {
-            on: jest.fn((event, cb) => {
-                if (event === 'connect') {
-                    cb();
-                }
-            }),
-            off: jest.fn(),
-            end: jest.fn(),
-            clean: jest.fn().mockResolvedValue(undefined),
-            resume: jest.fn().mockResolvedValue(undefined),
-        };
-        return instance;
+    MockLocal.mockImplementation((_blid, _pwd, _ip) => {
+      // Simulate connection success
+      const instance = {
+        on: jest.fn((event, cb) => {
+          if (event === 'connect') {
+            cb();
+          }
+        }),
+        off: jest.fn(),
+        end: jest.fn(),
+        clean: jest.fn().mockResolvedValue(undefined),
+        resume: jest.fn().mockResolvedValue(undefined),
+      };
+      return instance;
     });
 
     await robot.turnOn();
-    
+
     // We can't easily assert on the internal instance without capturing it from the mock constructor
     // But we can assert that the constructor was called
     expect(dorita980.Local).toHaveBeenCalledWith(
-        mockConfig.blid, 
-        mockConfig.robotpwd, 
-        mockConfig.ipaddress, 
-        expect.any(Number), 
-        expect.any(Object)
+      mockConfig.blid,
+      mockConfig.robotpwd,
+      mockConfig.ipaddress,
+      expect.any(Number),
+      expect.any(Object),
     );
   });
 
@@ -114,10 +113,11 @@ describe('Robot (Direct Connection)', () => {
       bin: { full: false },
       cleanMissionStatus: {
         phase: 'run',
-        cycle: 'clean'
-      }
+        cycle: 'clean',
+      },
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const status = Robot.parseState(state as any);
 
     expect(status.batteryLevel).toBe(88);
@@ -133,10 +133,11 @@ describe('Robot (Direct Connection)', () => {
       bin: { full: false },
       cleanMissionStatus: {
         phase: 'charge',
-        cycle: 'none'
-      }
+        cycle: 'none',
+      },
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const status = Robot.parseState(state as any);
 
     expect(status.running).toBe(false);
@@ -149,10 +150,11 @@ describe('Robot (Direct Connection)', () => {
       bin: { full: false },
       cleanMissionStatus: {
         phase: 'hmUsrDock',
-        cycle: 'none'
-      }
+        cycle: 'none',
+      },
     };
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const status = Robot.parseState(state as any);
 
     expect(status.docking).toBe(true);

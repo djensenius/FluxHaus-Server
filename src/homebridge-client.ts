@@ -1,5 +1,3 @@
-import fs from 'fs';
-
 export interface HomebridgeConfig {
   url: string;
   username?: string;
@@ -9,6 +7,7 @@ export interface HomebridgeConfig {
 
 export class HomebridgeClient {
   private token: string | null = null;
+
   private config: HomebridgeConfig;
 
   constructor(config: HomebridgeConfig) {
@@ -38,10 +37,12 @@ export class HomebridgeClient {
       throw new Error(`Failed to login to Homebridge: ${response.statusText}`);
     }
 
-    const data = await response.json();
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const data: any = await response.json();
     this.token = data.access_token;
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async request(path: string, options: RequestInit = {}): Promise<any> {
     if (!this.token) {
       await this.login();
@@ -77,14 +78,17 @@ export class HomebridgeClient {
     return response.json();
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public async getAccessories(): Promise<any[]> {
     return this.request('/api/accessories');
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public async getAccessory(uniqueId: string): Promise<any> {
     return this.request(`/api/accessories/${uniqueId}`);
   }
 
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public async setCharacteristic(uniqueId: string, characteristicType: string, value: any): Promise<void> {
     await this.request(`/api/accessories/${uniqueId}`, {
       method: 'PUT',

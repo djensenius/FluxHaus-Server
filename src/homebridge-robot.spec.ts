@@ -19,10 +19,10 @@ describe('HomebridgeRobot', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     // Don't use fake timers globally, only where needed
-    
+
     mockClient = new HomebridgeClient({ url: 'http://test' }) as jest.Mocked<HomebridgeClient>;
     mockClient.getAccessory = jest.fn().mockResolvedValue({
-      serviceCharacteristics: []
+      serviceCharacteristics: [],
     });
     mockClient.setCharacteristic = jest.fn().mockResolvedValue(undefined);
   });
@@ -53,9 +53,9 @@ describe('HomebridgeRobot', () => {
             { type: UUIDS.BatteryLevel, value: 85 },
             { type: UUIDS.ChargingState, value: 1 }, // Charging
             { type: UUIDS.FilterChangeIndication, value: 1 }, // Bin full
-          ]
-        }
-      ]
+          ],
+        },
+      ],
     };
 
     mockClient.getAccessory.mockResolvedValue(mockAccessory);
@@ -68,7 +68,7 @@ describe('HomebridgeRobot', () => {
 
     // Wait for the async poll to complete
     // We can wait for the microtask queue to drain
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 
     expect(robot.cachedStatus.running).toBe(true);
     expect(robot.cachedStatus.batteryLevel).toBe(85);
@@ -83,9 +83,9 @@ describe('HomebridgeRobot', () => {
           characteristics: [
             // Only battery provided
             { type: UUIDS.BatteryLevel, value: 50 },
-          ]
-        }
-      ]
+          ],
+        },
+      ],
     };
 
     mockClient.getAccessory.mockResolvedValue(mockAccessory);
@@ -96,7 +96,7 @@ describe('HomebridgeRobot', () => {
       client: mockClient,
     });
 
-    await new Promise(resolve => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 
     expect(robot.cachedStatus.batteryLevel).toBe(50);
     expect(robot.cachedStatus.running).toBe(false); // Default
@@ -132,7 +132,7 @@ describe('HomebridgeRobot', () => {
 
   it('should poll periodically', () => {
     jest.useFakeTimers();
-    
+
     robot = new HomebridgeRobot({
       name: 'Test Robot',
       uniqueId,
