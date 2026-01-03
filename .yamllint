@@ -1,0 +1,19 @@
+---
+extends: default
+
+ignore: |
+  node_modules/
+  .github/FUNDING.yml
+  .github/workflows/codeql.yml
+
+rules:
+  line-length:
+    max: 120
+    level: warning
+  document-start:
+    level: warning
+  truthy:
+    level: warning
+  brackets:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
