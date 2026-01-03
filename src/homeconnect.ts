@@ -163,7 +163,7 @@ export default class HomeConnect {
         }
       });
     } catch {
-      console.warn('Homeconnect: Could not parse body');
+      // console.warn('Homeconnect: Could not parse body');
     }
   }
 
@@ -231,7 +231,7 @@ export default class HomeConnect {
         break;
       }
     } catch {
-      console.warn('HomeConnect: Could not parse body');
+      // console.warn('HomeConnect: Could not parse body');
     }
   }
 
