@@ -1,0 +1,9 @@
+services:
+  fluxhaus-server:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./cache:/app/cache
+      - .env:/app/.env
+    restart: unless-stopped
