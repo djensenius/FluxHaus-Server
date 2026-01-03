@@ -59,26 +59,36 @@ export async function createServer(): Promise<Express> {
   };
 
   const homeAssistantClient = new HomeAssistantClient({
-    url: process.env.HOMEASSISTANT_URL || 'http://homeassistant.local:8123',
-    token: process.env.HOMEASSISTANT_TOKEN || '',
+    url: (process.env.HOMEASSISTANT_URL || 'http://homeassistant.local:8123').trim(),
+    token: (process.env.HOMEASSISTANT_TOKEN || '').trim(),
   });
 
   let broombot: Robot | HomeAssistantRobot;
   let mopbot: Robot | HomeAssistantRobot;
 
-  if (process.env.ROBOT_CONNECTION_TYPE === 'homeassistant') {
+  const connectionType = (process.env.ROBOT_CONNECTION_TYPE || '').trim();
+  // eslint-disable-next-line no-console
+  console.log(`🤖 Robot connection type: '${connectionType}'`);
+
+  if (connectionType === 'homeassistant') {
+    // eslint-disable-next-line no-console
+    console.log('Using Home Assistant for robots');
     broombot = new HomeAssistantRobot({
       name: 'Broombot',
-      entityId: process.env.BROOMBOT_ENTITY_ID || '',
+      entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
+      batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
       client: homeAssistantClient,
     });
 
     mopbot = new HomeAssistantRobot({
       name: 'Mopbot',
-      entityId: process.env.MOPBOT_ENTITY_ID || '',
+      entityId: (process.env.MOPBOT_ENTITY_ID || 'vacuum.mopbot').trim(),
+      batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
       client: homeAssistantClient,
     });
   } else {
+    // eslint-disable-next-line no-console
+    console.log('Using direct connection for robots');
     const broombotConfig: AccessoryConfig = {
       name: 'Broombot',
       model: process.env.broombotModel!,
@@ -180,7 +190,8 @@ export async function createServer(): Promise<Express> {
     let data = {};
 
     if (authReq.auth.user === 'admin') {
-      const RobotClass = process.env.ROBOT_CONNECTION_TYPE === 'homeassistant' ? HomeAssistantRobot : Robot;
+      const connType = (process.env.ROBOT_CONNECTION_TYPE || '').trim();
+      const RobotClass = connType === 'homeassistant' ? HomeAssistantRobot : Robot;
       data = {
         timestamp: new Date(),
         mieleClientId: process.env.mieleClientId,
@@ -227,7 +238,8 @@ export async function createServer(): Promise<Express> {
         rhizomeData,
       };
     } else if (authReq.auth.user === 'demo') {
-      const RobotClass = process.env.ROBOT_CONNECTION_TYPE === 'homeassistant' ? HomeAssistantRobot : Robot;
+      const connType = (process.env.ROBOT_CONNECTION_TYPE || '').trim();
+      const RobotClass = connType === 'homeassistant' ? HomeAssistantRobot : Robot;
       data = {
         timestamp: new Date(),
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),

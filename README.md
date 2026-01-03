@@ -88,6 +88,18 @@ You can choose between two connection methods for your robots:
 4.  Click **Create Token**.
 5.  Copy the token to `HOMEASSISTANT_TOKEN` in your `.env`.
 
+### Environment Variables
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `ROBOT_CONNECTION_TYPE` | `direct` or `homeassistant` | `direct` |
+| `HOMEASSISTANT_URL` | URL of your Home Assistant instance | `http://homeassistant.local:8123` |
+| `HOMEASSISTANT_TOKEN` | Long-Lived Access Token | |
+| `BROOMBOT_ENTITY_ID` | Entity ID for Broombot | `vacuum.broombot` |
+| `BROOMBOT_BATTERY_ENTITY_ID` | Entity ID for Broombot battery | `sensor.broombot_battery` |
+| `MOPBOT_ENTITY_ID` | Entity ID for Mopbot | `vacuum.mopbot` |
+| `MOPBOT_BATTERY_ENTITY_ID` | Entity ID for Mopbot battery | `sensor.mopbot_battery` |
+
 ## Development
 
 *   **Run tests**: `npm test`

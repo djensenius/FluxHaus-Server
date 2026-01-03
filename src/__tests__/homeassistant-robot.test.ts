@@ -65,6 +65,38 @@ describe('HomeAssistantRobot', () => {
     expect(robot.cachedStatus.docking).toBe(false);
   });
 
+  it('should use battery entity if provided', async () => {
+    const batteryEntityId = 'sensor.test_battery';
+    mockClient.getState.mockImplementation((id) => {
+      if (id === entityId) {
+        return Promise.resolve({
+          state: 'docked',
+          attributes: { bin_full: false },
+        });
+      }
+      if (id === batteryEntityId) {
+        return Promise.resolve({
+          state: '75',
+          attributes: {},
+        });
+      }
+      return Promise.reject(new Error('Unknown entity'));
+    });
+
+    robot = new HomeAssistantRobot({
+      name: 'Test Robot',
+      entityId,
+      batteryEntityId,
+      client: mockClient,
+    });
+
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+
+    expect(mockClient.getState).toHaveBeenCalledWith(entityId);
+    expect(mockClient.getState).toHaveBeenCalledWith(batteryEntityId);
+    expect(robot.cachedStatus.batteryLevel).toBe(75);
+  });
+
   it('should handle charging state', async () => {
     mockClient.getState.mockResolvedValue({
       state: 'docked',
@@ -82,7 +114,30 @@ describe('HomeAssistantRobot', () => {
     await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 
     expect(robot.cachedStatus.charging).toBe(true);
+    expect(robot.cachedStatus.docked).toBe(true);
     expect(robot.cachedStatus.running).toBe(false);
+    expect(HomeAssistantRobot.dockedStatus(robot.cachedStatus)).toBe('CONTACT_DETECTED');
+  });
+
+  it('should handle docked but full battery (not charging)', async () => {
+    mockClient.getState.mockResolvedValue({
+      state: 'docked',
+      attributes: {
+        battery_level: 100,
+      },
+    });
+
+    robot = new HomeAssistantRobot({
+      name: 'Test Robot',
+      entityId,
+      client: mockClient,
+    });
+
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+
+    expect(robot.cachedStatus.charging).toBe(false);
+    expect(robot.cachedStatus.docked).toBe(true);
+    expect(HomeAssistantRobot.dockedStatus(robot.cachedStatus)).toBe('CONTACT_DETECTED');
   });
 
   it('should turn on the robot', async () => {
@@ -198,5 +253,30 @@ describe('HomeAssistantRobot', () => {
     robot.cachedStatus.running = false;
     robot.cachedStatus.docking = true;
     expect(robot.isActive()).toBe(true);
+  });
+
+  it('should report docked status correctly when battery entity is missing', async () => {
+    const testRobot = new HomeAssistantRobot({
+      name: 'TestRobot',
+      entityId: 'vacuum.test',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      client: mockClient as any,
+    });
+
+    const mockState = {
+      state: 'docked',
+      attributes: {
+        battery_level: undefined,
+      },
+    };
+
+    (mockClient.getState as jest.Mock).mockResolvedValue(mockState);
+
+    // Trigger poll
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (testRobot as any).poll();
+
+    expect(testRobot.cachedStatus.docked).toBe(true);
+    expect(HomeAssistantRobot.dockedStatus(testRobot.cachedStatus)).toBe('CONTACT_DETECTED');
   });
 });
