@@ -81,6 +81,9 @@ export default class HomeAssistantRobot {
     const paused = status === 'paused';
 
     let batteryLevel = attributes.battery_level;
+    if (batteryLevel === undefined) {
+      batteryLevel = attributes.battery;
+    }
     if (batteryState && batteryState.state && !Number.isNaN(parseFloat(batteryState.state))) {
       batteryLevel = parseFloat(batteryState.state);
     }
