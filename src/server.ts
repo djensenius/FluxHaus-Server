@@ -6,7 +6,6 @@ import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
-import Robot, { AccessoryConfig } from './robots';
 import HomeAssistantRobot from './homeassistant-robot';
 import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig } from './car';
@@ -63,60 +62,21 @@ export async function createServer(): Promise<Express> {
     token: (process.env.HOMEASSISTANT_TOKEN || '').trim(),
   });
 
-  let broombot: Robot | HomeAssistantRobot;
-  let mopbot: Robot | HomeAssistantRobot;
-
-  const connectionType = (process.env.ROBOT_CONNECTION_TYPE || '').trim();
   // eslint-disable-next-line no-console
-  console.log(`🤖 Robot connection type: '${connectionType}'`);
+  console.log('Using Home Assistant for robots');
+  const broombot = new HomeAssistantRobot({
+    name: 'Broombot',
+    entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
+    batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
+    client: homeAssistantClient,
+  });
 
-  if (connectionType === 'homeassistant') {
-    // eslint-disable-next-line no-console
-    console.log('Using Home Assistant for robots');
-    broombot = new HomeAssistantRobot({
-      name: 'Broombot',
-      entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
-      batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
-      client: homeAssistantClient,
-    });
-
-    mopbot = new HomeAssistantRobot({
-      name: 'Mopbot',
-      entityId: (process.env.MOPBOT_ENTITY_ID || 'vacuum.mopbot').trim(),
-      batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
-      client: homeAssistantClient,
-    });
-  } else {
-    // eslint-disable-next-line no-console
-    console.log('Using direct connection for robots');
-    const broombotConfig: AccessoryConfig = {
-      name: 'Broombot',
-      model: process.env.broombotModel!,
-      serialnum: '',
-      blid: process.env.broombotBlid!,
-      robotpwd: process.env.broombotPassword!,
-      ipaddress: process.env.broombotIp!,
-      cleanBehaviour: 'everywhere',
-      stopBehaviour: 'home',
-      idleWatchInterval: 5,
-    };
-
-    broombot = new Robot(broombotConfig);
-
-    const mopbotConfig: AccessoryConfig = {
-      name: 'Mopbot',
-      model: process.env.mopbotModel!,
-      serialnum: '',
-      blid: process.env.mopbotBlid!,
-      robotpwd: process.env.mopbotPassword!,
-      ipaddress: process.env.mopbotIp!,
-      cleanBehaviour: 'everywhere',
-      stopBehaviour: 'home',
-      idleWatchInterval: 15,
-    };
-
-    mopbot = new Robot(mopbotConfig);
-  }
+  const mopbot = new HomeAssistantRobot({
+    name: 'Mopbot',
+    entityId: (process.env.MOPBOT_ENTITY_ID || 'vacuum.mopbot').trim(),
+    batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
+    client: homeAssistantClient,
+  });
 
   let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -190,8 +150,7 @@ export async function createServer(): Promise<Express> {
     let data = {};
 
     if (authReq.auth.user === 'admin') {
-      const connType = (process.env.ROBOT_CONNECTION_TYPE || '').trim();
-      const RobotClass = connType === 'homeassistant' ? HomeAssistantRobot : Robot;
+      const RobotClass = HomeAssistantRobot;
       data = {
         timestamp: new Date(),
         mieleClientId: process.env.mieleClientId,
@@ -246,8 +205,7 @@ export async function createServer(): Promise<Express> {
         rhizomeData,
       };
     } else if (authReq.auth.user === 'demo') {
-      const connType = (process.env.ROBOT_CONNECTION_TYPE || '').trim();
-      const RobotClass = connType === 'homeassistant' ? HomeAssistantRobot : Robot;
+      const RobotClass = HomeAssistantRobot;
       data = {
         timestamp: new Date(),
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
