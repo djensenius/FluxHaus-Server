@@ -1,7 +1,8 @@
 ---
 services:
   fluxhaus-server:
-    build: .
+    image: ghcr.io/djensenius/fluxhaus-server:main
+    # build: .
     ports:
       - "8080:8080"
     volumes:
