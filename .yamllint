@@ -4,6 +4,7 @@ extends: default
 ignore: |
   node_modules/
   .github/FUNDING.yml
+  .github/workflows/codeql.yml
 
 rules:
   line-length:
