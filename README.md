@@ -4,7 +4,7 @@ A Node.js server that acts as the central nervous system for the FluxHaus smart 
 
 ## Features
 
-*   **Robot Vacuums**: Control Roomba/Braava robots via direct connection (dorita980) or Home Assistant.
+*   **Robot Vacuums**: Control Roomba/Braava robots via Home Assistant.
 *   **Car Integration**: Monitor and control Kia/Hyundai vehicles (Bluelinky).
 *   **Appliances**: Monitor Miele (Washer/Dryer) and Bosch Home Connect (Dishwasher) appliances.
 *   **Data Aggregation**: Fetches and caches data from external services (Modern Dog, GitHub).
@@ -76,10 +76,7 @@ You don't need to clone the code. Just create a directory with `docker-compose.y
 The server is configured via environment variables in the `.env` file.
 
 ### Robot Control
-You can choose between two connection methods for your robots:
-
-*   **Direct (`ROBOT_CONNECTION_TYPE=direct`)**: Connects directly to the robot's IP using `dorita980`. Requires `blid` and `password`.
-*   **Home Assistant (`ROBOT_CONNECTION_TYPE=homeassistant`)**: Connects to a Home Assistant instance. Requires a Long-Lived Access Token.
+The server connects to a Home Assistant instance to control your robots. Requires a Long-Lived Access Token.
 
 **To get a Home Assistant Token:**
 1.  Log in to your Home Assistant.
@@ -92,7 +89,6 @@ You can choose between two connection methods for your robots:
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
-| `ROBOT_CONNECTION_TYPE` | `direct` or `homeassistant` | `direct` |
 | `HOMEASSISTANT_URL` | URL of your Home Assistant instance | `http://homeassistant.local:8123` |
 | `HOMEASSISTANT_TOKEN` | Long-Lived Access Token | |
 | `BROOMBOT_ENTITY_ID` | Entity ID for Broombot | `vacuum.broombot` |
