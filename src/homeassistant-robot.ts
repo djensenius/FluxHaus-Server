@@ -3,6 +3,7 @@ import { HomeAssistantClient } from './homeassistant-client';
 export interface HomeAssistantRobotConfig {
   name: string;
   entityId: string;
+  batteryEntityId?: string;
   client: HomeAssistantClient;
   pollInterval?: number;
 }
@@ -11,6 +12,7 @@ interface Status {
   timestamp: Date;
   running?: boolean;
   docking?: boolean;
+  docked?: boolean;
   charging?: boolean;
   paused?: boolean;
   batteryLevel?: number;
@@ -53,23 +55,38 @@ export default class HomeAssistantRobot {
   private async poll() {
     try {
       const state = await this.config.client.getState(this.config.entityId);
-      this.updateStatus(state);
+      let batteryState;
+      if (this.config.batteryEntityId) {
+        try {
+          batteryState = await this.config.client.getState(this.config.batteryEntityId);
+        } catch (error) {
+          console.warn(`Failed to poll battery for ${this.config.name}:`, error);
+        }
+      }
+      this.updateStatus(state, batteryState);
     } catch (error) {
       console.error(`Failed to poll robot ${this.config.name}:`, error);
     }
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private updateStatus(state: any) {
+  private updateStatus(state: any, batteryState?: any) {
     // Home Assistant Vacuum states: cleaning, docked, paused, idle, returning, error
     const status = state.state;
     const { attributes } = state;
 
     const running = status === 'cleaning';
     const docking = status === 'returning';
+    const docked = status === 'docked';
     const paused = status === 'paused';
-    const charging = status === 'docked' && attributes.battery_level < 100; // Approximation
-    const batteryLevel = attributes.battery_level;
+
+    let batteryLevel = attributes.battery_level;
+    if (batteryState && batteryState.state && !Number.isNaN(parseFloat(batteryState.state))) {
+      batteryLevel = parseFloat(batteryState.state);
+    }
+
+    const charging = docked && batteryLevel < 100; // Approximation
+
     // Some vacuums expose bin_full attribute, others don't.
     // eslint-disable-next-line camelcase
     const binFull = attributes.bin_full || false;
@@ -78,6 +95,7 @@ export default class HomeAssistantRobot {
       timestamp: new Date(),
       running,
       docking,
+      docked,
       paused,
       charging,
       batteryLevel,
@@ -130,10 +148,10 @@ export default class HomeAssistantRobot {
   };
 
   static dockedStatus = (status: Status) => {
-    if (status.charging === undefined) {
+    if (status.docked === undefined) {
       return undefined;
     }
-    return status.charging ? 'CONTACT_DETECTED' : 'CONTACT_NOT_DETECTED';
+    return status.docked ? 'CONTACT_DETECTED' : 'CONTACT_NOT_DETECTED';
   };
 
   static batteryLevelStatus = (status: Status) => (status.batteryLevel === undefined
