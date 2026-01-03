@@ -27,8 +27,7 @@ You don't need to clone the code. Just create a directory with `docker-compose.y
     services:
       fluxhaus-server:
         image: ghcr.io/djensenius/fluxhaus-server:latest
-        ports:
-          - "8080:8080"
+        network_mode: "host"
         volumes:
           - ./cache:/app/cache
           - .env:/app/.env

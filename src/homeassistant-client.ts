@@ -24,7 +24,9 @@ export class HomeAssistantClient {
     });
 
     if (!response.ok) {
-      throw new Error(`Home Assistant request failed: ${response.status} ${response.statusText}`);
+      throw new Error(
+        `Home Assistant request failed: ${response.status} ${response.statusText} for URL: ${this.config.url}${path}`,
+      );
     }
 
     return response.json();
