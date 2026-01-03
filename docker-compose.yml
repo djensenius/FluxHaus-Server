@@ -1,3 +1,4 @@
+---
 services:
   fluxhaus-server:
     build: .

@@ -120,4 +120,11 @@ export default class HomebridgeRobot {
       console.error(`Failed to turn off robot ${this.config.name}:`, error);
     }
   }
+
+  public stop() {
+    if (this.pollInterval) {
+      clearInterval(this.pollInterval);
+      this.pollInterval = null;
+    }
+  }
 }
