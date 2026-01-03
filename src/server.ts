@@ -7,6 +7,8 @@ import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
+import HomebridgeRobot from './homebridge-robot';
+import { HomebridgeClient } from './homebridge-client';
 import Car, { CarConfig } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
@@ -56,33 +58,57 @@ async function createServer(): Promise<Express> {
     },
   };
 
-  const broombotConfig: AccessoryConfig = {
-    name: 'Broombot',
-    model: process.env.broombotModel!,
-    serialnum: '',
-    blid: process.env.broombotBlid!,
-    robotpwd: process.env.broombotPassword!,
-    ipaddress: process.env.broombotIp!,
-    cleanBehaviour: 'everywhere',
-    stopBehaviour: 'home',
-    idleWatchInterval: 5,
-  };
+  const homebridgeClient = new HomebridgeClient({
+    url: process.env.HOMEBRIDGE_URL || 'http://localhost:8581',
+    username: process.env.HOMEBRIDGE_USERNAME,
+    password: process.env.HOMEBRIDGE_PASSWORD,
+    token: process.env.HOMEBRIDGE_TOKEN,
+  });
 
-  const broombot = new Robot(broombotConfig);
+  let broombot: Robot | HomebridgeRobot;
+  let mopbot: Robot | HomebridgeRobot;
 
-  const mopbotConfig: AccessoryConfig = {
-    name: 'Mopbot',
-    model: process.env.mopbotModel!,
-    serialnum: '',
-    blid: process.env.mopbotBlid!,
-    robotpwd: process.env.mopbotPassword!,
-    ipaddress: process.env.mopbotIp!,
-    cleanBehaviour: 'everywhere',
-    stopBehaviour: 'home',
-    idleWatchInterval: 15,
-  };
+  if (process.env.ROBOT_CONNECTION_TYPE === 'homebridge') {
+    broombot = new HomebridgeRobot({
+      name: 'Broombot',
+      uniqueId: process.env.BROOMBOT_ID || '',
+      client: homebridgeClient,
+    });
 
-  const mopbot = new Robot(mopbotConfig);
+    mopbot = new HomebridgeRobot({
+      name: 'Mopbot',
+      uniqueId: process.env.MOPBOT_ID || '',
+      client: homebridgeClient,
+    });
+  } else {
+    const broombotConfig: AccessoryConfig = {
+      name: 'Broombot',
+      model: process.env.broombotModel!,
+      serialnum: '',
+      blid: process.env.broombotBlid!,
+      robotpwd: process.env.broombotPassword!,
+      ipaddress: process.env.broombotIp!,
+      cleanBehaviour: 'everywhere',
+      stopBehaviour: 'home',
+      idleWatchInterval: 5,
+    };
+
+    broombot = new Robot(broombotConfig);
+
+    const mopbotConfig: AccessoryConfig = {
+      name: 'Mopbot',
+      model: process.env.mopbotModel!,
+      serialnum: '',
+      blid: process.env.mopbotBlid!,
+      robotpwd: process.env.mopbotPassword!,
+      ipaddress: process.env.mopbotIp!,
+      cleanBehaviour: 'everywhere',
+      stopBehaviour: 'home',
+      idleWatchInterval: 15,
+    };
+
+    mopbot = new Robot(mopbotConfig);
+  }
 
   let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
