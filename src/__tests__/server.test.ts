@@ -115,6 +115,19 @@ describe('Server', () => {
     expect(response.body).toHaveProperty('car');
   });
 
+  it('should omit missing robot status keys', async () => {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    (Robot as any).batteryLevelStatus = jest.fn().mockReturnValue(undefined);
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+
+    const response = await request(app)
+      .get('/')
+      .auth('admin', 'adminpassword')
+      .expect(200);
+
+    expect(response.body.broombot).not.toHaveProperty('batPct');
+  });
+
   it('should return data for rhizome user', async () => {
     const response = await request(app)
       .get('/')
