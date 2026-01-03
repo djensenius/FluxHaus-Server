@@ -125,7 +125,7 @@ describe('Server', () => {
       .auth('admin', 'adminpassword')
       .expect(200);
 
-    expect(response.body.broombot).not.toHaveProperty('batPct');
+    expect(response.body.broombot).not.toHaveProperty('batteryLevel');
   });
 
   it('should return data for rhizome user', async () => {
