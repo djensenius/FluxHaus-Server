@@ -7,8 +7,8 @@ import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
 import Robot, { AccessoryConfig } from './robots';
-import HomebridgeRobot from './homebridge-robot';
-import { HomebridgeClient } from './homebridge-client';
+import HomeAssistantRobot from './homeassistant-robot';
+import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
@@ -58,27 +58,25 @@ async function createServer(): Promise<Express> {
     },
   };
 
-  const homebridgeClient = new HomebridgeClient({
-    url: process.env.HOMEBRIDGE_URL || 'http://localhost:8581',
-    username: process.env.HOMEBRIDGE_USERNAME,
-    password: process.env.HOMEBRIDGE_PASSWORD,
-    token: process.env.HOMEBRIDGE_TOKEN,
+  const homeAssistantClient = new HomeAssistantClient({
+    url: process.env.HOMEASSISTANT_URL || 'http://homeassistant.local:8123',
+    token: process.env.HOMEASSISTANT_TOKEN || '',
   });
 
-  let broombot: Robot | HomebridgeRobot;
-  let mopbot: Robot | HomebridgeRobot;
+  let broombot: Robot | HomeAssistantRobot;
+  let mopbot: Robot | HomeAssistantRobot;
 
-  if (process.env.ROBOT_CONNECTION_TYPE === 'homebridge') {
-    broombot = new HomebridgeRobot({
+  if (process.env.ROBOT_CONNECTION_TYPE === 'homeassistant') {
+    broombot = new HomeAssistantRobot({
       name: 'Broombot',
-      uniqueId: process.env.BROOMBOT_ID || '',
-      client: homebridgeClient,
+      entityId: process.env.BROOMBOT_ENTITY_ID || '',
+      client: homeAssistantClient,
     });
 
-    mopbot = new HomebridgeRobot({
+    mopbot = new HomeAssistantRobot({
       name: 'Mopbot',
-      uniqueId: process.env.MOPBOT_ID || '',
-      client: homebridgeClient,
+      entityId: process.env.MOPBOT_ENTITY_ID || '',
+      client: homeAssistantClient,
     });
   } else {
     const broombotConfig: AccessoryConfig = {
