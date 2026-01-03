@@ -13,9 +13,9 @@ import Car, { CarConfig } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
 
-const port = process.env.PORT || 8080;
+const port = process.env.PORT || 8888;
 
-async function createServer(): Promise<Express> {
+export async function createServer(): Promise<Express> {
   const app: Express = express();
 
   const limiter = rateLimit({
@@ -180,6 +180,7 @@ async function createServer(): Promise<Express> {
     let data = {};
 
     if (authReq.auth.user === 'admin') {
+      const RobotClass = process.env.ROBOT_CONNECTION_TYPE === 'homeassistant' ? HomeAssistantRobot : Robot;
       data = {
         timestamp: new Date(),
         mieleClientId: process.env.mieleClientId,
@@ -189,8 +190,24 @@ async function createServer(): Promise<Express> {
         boschSecretId: process.env.boschSecretId,
         boschAppliance: process.env.boschAppliance,
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
-        broombot: broombot.cachedStatus,
-        mopbot: mopbot.cachedStatus,
+        broombot: {
+          batPct: RobotClass.batteryLevelStatus(broombot.cachedStatus),
+          bin: RobotClass.binStatus(broombot.cachedStatus),
+          running: RobotClass.runningStatus(broombot.cachedStatus),
+          charging: RobotClass.chargingStatus(broombot.cachedStatus),
+          docking: RobotClass.dockingStatus(broombot.cachedStatus),
+          docked: RobotClass.dockedStatus(broombot.cachedStatus),
+          battery: RobotClass.batteryStatus(broombot.cachedStatus),
+        },
+        mopbot: {
+          batPct: RobotClass.batteryLevelStatus(mopbot.cachedStatus),
+          bin: RobotClass.binStatus(mopbot.cachedStatus),
+          running: RobotClass.runningStatus(mopbot.cachedStatus),
+          charging: RobotClass.chargingStatus(mopbot.cachedStatus),
+          docking: RobotClass.dockingStatus(mopbot.cachedStatus),
+          docked: RobotClass.dockedStatus(mopbot.cachedStatus),
+          battery: RobotClass.batteryStatus(mopbot.cachedStatus),
+        },
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
@@ -210,11 +227,28 @@ async function createServer(): Promise<Express> {
         rhizomeData,
       };
     } else if (authReq.auth.user === 'demo') {
+      const RobotClass = process.env.ROBOT_CONNECTION_TYPE === 'homeassistant' ? HomeAssistantRobot : Robot;
       data = {
         timestamp: new Date(),
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
-        broombot: broombot.cachedStatus,
-        mopbot: mopbot.cachedStatus,
+        broombot: {
+          batPct: RobotClass.batteryLevelStatus(broombot.cachedStatus),
+          bin: RobotClass.binStatus(broombot.cachedStatus),
+          running: RobotClass.runningStatus(broombot.cachedStatus),
+          charging: RobotClass.chargingStatus(broombot.cachedStatus),
+          docking: RobotClass.dockingStatus(broombot.cachedStatus),
+          docked: RobotClass.dockedStatus(broombot.cachedStatus),
+          battery: RobotClass.batteryStatus(broombot.cachedStatus),
+        },
+        mopbot: {
+          batPct: RobotClass.batteryLevelStatus(mopbot.cachedStatus),
+          bin: RobotClass.binStatus(mopbot.cachedStatus),
+          running: RobotClass.runningStatus(mopbot.cachedStatus),
+          charging: RobotClass.chargingStatus(mopbot.cachedStatus),
+          docking: RobotClass.dockingStatus(mopbot.cachedStatus),
+          docked: RobotClass.dockedStatus(mopbot.cachedStatus),
+          battery: RobotClass.batteryStatus(mopbot.cachedStatus),
+        },
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
@@ -346,7 +380,7 @@ async function createServer(): Promise<Express> {
   return app;
 }
 
-const fetchSchedule = () => {
+export const fetchSchedule = () => {
   fetch(process.env.MODERN_DOG_URL || '', {
     method: 'GET',
     headers: {
@@ -373,10 +407,12 @@ const fetchSchedule = () => {
     });
 };
 
-fetchSchedule();
-setInterval(() => {
+if (process.env.NODE_ENV !== 'test') {
   fetchSchedule();
-}, 1000 * 60 * 60);
+  setInterval(() => {
+    fetchSchedule();
+  }, 1000 * 60 * 60);
+}
 
 const newsURL = 'https://raw.githubusercontent.com/djensenius/Rhizome-Data/main/news.md';
 
@@ -385,7 +421,7 @@ interface GitHubFile {
   download_url: string;
 }
 
-const fetchRhizomePhotos = () => {
+export const fetchRhizomePhotos = () => {
   fetch('https://api.github.com/repos/djensenius/Rhizome-Data/contents/photos?ref=main')
     .then((response) => response.json())
     .then((json) => {
@@ -397,14 +433,16 @@ const fetchRhizomePhotos = () => {
     });
 };
 
-fetchRhizomePhotos();
-
-setInterval(() => {
+if (process.env.NODE_ENV !== 'test') {
   fetchRhizomePhotos();
-}, 1000 * 60 * 60);
 
-createServer().then((app) => {
-  app.listen(port, () => {
-    console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
+  setInterval(() => {
+    fetchRhizomePhotos();
+  }, 1000 * 60 * 60);
+
+  createServer().then((app) => {
+    app.listen(port, () => {
+      console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
+    });
   });
-});
+}

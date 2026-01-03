@@ -1,4 +1,4 @@
-import { HomeAssistantClient } from './homeassistant-client';
+import { HomeAssistantClient } from '../homeassistant-client';
 
 // Mock global fetch
 global.fetch = jest.fn();
@@ -36,22 +36,15 @@ describe('HomeAssistantClient', () => {
     );
   });
 
-  it('should call services correctly', async () => {
+  it('should handle request errors', async () => {
     const client = new HomeAssistantClient(mockConfig);
 
     (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ([]),
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
     });
 
-    await client.callService('vacuum', 'start', { entity_id: 'vacuum.robot' });
-
-    expect(global.fetch).toHaveBeenCalledWith(
-      'http://homeassistant.local:8123/api/services/vacuum/start',
-      expect.objectContaining({
-        method: 'POST',
-        body: JSON.stringify({ entity_id: 'vacuum.robot' }),
-      }),
-    );
+    await expect(client.getState('vacuum.robot')).rejects.toThrow('Home Assistant request failed: 401 Unauthorized for URL: http://homeassistant.local:8123/api/states/vacuum.robot');
   });
 });

@@ -114,4 +114,43 @@ export default class HomeAssistantRobot {
       this.pollInterval = null;
     }
   }
+
+  static runningStatus = (status: Status) => (status.running === undefined
+    ? undefined
+    : status.running);
+
+  static chargingStatus = (status: Status) => (status.charging === undefined
+    ? undefined : status.charging);
+
+  static dockingStatus = (status: Status) => {
+    if (status.docking === undefined) {
+      return undefined;
+    }
+    return status.docking;
+  };
+
+  static dockedStatus = (status: Status) => {
+    if (status.charging === undefined) {
+      return undefined;
+    }
+    return status.charging ? 'CONTACT_DETECTED' : 'CONTACT_NOT_DETECTED';
+  };
+
+  static batteryLevelStatus = (status: Status) => (status.batteryLevel === undefined
+    ? undefined
+    : status.batteryLevel);
+
+  static binStatus = (status: Status) => {
+    if (status.binFull === undefined) {
+      return undefined;
+    }
+    return status.binFull ? 'CHANGE_FILTER' : 'FILTER_OK';
+  };
+
+  static batteryStatus = (status: Status) => {
+    if (status.batteryLevel === undefined) {
+      return undefined;
+    }
+    return status.batteryLevel <= 20 ? 'Low' : 'Normal';
+  };
 }
