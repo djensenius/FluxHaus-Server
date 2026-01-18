@@ -312,7 +312,36 @@ export async function createServer(): Promise<Express> {
   app.get('/startCar', cors(corsOptions), async (req, res) => {
     const authReq = req as basicAuth.IBasicAuthedRequest;
     if (authReq.auth.user === 'admin') {
-      const result = car.start();
+      const {
+        temp,
+        heatedFeatures,
+        defrost,
+        seatFL,
+        seatFR,
+        seatRL,
+        seatRR,
+      } = req.query;
+
+      const config: any = {};
+      if (temp) {
+        config.temperature = parseInt(temp as string, 10);
+      }
+      if (heatedFeatures) {
+        config.heatedFeatures = heatedFeatures === 'true';
+      }
+      if (defrost) {
+        config.defrost = defrost === 'true';
+      }
+      if (seatFL || seatFR || seatRL || seatRR) {
+        config.seatClimateSettings = {
+          driverSeat: seatFL ? parseInt(seatFL as string, 10) : 0,
+          passengerSeat: seatFR ? parseInt(seatFR as string, 10) : 0,
+          rearLeftSeat: seatRL ? parseInt(seatRL as string, 10) : 0,
+          rearRightSeat: seatRR ? parseInt(seatRR as string, 10) : 0,
+        };
+      }
+
+      const result = car.start(config);
       res.send(result);
       setTimeout(() => {
         car.resync();

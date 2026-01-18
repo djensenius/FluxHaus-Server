@@ -116,7 +116,7 @@ export default class Car {
     return 'No vehicle found';
   };
 
-  start = async (): Promise<string> => {
+  start = async (config?: any): Promise<string> => {
     if (this.vehicle !== undefined) {
       const result = await this.vehicle.start({
         hvac: true,
@@ -125,6 +125,7 @@ export default class Car {
         defrost: false,
         heatedFeatures: false,
         unit: 'C',
+        ...config,
       });
       return result;
     }
