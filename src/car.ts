@@ -3,7 +3,7 @@ import { BlueLinky } from 'bluelinky';
 // eslint-disable-next-line import/no-unresolved
 import { Vehicle } from 'bluelinky/dist/vehicles/vehicle';
 // eslint-disable-next-line import/no-unresolved
-import { RawVehicleStatus } from 'bluelinky/dist/interfaces/common.interfaces';
+import { RawVehicleStatus, VehicleStartOptions } from 'bluelinky/dist/interfaces/common.interfaces';
 
 export interface CarStatus extends RawVehicleStatus {
   timestamp: Date;
@@ -116,7 +116,7 @@ export default class Car {
     return 'No vehicle found';
   };
 
-  start = async (): Promise<string> => {
+  start = async (config?: Partial<VehicleStartOptions>): Promise<string> => {
     if (this.vehicle !== undefined) {
       const result = await this.vehicle.start({
         hvac: true,
@@ -125,6 +125,7 @@ export default class Car {
         defrost: false,
         heatedFeatures: false,
         unit: 'C',
+        ...config,
       });
       return result;
     }

@@ -142,6 +142,37 @@ describe('Car', () => {
     });
   });
 
+  it('should handle start with config', async () => {
+    car.vehicle = mockVehicle;
+    mockVehicle.start.mockResolvedValue('Started');
+
+    const config = {
+      temperature: 24,
+      heatedFeatures: true,
+      defrost: true,
+      seatClimateSettings: {
+        driverSeat: 1,
+        passengerSeat: 1,
+      },
+    };
+
+    const result = await car.start(config);
+
+    expect(result).toBe('Started');
+    expect(mockVehicle.start).toHaveBeenCalledWith({
+      hvac: true,
+      temperature: 24,
+      duration: 120,
+      defrost: true,
+      heatedFeatures: true,
+      unit: 'C',
+      seatClimateSettings: {
+        driverSeat: 1,
+        passengerSeat: 1,
+      },
+    });
+  });
+
   it('should return "No vehicle found" for start if no vehicle', async () => {
     const result = await car.start();
     expect(result).toBe('No vehicle found');
