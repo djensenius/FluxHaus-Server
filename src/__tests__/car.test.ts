@@ -1,215 +1,182 @@
 import fs from 'fs';
-import { BlueLinky } from 'bluelinky';
 import Car, { CarConfig } from '../car';
+import { HomeAssistantClient } from '../homeassistant-client';
 
 jest.mock('fs');
-jest.mock('bluelinky');
+jest.mock('../homeassistant-client');
 
 describe('Car', () => {
   let car: Car;
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-  let mockClient: any;
-  let mockVehicle: any;
-  /* eslint-enable @typescript-eslint/no-explicit-any */
+  let mockClient: jest.Mocked<HomeAssistantClient>;
 
-  const mockConfig: CarConfig = {
-    username: 'testuser',
-    password: 'testpassword',
-    region: 'CA',
-    brand: 'kia',
-    pin: '1234',
-    useInfo: true,
+  const entityPrefix = 'kia_ev6';
+
+  const defaultStates: Record<string, string> = {
+    [`sensor.${entityPrefix}_ev_battery_level`]: '75',
+    [`binary_sensor.${entityPrefix}_ev_battery_charging`]: 'off',
+    [`binary_sensor.${entityPrefix}_ev_battery_plug`]: 'off',
+    [`sensor.${entityPrefix}_ev_range`]: '200',
+    [`sensor.${entityPrefix}_range`]: '200',
+    [`binary_sensor.${entityPrefix}_air_conditioner`]: 'off',
+    [`lock.${entityPrefix}_door_lock`]: 'locked',
+    [`binary_sensor.${entityPrefix}_door_front_left`]: 'off',
+    [`binary_sensor.${entityPrefix}_door_front_right`]: 'off',
+    [`binary_sensor.${entityPrefix}_door_rear_left`]: 'off',
+    [`binary_sensor.${entityPrefix}_door_rear_right`]: 'off',
+    [`binary_sensor.${entityPrefix}_trunk`]: 'off',
+    [`binary_sensor.${entityPrefix}_hood`]: 'off',
+    [`binary_sensor.${entityPrefix}_defrost`]: 'off',
+    [`binary_sensor.${entityPrefix}_engine`]: 'off',
+    [`sensor.${entityPrefix}_odometer`]: '15000',
+    [`sensor.${entityPrefix}_last_updated`]: '2025-01-17T17:25:52.000Z',
   };
 
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
 
-    mockVehicle = {
-      status: jest.fn(),
-      odometer: jest.fn(),
-      lock: jest.fn(),
-      unlock: jest.fn(),
-      start: jest.fn(),
-      stop: jest.fn(),
-    };
-
     mockClient = {
-      on: jest.fn(),
-      login: jest.fn(),
+      getState: jest.fn().mockImplementation(
+        (entityId: string) => Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' }),
+      ),
+      callService: jest.fn().mockResolvedValue({}),
+    } as unknown as jest.Mocked<HomeAssistantClient>;
+
+    (fs.existsSync as jest.Mock).mockReturnValue(false);
+
+    const config: CarConfig = {
+      client: mockClient,
+      entityPrefix,
     };
 
-    (BlueLinky as unknown as jest.Mock).mockImplementation(() => mockClient);
-
-    car = new Car(mockConfig);
+    car = new Car(config);
   });
 
   afterEach(() => {
     jest.useRealTimers();
   });
 
-  it('should initialize correctly', () => {
-    expect(BlueLinky).toHaveBeenCalledWith({
-      username: mockConfig.username,
-      password: mockConfig.password,
-      region: mockConfig.region,
-      brand: mockConfig.brand,
-      pin: mockConfig.pin,
-    });
-    expect(mockClient.on).toHaveBeenCalledWith('ready', expect.any(Function));
+  it('should fetch status on initialization', async () => {
+    // setStatus is called in constructor, wait for it
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mockClient.getState).toHaveBeenCalledWith(`sensor.${entityPrefix}_ev_battery_level`);
+    expect(mockClient.getState).toHaveBeenCalledWith(`lock.${entityPrefix}_door_lock`);
   });
 
-  it('should handle onReadyHandler', async () => {
-    const onReadyHandler = mockClient.on.mock.calls[0][1];
-    mockVehicle.status.mockResolvedValue({
-      lastStatusDate: '20230101120000',
-      evStatus: {
-        drvDistance: [{ rangeByFuel: { evModeRange: { unit: 100 } } }],
-      },
-    });
-    mockVehicle.odometer.mockResolvedValue({ unit: 10000 });
+  it('should populate status from HA entities', async () => {
+    await car.setStatus();
+
+    expect(car.status).toBeDefined();
+    expect(car.status!.doorLock).toBe(true);
+    expect(car.status!.airCtrlOn).toBe(false);
+    expect(car.status!.evStatus.batteryStatus).toBe(75);
+    expect(car.status!.evStatus.batteryCharge).toBe(false);
+    expect(car.status!.evStatus.batteryPlugin).toBe(0);
+    expect(car.status!.evStatus.drvDistance[0].rangeByFuel.evModeRange.value).toBe(200);
+    expect(car.odometer).toBe(15000);
+  });
+
+  it('should preserve cached range when HA returns zero', async () => {
+    (fs.existsSync as jest.Mock).mockReturnValue(true);
     (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
-      drvDistance: [{ rangeByFuel: { evModeRange: { unit: 50 } } }],
+      drvDistance: [{ rangeByFuel: { evModeRange: { value: 150, unit: 1 } }, type: 2 }],
     }));
 
-    await onReadyHandler([mockVehicle]);
+    // Override ev_range to return 0
+    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      if (entityId === `sensor.${entityPrefix}_ev_range`) {
+        return Promise.resolve({ state: '0' });
+      }
+      return Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' });
+    });
 
-    expect(car.vehicle).toBe(mockVehicle);
-    expect(mockVehicle.status).toHaveBeenCalled();
-    expect(mockVehicle.odometer).toHaveBeenCalled();
-    expect(fs.writeFileSync).toHaveBeenCalled();
+    await car.setStatus();
+
+    expect(car.status!.evStatus.drvDistance[0].rangeByFuel.evModeRange.value).toBe(150);
   });
 
-  it('should handle setStatus with refresh', async () => {
-    car.vehicle = mockVehicle;
-    mockVehicle.status.mockResolvedValue({
-      lastStatusDate: '20230101120000',
-    });
+  it('should write evStatus to cache', async () => {
+    await car.setStatus();
 
-    await car.setStatus(true);
-
-    expect(mockVehicle.status).toHaveBeenCalledWith({
-      refresh: true,
-      parsed: false,
-      useInfo: true,
-    });
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      'cache/evStatus.json',
+      expect.any(String),
+    );
   });
 
   it('should handle lock', async () => {
-    car.vehicle = mockVehicle;
-    mockVehicle.lock.mockResolvedValue('Locked');
-
     const result = await car.lock();
 
     expect(result).toBe('Locked');
-    expect(mockVehicle.lock).toHaveBeenCalled();
-  });
-
-  it('should return "No vehicle found" for lock if no vehicle', async () => {
-    const result = await car.lock();
-    expect(result).toBe('No vehicle found');
+    expect(mockClient.callService).toHaveBeenCalledWith('lock', 'lock', {
+      entity_id: `lock.${entityPrefix}_door_lock`,
+    });
   });
 
   it('should handle unlock', async () => {
-    car.vehicle = mockVehicle;
-    mockVehicle.unlock.mockResolvedValue('Unlocked');
-
     const result = await car.unlock();
 
     expect(result).toBe('Unlocked');
-    expect(mockVehicle.unlock).toHaveBeenCalled();
+    expect(mockClient.callService).toHaveBeenCalledWith('lock', 'unlock', {
+      entity_id: `lock.${entityPrefix}_door_lock`,
+    });
   });
 
-  it('should return "No vehicle found" for unlock if no vehicle', async () => {
-    const result = await car.unlock();
-    expect(result).toBe('No vehicle found');
-  });
-
-  it('should handle start', async () => {
-    car.vehicle = mockVehicle;
-    mockVehicle.start.mockResolvedValue('Started');
-
+  it('should handle start with defaults', async () => {
     const result = await car.start();
 
     expect(result).toBe('Started');
-    expect(mockVehicle.start).toHaveBeenCalledWith({
-      hvac: true,
+    expect(mockClient.callService).toHaveBeenCalledWith('kia_uvo', 'start_climate', expect.objectContaining({
       temperature: 21,
-      duration: 120,
       defrost: false,
-      heatedFeatures: false,
-      unit: 'C',
-    });
+      heating: false,
+    }));
   });
 
-  it('should handle start with config', async () => {
-    car.vehicle = mockVehicle;
-    mockVehicle.start.mockResolvedValue('Started');
-
-    const config = {
+  it('should handle start with config overrides', async () => {
+    const result = await car.start({
       temperature: 24,
       heatedFeatures: true,
       defrost: true,
-      seatClimateSettings: {
-        driverSeat: 1,
-        passengerSeat: 1,
-      },
-    };
-
-    const result = await car.start(config);
+    });
 
     expect(result).toBe('Started');
-    expect(mockVehicle.start).toHaveBeenCalledWith({
-      hvac: true,
+    expect(mockClient.callService).toHaveBeenCalledWith('kia_uvo', 'start_climate', expect.objectContaining({
       temperature: 24,
-      duration: 120,
       defrost: true,
-      heatedFeatures: true,
-      unit: 'C',
-      seatClimateSettings: {
-        driverSeat: 1,
-        passengerSeat: 1,
-      },
-    });
-  });
-
-  it('should return "No vehicle found" for start if no vehicle', async () => {
-    const result = await car.start();
-    expect(result).toBe('No vehicle found');
+      heating: true,
+    }));
   });
 
   it('should handle stop', async () => {
-    car.vehicle = mockVehicle;
-    mockVehicle.stop.mockResolvedValue('Stopped');
-
     const result = await car.stop();
 
     expect(result).toBe('Stopped');
-    expect(mockVehicle.stop).toHaveBeenCalled();
-  });
-
-  it('should return "No vehicle found" for stop if no vehicle', async () => {
-    const result = await car.stop();
-    expect(result).toBe('No vehicle found');
+    expect(mockClient.callService).toHaveBeenCalledWith('kia_uvo', 'stop_climate', {
+      entity_id: `lock.${entityPrefix}_door_lock`,
+    });
   });
 
   it('should handle resync', async () => {
-    car.vehicle = mockVehicle;
-    mockVehicle.status.mockResolvedValue({
-      lastStatusDate: '20230101120000',
-    });
-
     await car.resync();
 
-    expect(mockVehicle.status).toHaveBeenCalledWith({
-      refresh: true,
-      parsed: false,
-      useInfo: true,
+    expect(mockClient.callService).toHaveBeenCalledWith('kia_uvo', 'force_update', {
+      entity_id: `lock.${entityPrefix}_door_lock`,
     });
   });
 
-  it('should handle interval login', () => {
-    jest.advanceTimersByTime(1000 * 60 * 60 * 12);
-    expect(mockClient.login).toHaveBeenCalled();
+  it('should handle errors gracefully', async () => {
+    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    mockClient.getState = jest.fn().mockRejectedValue(new Error('HA unavailable'));
+
+    await car.setStatus();
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      'Failed to fetch car status from Home Assistant:',
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
   });
 });

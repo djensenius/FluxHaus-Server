@@ -5,12 +5,10 @@ import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
-// eslint-disable-next-line import/no-unresolved
-import { VehicleStartOptions } from 'bluelinky/dist/interfaces/common.interfaces';
 import notFoundHandler from './middleware/not-found.middleware';
 import HomeAssistantRobot from './homeassistant-robot';
 import { HomeAssistantClient } from './homeassistant-client';
-import Car, { CarConfig } from './car';
+import Car, { CarConfig, CarStartOptions } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
 
@@ -83,12 +81,8 @@ export async function createServer(): Promise<Express> {
   let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const carConfig: CarConfig = {
-    username: process.env.carLogin!,
-    password: process.env.carPassword!,
-    pin: process.env.carPin!,
-    region: 'CA',
-    useInfo: true,
-    brand: 'kia',
+    client: homeAssistantClient,
+    entityPrefix: process.env.CAR_ENTITY_PREFIX || 'kia',
   };
 
   const car = new Car(carConfig);
@@ -324,7 +318,7 @@ export async function createServer(): Promise<Express> {
         seatRR,
       } = req.query;
 
-      const config: Partial<VehicleStartOptions> = {};
+      const config: Partial<CarStartOptions> = {};
       if (temp) {
         config.temperature = parseInt(temp as string, 10);
       }
