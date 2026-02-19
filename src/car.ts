@@ -1,148 +1,239 @@
 import fs from 'fs';
-import { BlueLinky } from 'bluelinky';
-// eslint-disable-next-line import/no-unresolved
-import { Vehicle } from 'bluelinky/dist/vehicles/vehicle';
-// eslint-disable-next-line import/no-unresolved
-import { RawVehicleStatus, VehicleStartOptions } from 'bluelinky/dist/interfaces/common.interfaces';
+import { HomeAssistantClient } from './homeassistant-client';
 
-export interface CarStatus extends RawVehicleStatus {
+export interface Doors {
+  frontRight: number;
+  frontLeft: number;
+  backRight: number;
+  backLeft: number;
+}
+
+export interface Atc {
+  value: number;
+  unit: number;
+}
+
+export interface RangeByFuel {
+  gasModeRange: Atc;
+  evModeRange: Atc;
+  totalAvailableRange: Atc;
+}
+
+export interface DriveDistance {
+  rangeByFuel: RangeByFuel;
+  type: number;
+}
+
+export interface EVStatus {
+  timestamp: string;
+  batteryCharge: boolean;
+  batteryStatus: number;
+  batteryPlugin: number;
+  drvDistance: DriveDistance[];
+}
+
+export interface CarStatus {
   timestamp: Date;
+  lastStatusDate: string;
+  airCtrlOn: boolean;
+  doorLock: boolean;
+  doorOpen: Doors;
+  trunkOpen: boolean;
+  defrost: boolean;
+  hoodOpen: boolean;
+  engine: boolean;
+  evStatus: EVStatus;
+}
+
+export interface CarStartOptions {
+  temperature?: number;
+  heatedFeatures?: boolean;
+  defrost?: boolean;
+  seatClimateSettings?: {
+    driverSeat?: number;
+    passengerSeat?: number;
+    rearLeftSeat?: number;
+    rearRightSeat?: number;
+  };
 }
 
 export interface CarConfig {
-  username: string;
-  password: string;
-  region: 'CA';
-  brand: 'kia';
-  pin: string;
-  useInfo: boolean;
+  client: HomeAssistantClient;
+  entityPrefix: string;
+  pollInterval?: number;
 }
 
-function strDateToDateTime(strDate: string): Date {
-  const parsedDate = strDate.replace(/(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/g, '$1-$2-$3T$4:$5:$6.000Z');
-  const date = new Date(parsedDate);
-  return date;
+function dateToCompactString(date: Date): string {
+  return date.toISOString().replace(/[-:T]/g, '').slice(0, 14);
 }
 
 export default class Car {
   status?: CarStatus;
 
-  vehicle?: Vehicle;
-
   odometer: number;
 
-  count: number;
+  private client: HomeAssistantClient;
 
-  private client: BlueLinky;
+  private entityPrefix: string;
 
   constructor(carConfig: CarConfig) {
-    this.client = new BlueLinky({
-      username: carConfig.username,
-      password: carConfig.password,
-      region: carConfig.region,
-      brand: carConfig.brand,
-      pin: carConfig.pin,
-    });
-    this.count = 0;
+    this.client = carConfig.client;
+    this.entityPrefix = carConfig.entityPrefix;
     this.odometer = 0;
-    this.client.on('ready', this.onReadyHandler);
-    setInterval(() => {
-      this.client.login();
-    }, 1000 * 60 * 60 * 12);
-  }
 
-  onReadyHandler = <T extends Vehicle>(vehicles: T[]) => {
-    [this.vehicle] = vehicles;
     this.setStatus();
     setInterval(() => {
-      let refresh = false;
-      if (this.count === 1) {
-        refresh = true;
-        this.count = 0;
-      } else {
-        this.count += 1;
+      this.setStatus();
+    }, carConfig.pollInterval ?? 1000 * 60 * 120);
+  }
+
+  private async getEntityState(entityId: string): Promise<string> {
+    const state = await this.client.getState(entityId);
+    return state.state;
+  }
+
+  setStatus = async () => {
+    try {
+      const prefix = this.entityPrefix;
+
+      const [
+        batteryLevel,
+        charging,
+        pluggedIn,
+        evRange,
+        totalRange,
+        airConditioner,
+        doorLock,
+        doorFrontLeft,
+        doorFrontRight,
+        doorRearLeft,
+        doorRearRight,
+        trunk,
+        hood,
+        defrost,
+        engine,
+        odometerState,
+        lastUpdated,
+      ] = await Promise.all([
+        this.getEntityState(`sensor.${prefix}_ev_battery_level`),
+        this.getEntityState(`binary_sensor.${prefix}_ev_battery_charging`),
+        this.getEntityState(`binary_sensor.${prefix}_ev_battery_plug`),
+        this.getEntityState(`sensor.${prefix}_ev_range`),
+        this.getEntityState(`sensor.${prefix}_range`),
+        this.getEntityState(`binary_sensor.${prefix}_air_conditioner`),
+        this.getEntityState(`lock.${prefix}_door_lock`),
+        this.getEntityState(`binary_sensor.${prefix}_door_front_left`),
+        this.getEntityState(`binary_sensor.${prefix}_door_front_right`),
+        this.getEntityState(`binary_sensor.${prefix}_door_rear_left`),
+        this.getEntityState(`binary_sensor.${prefix}_door_rear_right`),
+        this.getEntityState(`binary_sensor.${prefix}_trunk`),
+        this.getEntityState(`binary_sensor.${prefix}_hood`),
+        this.getEntityState(`binary_sensor.${prefix}_defrost`),
+        this.getEntityState(`binary_sensor.${prefix}_engine`),
+        this.getEntityState(`sensor.${prefix}_odometer`),
+        this.getEntityState(`sensor.${prefix}_last_updated`),
+      ]);
+
+      const timestamp = lastUpdated !== 'unavailable' ? new Date(lastUpdated) : new Date();
+      const evModeRange = parseInt(evRange, 10) || 0;
+      const totalAvailableRange = parseInt(totalRange, 10) || 0;
+
+      const evStatus: EVStatus = {
+        timestamp: timestamp.toISOString(),
+        batteryCharge: charging === 'on',
+        batteryStatus: parseInt(batteryLevel, 10) || 0,
+        batteryPlugin: pluggedIn === 'on' ? 1 : 0,
+        drvDistance: [{
+          rangeByFuel: {
+            gasModeRange: { value: 0, unit: 1 },
+            evModeRange: { value: evModeRange, unit: evModeRange > 0 ? 1 : 0 },
+            totalAvailableRange: { value: totalAvailableRange, unit: 1 },
+          },
+          type: 2,
+        }],
+      };
+
+      // Preserve cached range data when HA returns zero
+      if (evModeRange === 0 && fs.existsSync('cache/evStatus.json')) {
+        const oldEvStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
+        evStatus.drvDistance = oldEvStatus.drvDistance;
       }
-      this.setStatus(refresh);
-    }, 1000 * 60 * 120);
-  };
 
-  setStatus = async (refresh = false) => {
-    if (this.vehicle !== undefined) {
-      const status = await this.vehicle.status({
-        refresh,
-        parsed: false,
-        useInfo: true,
-      });
+      fs.writeFileSync(
+        'cache/evStatus.json',
+        JSON.stringify(evStatus, null, 2),
+      );
 
-      if (status !== null) {
-        // Check if evStatus is null, and call again with refresh
-        const timestamp = strDateToDateTime((status as RawVehicleStatus).lastStatusDate);
-        this.status = { timestamp, ...status as RawVehicleStatus };
-        if (this.status.evStatus) {
-          const oldEvStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
-          const newEvStatus = this.status.evStatus;
-          const combinedEvStatus = newEvStatus;
-          if (newEvStatus.drvDistance[0].rangeByFuel.evModeRange.unit === 0) {
-            combinedEvStatus.drvDistance = oldEvStatus.drvDistance;
-          }
+      this.status = {
+        timestamp,
+        lastStatusDate: dateToCompactString(timestamp),
+        airCtrlOn: airConditioner === 'on',
+        doorLock: doorLock === 'locked',
+        doorOpen: {
+          frontLeft: doorFrontLeft === 'on' ? 1 : 0,
+          frontRight: doorFrontRight === 'on' ? 1 : 0,
+          backLeft: doorRearLeft === 'on' ? 1 : 0,
+          backRight: doorRearRight === 'on' ? 1 : 0,
+        },
+        trunkOpen: trunk === 'on',
+        defrost: defrost === 'on',
+        hoodOpen: hood === 'on',
+        engine: engine === 'on',
+        evStatus,
+      };
 
-          fs.writeFileSync(
-            'cache/evStatus.json',
-            JSON.stringify({ timestamp, ...this.status.evStatus }, null, 2),
-          );
-        }
+      const odo = parseFloat(odometerState);
+      if (!Number.isNaN(odo)) {
+        this.odometer = odo;
       }
-
-      const odometer = await this.vehicle.odometer();
-      if (odometer) {
-        this.odometer = odometer.unit;
-      }
+    } catch (error) {
+      console.error('Failed to fetch car status from Home Assistant:', error);
     }
   };
 
   lock = async (): Promise<string> => {
-    if (this.vehicle !== undefined) {
-      const result = await this.vehicle.lock();
-      return result;
-    }
-    return 'No vehicle found';
+    await this.client.callService('lock', 'lock', {
+      entity_id: `lock.${this.entityPrefix}_door_lock`,
+    });
+    return 'Locked';
   };
 
   unlock = async (): Promise<string> => {
-    if (this.vehicle !== undefined) {
-      const result = await this.vehicle.unlock();
-      return result;
-    }
-    return 'No vehicle found';
+    await this.client.callService('lock', 'unlock', {
+      entity_id: `lock.${this.entityPrefix}_door_lock`,
+    });
+    return 'Unlocked';
   };
 
-  start = async (config?: Partial<VehicleStartOptions>): Promise<string> => {
-    if (this.vehicle !== undefined) {
-      const result = await this.vehicle.start({
-        hvac: true,
-        temperature: 21,
-        duration: 120,
-        defrost: false,
-        heatedFeatures: false,
-        unit: 'C',
-        ...config,
-      });
-      return result;
-    }
-    return 'No vehicle found';
+  start = async (config?: Partial<CarStartOptions>): Promise<string> => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const serviceData: any = {
+      entity_id: `lock.${this.entityPrefix}_door_lock`,
+      climate: true,
+      temperature: config?.temperature ?? 21,
+      defrost: config?.defrost ?? false,
+      heating: config?.heatedFeatures ?? false,
+    };
+    await this.client.callService('kia_uvo', 'start_climate', serviceData);
+    return 'Started';
   };
 
   stop = async (): Promise<string> => {
-    if (this.vehicle !== undefined) {
-      const result = await this.vehicle.stop();
-      return result;
-    }
-    return 'No vehicle found';
+    await this.client.callService('kia_uvo', 'stop_climate', {
+      entity_id: `lock.${this.entityPrefix}_door_lock`,
+    });
+    return 'Stopped';
   };
 
   resync = async () => {
-    if (this.vehicle !== undefined) {
-      await this.setStatus(true);
+    try {
+      await this.client.callService('kia_uvo', 'force_update', {
+        entity_id: `lock.${this.entityPrefix}_door_lock`,
+      });
+      // Re-fetch status after force update
+      setTimeout(() => this.setStatus(), 10000);
+    } catch (error) {
+      console.error('Failed to resync car:', error);
     }
   };
 }
