@@ -13,22 +13,22 @@ describe('Car', () => {
 
   const defaultStates: Record<string, string> = {
     [`sensor.${entityPrefix}_ev_battery_level`]: '75',
-    [`binary_sensor.${entityPrefix}_ev_battery_charging`]: 'off',
+    [`binary_sensor.${entityPrefix}_ev_battery_charge`]: 'off',
     [`binary_sensor.${entityPrefix}_ev_battery_plug`]: 'off',
     [`sensor.${entityPrefix}_ev_range`]: '200',
-    [`sensor.${entityPrefix}_range`]: '200',
+    [`sensor.${entityPrefix}_total_driving_range`]: '200',
     [`binary_sensor.${entityPrefix}_air_conditioner`]: 'off',
     [`lock.${entityPrefix}_door_lock`]: 'locked',
-    [`binary_sensor.${entityPrefix}_door_front_left`]: 'off',
-    [`binary_sensor.${entityPrefix}_door_front_right`]: 'off',
-    [`binary_sensor.${entityPrefix}_door_rear_left`]: 'off',
-    [`binary_sensor.${entityPrefix}_door_rear_right`]: 'off',
+    [`binary_sensor.${entityPrefix}_front_left_door`]: 'off',
+    [`binary_sensor.${entityPrefix}_front_right_door`]: 'off',
+    [`binary_sensor.${entityPrefix}_back_left_door`]: 'off',
+    [`binary_sensor.${entityPrefix}_back_right_door`]: 'off',
     [`binary_sensor.${entityPrefix}_trunk`]: 'off',
     [`binary_sensor.${entityPrefix}_hood`]: 'off',
     [`binary_sensor.${entityPrefix}_defrost`]: 'off',
     [`binary_sensor.${entityPrefix}_engine`]: 'off',
     [`sensor.${entityPrefix}_odometer`]: '15000',
-    [`sensor.${entityPrefix}_last_updated`]: '2025-01-17T17:25:52.000Z',
+    [`sensor.${entityPrefix}_last_updated_at`]: '2025-01-17T17:25:52.000Z',
   };
 
   beforeEach(() => {
