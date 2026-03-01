@@ -2,10 +2,12 @@ import fs from 'fs';
 import { fetchEventData } from 'fetch-sse';
 import Miele from '../miele';
 import { writeError } from '../errors';
+import * as tokenStore from '../token-store';
 
 jest.mock('fs');
 jest.mock('fetch-sse');
 jest.mock('../errors');
+jest.mock('../token-store');
 
 // Mock global fetch
 global.fetch = jest.fn();
@@ -41,6 +43,7 @@ describe('Miele', () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       json: jest.fn().mockResolvedValue(mockResponse),
     });
+    (tokenStore.saveToken as jest.Mock).mockResolvedValue(undefined);
 
     await miele.getToken('auth-code');
 
@@ -51,17 +54,18 @@ describe('Miele', () => {
         body: expect.stringContaining('code=auth-code'),
       }),
     );
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      'cache/miele-token.json',
-      expect.stringContaining('new-token'),
+    expect(tokenStore.saveToken).toHaveBeenCalledWith(
+      'miele',
+      expect.objectContaining({ access_token: 'new-token' }),
     );
   });
 
   it('should refresh token', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
+    (tokenStore.getToken as jest.Mock).mockResolvedValue({
       refresh_token: 'old-refresh-token',
-    }));
+      timestamp: new Date(),
+      access_token: 'old-token',
+    });
 
     const mockResponse = {
       access_token: 'refreshed-token',
@@ -70,6 +74,7 @@ describe('Miele', () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       json: jest.fn().mockResolvedValue(mockResponse),
     });
+    (tokenStore.saveToken as jest.Mock).mockResolvedValue(undefined);
 
     await miele.refreshToken();
 
@@ -80,14 +85,14 @@ describe('Miele', () => {
         body: expect.stringContaining('grant_type=refresh_token'),
       }),
     );
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      'cache/miele-token.json',
-      expect.stringContaining('refreshed-token'),
+    expect(tokenStore.saveToken).toHaveBeenCalledWith(
+      'miele',
+      expect.objectContaining({ access_token: 'refreshed-token' }),
     );
   });
 
   it('should warn if refreshing token without auth', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(false);
+    (tokenStore.getToken as jest.Mock).mockResolvedValue(null);
     const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
 
     await miele.refreshToken();
@@ -131,12 +136,11 @@ describe('Miele', () => {
   });
 
   it('should get active programs', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
+    (tokenStore.getToken as jest.Mock).mockResolvedValue({
       access_token: 'valid-token',
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(),
       expires_in: 3600,
-    }));
+    });
 
     const mockDevices = {
       'device-1': {
@@ -170,23 +174,23 @@ describe('Miele', () => {
   });
 
   it('should refresh token if expired when getting active programs', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    // Mock readFileSync to return expired token first, then valid token
-    (fs.readFileSync as jest.Mock)
-      .mockReturnValueOnce(JSON.stringify({
+    (tokenStore.getToken as jest.Mock)
+      .mockResolvedValueOnce({
         access_token: 'expired-token',
-        timestamp: new Date(Date.now() - 7200000).toISOString(), // 2 hours ago
+        timestamp: new Date(Date.now() - 7200000), // 2 hours ago
         expires_in: 3600,
         refresh_token: 'refresh-token',
-      }))
-      .mockReturnValueOnce(JSON.stringify({
+      })
+      .mockResolvedValueOnce({
         refresh_token: 'refresh-token',
-      }))
-      .mockReturnValue(JSON.stringify({
+        timestamp: new Date(),
+        access_token: 'old-token',
+      })
+      .mockResolvedValue({
         access_token: 'new-token',
-        timestamp: new Date().toISOString(),
+        timestamp: new Date(),
         expires_in: 3600,
-      }));
+      });
 
     // Mock fetch for refresh token and then get devices
     (global.fetch as jest.Mock)
@@ -196,6 +200,7 @@ describe('Miele', () => {
       .mockResolvedValueOnce({
         json: jest.fn().mockResolvedValue({}),
       });
+    (tokenStore.saveToken as jest.Mock).mockResolvedValue(undefined);
 
     await miele.getActivePrograms();
 
@@ -208,12 +213,11 @@ describe('Miele', () => {
   });
 
   it('should listen events', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
+    (tokenStore.getToken as jest.Mock).mockResolvedValue({
       access_token: 'valid-token',
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(),
       expires_in: 3600,
-    }));
+    });
 
     await miele.listenEvents();
 

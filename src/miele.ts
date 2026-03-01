@@ -4,6 +4,7 @@ import { fetchEventData } from 'fetch-sse';
 import { clearError, writeError } from './errors';
 import { MieleDevice } from './types/types';
 import { MieleRoot } from './types/miele';
+import { getToken as getStoredToken, saveToken } from './token-store';
 
 export default class Miele {
   public washer: MieleDevice;
@@ -63,21 +64,18 @@ export default class Miele {
     const body = await response.json();
     if (body.access_token) {
       this.MIELE_TOKEN = body.access_token;
-      fs.writeFileSync(
-        'cache/miele-token.json',
-        JSON.stringify({ timestamp: new Date(), ...body }, null, 2),
-      );
+      await saveToken('miele', { timestamp: new Date(), ...body });
     }
   }
 
   public async refreshToken(): Promise<void> {
-    if (!fs.existsSync('cache/miele-token.json')) {
+    const tokenInfo = await getStoredToken('miele');
+    if (!tokenInfo) {
       console.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
 
-    const tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
     const url = 'https://api.mcs3.miele.com/thirdparty/token';
 
     const headers = {
@@ -89,7 +87,7 @@ export default class Miele {
     formBody.push(`client_id=${encodeURIComponent(this.clientId)}`);
     formBody.push(`client_secret=${encodeURIComponent(this.clientSecret)}`);
     formBody.push(`grant_type=${encodeURIComponent('refresh_token')}`);
-    formBody.push(`refresh_token=${encodeURIComponent(tokenInfo.refresh_token)}`);
+    formBody.push(`refresh_token=${encodeURIComponent(tokenInfo.refresh_token ?? '')}`);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -100,10 +98,7 @@ export default class Miele {
     const body = await response.json();
     if (body.access_token) {
       this.MIELE_TOKEN = body.access_token;
-      fs.writeFileSync(
-        'cache/miele-token.json',
-        JSON.stringify({ timestamp: new Date(), ...body }, null, 2),
-      );
+      await saveToken('miele', { timestamp: new Date(), ...body });
     }
   }
 
@@ -130,21 +125,24 @@ export default class Miele {
   }
 
   public async getActivePrograms(): Promise<void> {
-    if (!fs.existsSync('cache/miele-token.json')) {
+    let tokenInfo = await getStoredToken('miele');
+    if (!tokenInfo) {
       console.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
 
-    let tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
     const dateIssued = new Date(tokenInfo.timestamp);
     const expiresIn = tokenInfo.expires_in;
-    const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
+    const expireDate = new Date(dateIssued.valueOf() + ((expiresIn ?? 0) * 1000));
 
     if (expireDate <= new Date()) {
       console.warn('Token has expired, please re-authorize your account');
       await this.refreshToken();
-      tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
+      tokenInfo = await getStoredToken('miele');
+      if (!tokenInfo) {
+        return;
+      }
     }
 
     this.MIELE_TOKEN = tokenInfo.access_token;
@@ -164,20 +162,24 @@ export default class Miele {
   }
 
   public async listenEvents(): Promise<void> {
-    if (!fs.existsSync('cache/miele-token.json')) {
+    let tokenInfo = await getStoredToken('miele');
+    if (!tokenInfo) {
       console.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
-    let tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
+
     const dateIssued = new Date(tokenInfo.timestamp);
     const expiresIn = tokenInfo.expires_in;
-    const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
+    const expireDate = new Date(dateIssued.valueOf() + ((expiresIn ?? 0) * 1000));
 
     if (expireDate <= new Date()) {
       console.warn('Token has expired, please re-authorize your account');
       await this.refreshToken();
-      tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
+      tokenInfo = await getStoredToken('miele');
+      if (!tokenInfo) {
+        return;
+      }
     }
 
     this.MIELE_TOKEN = tokenInfo.access_token;

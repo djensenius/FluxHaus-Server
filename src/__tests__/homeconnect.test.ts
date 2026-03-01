@@ -2,10 +2,12 @@ import fs from 'fs';
 import { fetchEventData } from 'fetch-sse';
 import HomeConnect from '../homeconnect';
 import { writeError } from '../errors';
+import * as tokenStore from '../token-store';
 
 jest.mock('fs');
 jest.mock('fetch-sse');
 jest.mock('../errors');
+jest.mock('../token-store');
 
 // Mock global fetch
 global.fetch = jest.fn();
@@ -58,6 +60,7 @@ describe('HomeConnect', () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       json: jest.fn().mockResolvedValue(mockResponse),
     });
+    (tokenStore.saveToken as jest.Mock).mockResolvedValue(undefined);
 
     // Start getToken
     homeConnect.getToken();
@@ -84,17 +87,18 @@ describe('HomeConnect', () => {
         body: expect.stringContaining('grant_type=device_code'),
       }),
     );
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      'cache/homeconnect-token.json',
-      expect.stringContaining('new-token'),
+    expect(tokenStore.saveToken).toHaveBeenCalledWith(
+      'homeconnect',
+      expect.objectContaining({ access_token: 'new-token' }),
     );
   });
 
   it('should refresh token', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
+    (tokenStore.getToken as jest.Mock).mockResolvedValue({
       refresh_token: 'old-refresh-token',
-    }));
+      timestamp: new Date(),
+      access_token: 'old-token',
+    });
 
     const mockResponse = {
       access_token: 'refreshed-token',
@@ -104,6 +108,7 @@ describe('HomeConnect', () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       json: jest.fn().mockResolvedValue(mockResponse),
     });
+    (tokenStore.saveToken as jest.Mock).mockResolvedValue(undefined);
 
     await homeConnect.refreshToken();
 
@@ -114,14 +119,14 @@ describe('HomeConnect', () => {
         body: expect.stringContaining('grant_type=refresh_token'),
       }),
     );
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      'cache/homeconnect-token.json',
-      expect.stringContaining('refreshed-token'),
+    expect(tokenStore.saveToken).toHaveBeenCalledWith(
+      'homeconnect',
+      expect.objectContaining({ access_token: 'refreshed-token' }),
     );
   });
 
   it('should warn if refreshing token without auth', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(false);
+    (tokenStore.getToken as jest.Mock).mockResolvedValue(null);
     const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
 
     await homeConnect.refreshToken();
@@ -132,12 +137,11 @@ describe('HomeConnect', () => {
   });
 
   it('should get status', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
+    (tokenStore.getToken as jest.Mock).mockResolvedValue({
       id_token: 'valid-token',
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(),
       expires_in: 3600,
-    }));
+    });
 
     const mockStatus = {
       data: {
@@ -192,12 +196,11 @@ describe('HomeConnect', () => {
   });
 
   it('should get active program', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
+    (tokenStore.getToken as jest.Mock).mockResolvedValue({
       id_token: 'valid-token',
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(),
       expires_in: 3600,
-    }));
+    });
 
     const mockProgram = {
       data: { key: 'Dishcare.Dishwasher.Program.Eco50' },
@@ -222,12 +225,11 @@ describe('HomeConnect', () => {
   });
 
   it('should listen events', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
+    (tokenStore.getToken as jest.Mock).mockResolvedValue({
       id_token: 'valid-token',
-      timestamp: new Date().toISOString(),
+      timestamp: new Date(),
       expires_in: 3600,
-    }));
+    });
 
     // Mock getStatus to avoid failure
     const mockStatus = { data: { status: [] } };
