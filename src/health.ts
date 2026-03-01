@@ -78,6 +78,7 @@ async function checkOIDC(): Promise<ServiceResult> {
     return { status: 'not_configured' };
   }
 
+  const start = Date.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -86,9 +87,9 @@ async function checkOIDC(): Promise<ServiceResult> {
       `${issuer.replace(/\/$/, '')}/.well-known/openid-configuration`,
       { signal: controller.signal },
     );
-    return { status: response.ok ? 'up' : 'down' };
+    return { status: response.ok ? 'up' : 'down', latencyMs: Date.now() - start };
   } catch {
-    return { status: 'down' };
+    return { status: 'down', latencyMs: Date.now() - start };
   } finally {
     clearTimeout(timer);
   }

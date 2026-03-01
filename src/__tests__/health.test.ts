@@ -112,6 +112,7 @@ describe('healthCheck', () => {
     process.env.OIDC_ISSUER = 'https://auth.example.com';
     const result = await healthCheck();
     expect(result.body.services.oidc.status).toBe('up');
+    expect(result.body.services.oidc.latencyMs).toBeGreaterThanOrEqual(0);
     expect(global.fetch).toHaveBeenCalledWith(
       'https://auth.example.com/.well-known/openid-configuration',
       expect.objectContaining({ signal: expect.anything() }),
