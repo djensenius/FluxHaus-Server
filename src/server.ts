@@ -7,10 +7,8 @@ import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
 import HomeAssistantRobot from './homeassistant-robot';
-import { HomeAssistantClient } from './homeassistant-client';
-import Car, { CarConfig, CarStartOptions } from './car';
-import Miele from './miele';
-import HomeConnect from './homeconnect';
+import { CarStartOptions } from './car';
+import { createServices } from './services';
 
 const port = process.env.PORT || 8888;
 
@@ -60,40 +58,17 @@ export async function createServer(): Promise<Express> {
     },
   };
 
-  const homeAssistantClient = new HomeAssistantClient({
-    url: (process.env.HOMEASSISTANT_URL || 'http://homeassistant.local:8123').trim(),
-    token: (process.env.HOMEASSISTANT_TOKEN || '').trim(),
-  });
-
-  // eslint-disable-next-line no-console
-  console.log('Using Home Assistant for robots');
-  const broombot = new HomeAssistantRobot({
-    name: 'Broombot',
-    entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
-    batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
-    client: homeAssistantClient,
-  });
-
-  const mopbot = new HomeAssistantRobot({
-    name: 'Mopbot',
-    entityId: (process.env.MOPBOT_ENTITY_ID || 'vacuum.mopbot').trim(),
-    batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
-    client: homeAssistantClient,
-  });
+  const {
+    broombot,
+    mopbot,
+    car,
+    mieleClient,
+    hc,
+    cameraURL,
+  } = await createServices();
 
   let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
-  const carConfig: CarConfig = {
-    client: homeAssistantClient,
-    entityPrefix: process.env.CAR_ENTITY_PREFIX || 'kia',
-  };
-
-  const car = new Car(carConfig);
-  await car.setStatus();
-  const cameraURL = process.env.CAMERA_URL || '';
-  const clientId = process.env.mieleClientId || '';
-  const secretId = process.env.mieleSecretId || '';
-  const mieleClient = new Miele(clientId, secretId);
   mieleClient.getActivePrograms();
   mieleClient.listenEvents();
   setInterval(() => {
@@ -101,9 +76,6 @@ export async function createServer(): Promise<Express> {
   }, 600000);
   mieleClient.listenEvents();
 
-  const homeConnectClientId = process.env.boschClientId || '';
-  const homeConnectSecretId = process.env.boschSecretId || '';
-  const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
   hc.getActiveProgram();
   hc.listenEvents();
   setInterval(() => {
