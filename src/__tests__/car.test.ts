@@ -198,16 +198,12 @@ describe('Car', () => {
   });
 
   it('should handle errors gracefully', async () => {
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     mockClient.getState = jest.fn().mockRejectedValue(new Error('HA unavailable'));
 
     await car.setStatus();
 
-    expect(consoleSpy).toHaveBeenCalledWith(
-      'Failed to fetch car status from Home Assistant:',
-      expect.any(Error),
-    );
-    consoleSpy.mockRestore();
+    // Error is logged via pino logger — just verify no exception thrown
+    expect(car.status).toBeUndefined();
   });
 
   it('should keep last good status when all values are unavailable', async () => {
@@ -218,16 +214,11 @@ describe('Car', () => {
     expect(goodStatus!.evStatus.batteryStatus).toBe(75);
 
     // Now return all unavailable
-    const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
     mockClient.getState = jest.fn().mockResolvedValue({ state: 'unavailable' });
 
     await car.setStatus();
 
     expect(car.status).toEqual(goodStatus);
-    expect(consoleSpy).toHaveBeenCalledWith(
-      'Car status returned all zeros/unavailable, keeping last good status',
-    );
-    consoleSpy.mockRestore();
   });
 
   it('should keep last good status when all values are zero', async () => {
@@ -236,12 +227,10 @@ describe('Car', () => {
     const goodStatus = car.status;
 
     // Now return all zeros
-    const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
     mockClient.getState = jest.fn().mockResolvedValue({ state: '0' });
 
     await car.setStatus();
 
     expect(car.status).toEqual(goodStatus);
-    consoleSpy.mockRestore();
   });
 });

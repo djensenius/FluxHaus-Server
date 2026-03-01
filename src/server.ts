@@ -1,15 +1,30 @@
 import 'dotenv/config';
 import fs from 'fs';
 import express, { Express } from 'express';
+import cookieParser from 'cookie-parser';
+import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
-import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
+import { authMiddleware } from './middleware/auth.middleware';
+import auditMiddleware from './middleware/audit.middleware';
+import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
+import {
+  closePool, getPool, initDatabase, initPool,
+} from './db';
+import { closeClient as closeInflux, flushWrites, initInflux } from './influx';
 import HomeAssistantRobot from './homeassistant-robot';
-import { CarStartOptions } from './car';
-import { createServices } from './services';
+import { HomeAssistantClient } from './homeassistant-client';
+import Car, { CarConfig, CarStartOptions } from './car';
+import Miele from './miele';
+import HomeConnect from './homeconnect';
+import adminRouter from './routes/admin.routes';
 import { executeAICommand } from './ai-command';
+import logger from './logger';
+
+const serverLogger = logger.child({ subsystem: 'server' });
 
 const port = process.env.PORT || 8888;
 
@@ -19,6 +34,9 @@ const { version } = require('../package.json');
 export async function createServer(): Promise<Express> {
   const app: Express = express();
 
+  // Trust reverse proxy (needed for secure cookies behind SSL termination)
+  app.set('trust proxy', 1);
+
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10000,
@@ -27,25 +45,37 @@ export async function createServer(): Promise<Express> {
     legacyHeaders: false,
   });
 
+  const sessionSecret = process.env.SESSION_SECRET || 'fluxhaus-dev-secret';
+
   app.use(
     limiter,
     nocache(),
-    express.json(),
+    cookieParser(sessionSecret),
     express.urlencoded({ extended: true }),
-    basicAuth({
-      users: {
-        admin: process.env.BASIC_AUTH_PASSWORD!,
-        rhizome: process.env.RHIZOME_PASSWORD!,
-        demo: process.env.DEMO_PASSWORD!,
-      },
-      challenge: true,
-      realm: 'fluxhaus',
-    }),
   );
-  const allowedOrigins = [
-    'http://localhost:8080',
-    'https://haus.fluxhaus.io',
-  ];
+
+  // PG-backed session store (for server-side session tracking/revocation)
+  const PgStore = connectPgSimple(session);
+  const pool = getPool();
+  const sessionConfig: session.SessionOptions = {
+    secret: sessionSecret,
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      httpOnly: true,
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: 'lax',
+    },
+  };
+  if (pool) {
+    sessionConfig.store = new PgStore({ pool, createTableIfMissing: true });
+  }
+  app.use(session(sessionConfig));
+
+  const allowedOrigins = (
+    process.env.CORS_ORIGINS || 'http://localhost:8080,https://haus.fluxhaus.io'
+  ).split(',').map((o) => o.trim());
 
   const corsOptions: CorsOptions = {
     allowedHeaders: ['Authorization', 'Content-Type'],
@@ -60,18 +90,98 @@ export async function createServer(): Promise<Express> {
     },
   };
 
-  const services = await createServices();
-  const {
-    broombot,
-    mopbot,
-    car,
-    mieleClient,
-    hc,
-    cameraURL,
-  } = services;
+  // Health check — unauthenticated, before auth middleware
+  app.get('/health', async (_req, res) => {
+    const services: Record<string, string> = {};
+    let overallStatus: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
+
+    const dbPool = getPool();
+    if (dbPool) {
+      try {
+        const timeoutP = new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error('timeout')), 3000);
+        });
+        await Promise.race([dbPool.query('SELECT 1'), timeoutP]);
+        services.postgres = 'up';
+      } catch {
+        services.postgres = 'down';
+        overallStatus = 'unhealthy';
+      }
+    } else {
+      services.postgres = 'not_configured';
+    }
+
+    if (process.env.INFLUXDB_URL) {
+      try {
+        const controller = new AbortController();
+        const to = setTimeout(() => controller.abort(), 3000);
+        const resp = await fetch(`${process.env.INFLUXDB_URL}/health`, { signal: controller.signal });
+        clearTimeout(to);
+        services.influxdb = resp.ok ? 'up' : 'down';
+        if (!resp.ok && overallStatus === 'healthy') overallStatus = 'degraded';
+      } catch {
+        services.influxdb = 'down';
+        if (overallStatus === 'healthy') overallStatus = 'degraded';
+      }
+    } else {
+      services.influxdb = 'not_configured';
+    }
+
+    if (process.env.OIDC_ISSUER_URL) {
+      services.oidc = getOidcIssuer() ? 'up' : 'down';
+      if (!getOidcIssuer() && overallStatus === 'healthy') overallStatus = 'degraded';
+    } else {
+      services.oidc = 'not_configured';
+    }
+
+    res.status(overallStatus === 'unhealthy' ? 503 : 200).json({
+      status: overallStatus,
+      version,
+      timestamp: new Date().toISOString(),
+      services,
+    });
+  });
+
+  // OIDC auth routes (login, callback, logout) — unauthenticated
+  app.use(createAuthRouter());
+
+  // Auth middleware
+  app.use(authMiddleware);
+  app.use(auditMiddleware);
+
+  const homeAssistantClient = new HomeAssistantClient({
+    url: (process.env.HOMEASSISTANT_URL || 'http://homeassistant.local:8123').trim(),
+    token: (process.env.HOMEASSISTANT_TOKEN || '').trim(),
+  });
+
+  serverLogger.info('Using Home Assistant for robots');
+  const broombot = new HomeAssistantRobot({
+    name: 'Broombot',
+    entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
+    batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
+    client: homeAssistantClient,
+  });
+
+  const mopbot = new HomeAssistantRobot({
+    name: 'Mopbot',
+    entityId: (process.env.MOPBOT_ENTITY_ID || 'vacuum.mopbot').trim(),
+    batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
+    client: homeAssistantClient,
+  });
 
   let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
+  const carConfig: CarConfig = {
+    client: homeAssistantClient,
+    entityPrefix: process.env.CAR_ENTITY_PREFIX || 'kia',
+  };
+
+  const car = new Car(carConfig);
+  await car.setStatus();
+  const cameraURL = process.env.CAMERA_URL || '';
+  const clientId = process.env.mieleClientId || '';
+  const secretId = process.env.mieleSecretId || '';
+  const mieleClient = new Miele(clientId, secretId);
   mieleClient.getActivePrograms();
   mieleClient.listenEvents();
   setInterval(() => {
@@ -79,6 +189,9 @@ export async function createServer(): Promise<Express> {
   }, 600000);
   mieleClient.listenEvents();
 
+  const homeConnectClientId = process.env.boschClientId || '';
+  const homeConnectSecretId = process.env.boschSecretId || '';
+  const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
   hc.getActiveProgram();
   hc.listenEvents();
   setInterval(() => {
@@ -94,10 +207,9 @@ export async function createServer(): Promise<Express> {
 
 
   app.get('/', cors(corsOptions), (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
     res.setHeader('Content-Type', 'application/json');
-    // Check if file exists and read it
     const evStatus = car.status?.evStatus ?? null;
+    const role = req.user?.role;
 
     let rhizomeSchedule = null;
     if (fs.existsSync('cache/rhizome.json')) {
@@ -121,8 +233,38 @@ export async function createServer(): Promise<Express> {
 
     let data = {};
 
-    if (authReq.auth.user === 'admin') {
+    if (role === 'admin') {
       const RobotClass = HomeAssistantRobot;
+      const broomData: Record<string, unknown> = {
+        bin: RobotClass.binStatus(broombot.cachedStatus),
+        binFull: broombot.cachedStatus.binFull,
+        running: RobotClass.runningStatus(broombot.cachedStatus),
+        charging: RobotClass.chargingStatus(broombot.cachedStatus),
+        docking: RobotClass.dockingStatus(broombot.cachedStatus),
+        docked: RobotClass.dockedStatus(broombot.cachedStatus),
+        battery: RobotClass.batteryStatus(broombot.cachedStatus),
+        timestamp: broombot.cachedStatus.timestamp,
+        paused: broombot.cachedStatus.paused,
+        timeStarted: broombot.cachedStatus.timeStarted,
+      };
+      const bBattLevel = RobotClass.batteryLevelStatus(broombot.cachedStatus);
+      if (bBattLevel !== undefined) broomData.batteryLevel = bBattLevel;
+
+      const mopData: Record<string, unknown> = {
+        bin: RobotClass.binStatus(mopbot.cachedStatus),
+        binFull: mopbot.cachedStatus.binFull,
+        running: RobotClass.runningStatus(mopbot.cachedStatus),
+        charging: RobotClass.chargingStatus(mopbot.cachedStatus),
+        docking: RobotClass.dockingStatus(mopbot.cachedStatus),
+        docked: RobotClass.dockedStatus(mopbot.cachedStatus),
+        battery: RobotClass.batteryStatus(mopbot.cachedStatus),
+        timestamp: mopbot.cachedStatus.timestamp,
+        paused: mopbot.cachedStatus.paused,
+        timeStarted: mopbot.cachedStatus.timeStarted,
+      };
+      const mBattLevel = RobotClass.batteryLevelStatus(mopbot.cachedStatus);
+      if (mBattLevel !== undefined) mopData.batteryLevel = mBattLevel;
+
       data = {
         version,
         timestamp: new Date(),
@@ -133,32 +275,8 @@ export async function createServer(): Promise<Express> {
         boschSecretId: process.env.boschSecretId,
         boschAppliance: process.env.boschAppliance,
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
-        broombot: {
-          batteryLevel: RobotClass.batteryLevelStatus(broombot.cachedStatus),
-          bin: RobotClass.binStatus(broombot.cachedStatus),
-          binFull: broombot.cachedStatus.binFull,
-          running: RobotClass.runningStatus(broombot.cachedStatus),
-          charging: RobotClass.chargingStatus(broombot.cachedStatus),
-          docking: RobotClass.dockingStatus(broombot.cachedStatus),
-          docked: RobotClass.dockedStatus(broombot.cachedStatus),
-          battery: RobotClass.batteryStatus(broombot.cachedStatus),
-          timestamp: broombot.cachedStatus.timestamp,
-          paused: broombot.cachedStatus.paused,
-          timeStarted: broombot.cachedStatus.timeStarted,
-        },
-        mopbot: {
-          batteryLevel: RobotClass.batteryLevelStatus(mopbot.cachedStatus),
-          bin: RobotClass.binStatus(mopbot.cachedStatus),
-          binFull: mopbot.cachedStatus.binFull,
-          running: RobotClass.runningStatus(mopbot.cachedStatus),
-          charging: RobotClass.chargingStatus(mopbot.cachedStatus),
-          docking: RobotClass.dockingStatus(mopbot.cachedStatus),
-          docked: RobotClass.dockedStatus(mopbot.cachedStatus),
-          battery: RobotClass.batteryStatus(mopbot.cachedStatus),
-          timestamp: mopbot.cachedStatus.timestamp,
-          paused: mopbot.cachedStatus.paused,
-          timeStarted: mopbot.cachedStatus.timeStarted,
-        },
+        broombot: broomData,
+        mopbot: mopData,
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
@@ -171,45 +289,51 @@ export async function createServer(): Promise<Express> {
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
       };
-    } else if (authReq.auth.user === 'rhizome') {
+    } else if (role === 'rhizome') {
       data = {
         version,
         cameraURL,
         rhizomeSchedule,
         rhizomeData,
       };
-    } else if (authReq.auth.user === 'demo') {
+    } else if (role === 'demo') {
       const RobotClass = HomeAssistantRobot;
+      const broomData: Record<string, unknown> = {
+        bin: RobotClass.binStatus(broombot.cachedStatus),
+        binFull: broombot.cachedStatus.binFull,
+        running: RobotClass.runningStatus(broombot.cachedStatus),
+        charging: RobotClass.chargingStatus(broombot.cachedStatus),
+        docking: RobotClass.dockingStatus(broombot.cachedStatus),
+        docked: RobotClass.dockedStatus(broombot.cachedStatus),
+        battery: RobotClass.batteryStatus(broombot.cachedStatus),
+        timestamp: broombot.cachedStatus.timestamp,
+        paused: broombot.cachedStatus.paused,
+        timeStarted: broombot.cachedStatus.timeStarted,
+      };
+      const bBattLevel = RobotClass.batteryLevelStatus(broombot.cachedStatus);
+      if (bBattLevel !== undefined) broomData.batteryLevel = bBattLevel;
+
+      const mopData: Record<string, unknown> = {
+        bin: RobotClass.binStatus(mopbot.cachedStatus),
+        binFull: mopbot.cachedStatus.binFull,
+        running: RobotClass.runningStatus(mopbot.cachedStatus),
+        charging: RobotClass.chargingStatus(mopbot.cachedStatus),
+        docking: RobotClass.dockingStatus(mopbot.cachedStatus),
+        docked: RobotClass.dockedStatus(mopbot.cachedStatus),
+        battery: RobotClass.batteryStatus(mopbot.cachedStatus),
+        timestamp: mopbot.cachedStatus.timestamp,
+        paused: mopbot.cachedStatus.paused,
+        timeStarted: mopbot.cachedStatus.timeStarted,
+      };
+      const mBattLevel = RobotClass.batteryLevelStatus(mopbot.cachedStatus);
+      if (mBattLevel !== undefined) mopData.batteryLevel = mBattLevel;
+
       data = {
         version,
         timestamp: new Date(),
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
-        broombot: {
-          batteryLevel: RobotClass.batteryLevelStatus(broombot.cachedStatus),
-          bin: RobotClass.binStatus(broombot.cachedStatus),
-          binFull: broombot.cachedStatus.binFull,
-          running: RobotClass.runningStatus(broombot.cachedStatus),
-          charging: RobotClass.chargingStatus(broombot.cachedStatus),
-          docking: RobotClass.dockingStatus(broombot.cachedStatus),
-          docked: RobotClass.dockedStatus(broombot.cachedStatus),
-          battery: RobotClass.batteryStatus(broombot.cachedStatus),
-          timestamp: broombot.cachedStatus.timestamp,
-          paused: broombot.cachedStatus.paused,
-          timeStarted: broombot.cachedStatus.timeStarted,
-        },
-        mopbot: {
-          batteryLevel: RobotClass.batteryLevelStatus(mopbot.cachedStatus),
-          bin: RobotClass.binStatus(mopbot.cachedStatus),
-          binFull: mopbot.cachedStatus.binFull,
-          running: RobotClass.runningStatus(mopbot.cachedStatus),
-          charging: RobotClass.chargingStatus(mopbot.cachedStatus),
-          docking: RobotClass.dockingStatus(mopbot.cachedStatus),
-          docked: RobotClass.dockedStatus(mopbot.cachedStatus),
-          battery: RobotClass.batteryStatus(mopbot.cachedStatus),
-          timestamp: mopbot.cachedStatus.timestamp,
-          paused: mopbot.cachedStatus.paused,
-          timeStarted: mopbot.cachedStatus.timeStarted,
-        },
+        broombot: broomData,
+        mopbot: mopData,
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
@@ -225,8 +349,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning on mopbot
   app.get('/turnOnMopbot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await mopbot.turnOn();
     }
     res.send('Mopbot is turned on.');
@@ -234,8 +357,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning off mopbot
   app.get('/turnOffMopbot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await mopbot.turnOff();
     }
     res.send('Mopbot is turned off.');
@@ -243,8 +365,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning on broombot
   app.get('/turnOnBroombot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
     res.send('Broombot is turned on.');
@@ -252,8 +373,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning off broombot
   app.get('/turnOffBroombot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
     res.send('Broombot is turned off.');
@@ -261,8 +381,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for starting a deep clean
   app.get('/turnOnDeepClean', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
     cleanTimeout = setTimeout(() => {
@@ -273,8 +392,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for stopping a deep clean
   app.get('/turnOffDeepClean', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
     if (cleanTimeout) {
@@ -285,8 +403,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/startCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const {
         temp,
         heatedFeatures,
@@ -325,8 +442,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/stopCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const result = car.stop();
       res.send(JSON.stringify({ result }));
       setTimeout(() => {
@@ -336,16 +452,14 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/resyncCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       car.resync();
     }
     res.send('Resyncing car');
   });
 
   app.get('/lockCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const result = car.lock();
       res.send(JSON.stringify({ result }));
       setTimeout(() => {
@@ -355,8 +469,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/unlockCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const result = car.unlock();
       res.send(result);
       setTimeout(() => {
@@ -366,8 +479,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.post('/command', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user !== 'admin') {
+    if (req.user?.role !== 'admin') {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
@@ -377,6 +489,15 @@ export async function createServer(): Promise<Express> {
       return;
     }
     try {
+      const services = {
+        homeAssistantClient,
+        broombot,
+        mopbot,
+        car,
+        mieleClient,
+        hc,
+        cameraURL,
+      };
       const response = await executeAICommand(command, services);
       res.json({ response });
     } catch (err) {
@@ -385,6 +506,7 @@ export async function createServer(): Promise<Express> {
     }
   });
 
+  app.use(adminRouter);
   app.use(notFoundHandler);
 
   return app;
@@ -450,9 +572,35 @@ if (process.env.NODE_ENV !== 'test') {
     fetchRhizomePhotos();
   }, 1000 * 60 * 60);
 
-  createServer().then((app) => {
-    app.listen(port, () => {
-      console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
+  (async () => {
+    initPool();
+    await initDatabase();
+    initInflux();
+    await initOidc();
+
+    const app = await createServer();
+    const server = app.listen(port, () => {
+      serverLogger.info({ port }, 'Server is running');
     });
-  });
+
+    const shutdown = async (signal: string) => {
+      serverLogger.info({ signal }, 'Shutting down gracefully');
+      const forceExit = setTimeout(() => {
+        serverLogger.error('Forced exit after timeout');
+        process.exit(1);
+      }, 10000);
+      forceExit.unref();
+
+      server.close(async () => {
+        await flushWrites();
+        await closeInflux();
+        await closePool();
+        serverLogger.info('Shutdown complete');
+        process.exit(0);
+      });
+    };
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
+  })();
 }

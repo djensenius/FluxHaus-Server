@@ -18,9 +18,6 @@ module.exports = {
     },
     'import/resolver': {
       webpack: {},
-      typescript: {
-        project: './tsconfig.json',
-      },
       node: {
         extensions: ['.js', '.jsx', '.ts', '.tsx'],
       },

@@ -9,10 +9,7 @@ const nodeExternals = require('webpack-node-externals');
 // process.env.NODE_ENV = 'development';
 
 module.exports = {
-  entry: {
-    server: './src/server.ts',
-    mcp: './src/mcp.ts',
-  },
+  entry: './src/server.ts',
   devtool: 'source-map',
   mode: 'development',
   target: 'node',
@@ -34,7 +31,7 @@ module.exports = {
   },
   output: {
     publicPath: '/',
-    filename: '[name].js',
+    filename: 'server.js',
     path: path.resolve(__dirname, 'dist'),
     library: 'FluxHausServer',
   },

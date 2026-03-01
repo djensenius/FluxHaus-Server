@@ -4,6 +4,9 @@ import HomeAssistantRobot from './homeassistant-robot';
 import Car, { CarConfig } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
+import logger from './logger';
+
+const servicesLogger = logger.child({ subsystem: 'services' });
 
 export interface FluxHausServices {
   homeAssistantClient: HomeAssistantClient;
@@ -22,7 +25,7 @@ export async function createServices(): Promise<FluxHausServices> {
   });
 
   // eslint-disable-next-line no-console
-  console.log('Using Home Assistant for robots');
+  servicesLogger.info('Using Home Assistant for robots');
   const broombot = new HomeAssistantRobot({
     name: 'Broombot',
     entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
