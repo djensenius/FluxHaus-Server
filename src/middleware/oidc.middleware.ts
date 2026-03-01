@@ -128,7 +128,9 @@ export function createAuthRouter(): Router {
       redirect_uri: redirectUri,
     });
 
-    res.redirect(authUrl);
+    req.session.save(() => {
+      res.redirect(authUrl);
+    });
   });
 
   router.get('/auth/callback', async (req, res) => {
