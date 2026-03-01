@@ -32,6 +32,9 @@ const { version } = require('../package.json');
 export async function createServer(): Promise<Express> {
   const app: Express = express();
 
+  // Trust reverse proxy (needed for secure cookies behind SSL termination)
+  app.set('trust proxy', 1);
+
   const limiter = rateLimit({
     windowMs: 15 * 60 * 1000,
     max: 10000,
