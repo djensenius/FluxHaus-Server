@@ -1,5 +1,5 @@
 import { Client, Issuer } from 'openid-client';
-import { createRemoteJWKSet, jwtVerify, JWTPayload } from 'jose';
+import { JWTPayload, createRemoteJWKSet, jwtVerify } from 'jose';
 import logger from '../logger';
 
 const oidcLogger = logger.child({ subsystem: 'oidc' });
