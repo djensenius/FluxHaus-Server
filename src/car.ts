@@ -84,12 +84,28 @@ export default class Car {
     this.setStatus();
     setInterval(() => {
       this.setStatus();
-    }, carConfig.pollInterval ?? 1000 * 60 * 120);
+    }, carConfig.pollInterval ?? 1000 * 60 * 5);
   }
 
   private async getEntityState(entityId: string): Promise<string> {
     const state = await this.client.getState(entityId);
     return state.state;
+  }
+
+  private isStatusValid(
+    batteryLevel: string,
+    evRange: string,
+    totalRange: string,
+    lastUpdated: string,
+  ): boolean {
+    const battery = parseInt(batteryLevel, 10);
+    const ev = parseInt(evRange, 10);
+    const total = parseInt(totalRange, 10);
+    if (Number.isNaN(battery) && Number.isNaN(ev) && Number.isNaN(total)) return false;
+    if (battery === 0 && ev === 0 && total === 0) return false;
+    const allUnavailable = [batteryLevel, evRange, totalRange, lastUpdated]
+      .every((v) => v === 'unavailable' || v === 'unknown');
+    return !allUnavailable;
   }
 
   setStatus = async () => {
@@ -116,23 +132,28 @@ export default class Car {
         lastUpdated,
       ] = await Promise.all([
         this.getEntityState(`sensor.${prefix}_ev_battery_level`),
-        this.getEntityState(`binary_sensor.${prefix}_ev_battery_charging`),
+        this.getEntityState(`binary_sensor.${prefix}_ev_battery_charge`),
         this.getEntityState(`binary_sensor.${prefix}_ev_battery_plug`),
         this.getEntityState(`sensor.${prefix}_ev_range`),
-        this.getEntityState(`sensor.${prefix}_range`),
+        this.getEntityState(`sensor.${prefix}_total_driving_range`),
         this.getEntityState(`binary_sensor.${prefix}_air_conditioner`),
         this.getEntityState(`lock.${prefix}_door_lock`),
-        this.getEntityState(`binary_sensor.${prefix}_door_front_left`),
-        this.getEntityState(`binary_sensor.${prefix}_door_front_right`),
-        this.getEntityState(`binary_sensor.${prefix}_door_rear_left`),
-        this.getEntityState(`binary_sensor.${prefix}_door_rear_right`),
+        this.getEntityState(`binary_sensor.${prefix}_front_left_door`),
+        this.getEntityState(`binary_sensor.${prefix}_front_right_door`),
+        this.getEntityState(`binary_sensor.${prefix}_back_left_door`),
+        this.getEntityState(`binary_sensor.${prefix}_back_right_door`),
         this.getEntityState(`binary_sensor.${prefix}_trunk`),
         this.getEntityState(`binary_sensor.${prefix}_hood`),
         this.getEntityState(`binary_sensor.${prefix}_defrost`),
         this.getEntityState(`binary_sensor.${prefix}_engine`),
         this.getEntityState(`sensor.${prefix}_odometer`),
-        this.getEntityState(`sensor.${prefix}_last_updated`),
+        this.getEntityState(`sensor.${prefix}_last_updated_at`),
       ]);
+
+      if (!this.isStatusValid(batteryLevel, evRange, totalRange, lastUpdated)) {
+        console.log('Car status returned all zeros/unavailable, keeping last good status');
+        return;
+      }
 
       const timestamp = lastUpdated !== 'unavailable' ? new Date(lastUpdated) : new Date();
       const evModeRange = parseInt(evRange, 10) || 0;
