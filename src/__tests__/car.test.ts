@@ -56,10 +56,8 @@ describe('Car', () => {
     jest.useRealTimers();
   });
 
-  it('should fetch status on initialization', async () => {
-    // setStatus is called in constructor, wait for it
-    await Promise.resolve();
-    await Promise.resolve();
+  it('should fetch status when setStatus is called', async () => {
+    await car.setStatus();
 
     expect(mockClient.getState).toHaveBeenCalledWith(`sensor.${entityPrefix}_ev_battery_level`);
     expect(mockClient.getState).toHaveBeenCalledWith(`lock.${entityPrefix}_door_lock`);

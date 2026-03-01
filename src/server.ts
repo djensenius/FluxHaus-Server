@@ -89,6 +89,7 @@ export async function createServer(): Promise<Express> {
   };
 
   const car = new Car(carConfig);
+  await car.setStatus();
   const cameraURL = process.env.CAMERA_URL || '';
   const clientId = process.env.mieleClientId || '';
   const secretId = process.env.mieleSecretId || '';
