@@ -4,3 +4,12 @@ export interface AuthenticatedUser {
   sub?: string;
   email?: string;
 }
+
+declare module 'express-session' {
+  interface SessionData {
+    user?: AuthenticatedUser;
+    oidcState?: string;
+    oidcNonce?: string;
+    oidcCodeVerifier?: string;
+  }
+}

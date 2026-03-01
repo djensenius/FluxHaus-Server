@@ -4,6 +4,7 @@ import { validateBearerToken } from '../oidc.middleware';
 
 jest.mock('../oidc.middleware', () => ({
   validateBearerToken: jest.fn(),
+  isOidcEnabled: jest.fn().mockReturnValue(false),
 }));
 
 function mockReq(headers: Record<string, string> = {}): Partial<Request> {

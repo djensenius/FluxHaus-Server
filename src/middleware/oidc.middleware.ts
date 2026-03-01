@@ -1,4 +1,5 @@
-import { Client, Issuer } from 'openid-client';
+import { Router } from 'express';
+import { Client, Issuer, generators } from 'openid-client';
 import { JWTPayload, createRemoteJWKSet, jwtVerify } from 'jose';
 import logger from '../logger';
 
@@ -13,6 +14,7 @@ export async function initOidc(): Promise<void> {
   const issuerUrl = process.env.OIDC_ISSUER_URL;
   const clientId = process.env.OIDC_CLIENT_ID;
   const clientSecret = process.env.OIDC_CLIENT_SECRET;
+  const redirectUri = process.env.OIDC_REDIRECT_URI;
 
   if (!issuerUrl || !clientId) {
     oidcLogger.warn('OIDC_ISSUER_URL or OIDC_CLIENT_ID not set — OIDC disabled');
@@ -24,6 +26,8 @@ export async function initOidc(): Promise<void> {
     oidcClient = new oidcIssuer.Client({
       client_id: clientId,
       client_secret: clientSecret,
+      redirect_uris: redirectUri ? [redirectUri] : undefined,
+      response_types: ['code'],
     });
 
     if (oidcIssuer.metadata.jwks_uri) {
@@ -87,4 +91,90 @@ export async function validateBearerToken(
   }
 
   return null;
+}
+
+export function isOidcEnabled(): boolean {
+  return oidcClient !== null && oidcIssuer !== null;
+}
+
+export function createAuthRouter(): Router {
+  const router = Router();
+  const redirectUri = process.env.OIDC_REDIRECT_URI
+    || 'http://localhost:8888/auth/callback';
+
+  router.get('/auth/login', (req, res) => {
+    if (!oidcClient) {
+      res.status(503).json({ message: 'OIDC not configured' });
+      return;
+    }
+
+    const state = generators.state();
+    const nonce = generators.nonce();
+    const codeVerifier = generators.codeVerifier();
+    const codeChallenge = generators.codeChallenge(codeVerifier);
+
+    req.session.oidcState = state;
+    req.session.oidcNonce = nonce;
+    req.session.oidcCodeVerifier = codeVerifier;
+
+    const authUrl = oidcClient.authorizationUrl({
+      scope: 'openid email profile',
+      state,
+      nonce,
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
+      redirect_uri: redirectUri,
+    });
+
+    res.redirect(authUrl);
+  });
+
+  router.get('/auth/callback', async (req, res) => {
+    if (!oidcClient) {
+      res.status(503).json({ message: 'OIDC not configured' });
+      return;
+    }
+
+    try {
+      const params = oidcClient.callbackParams(req);
+      const tokenSet = await oidcClient.callback(redirectUri, params, {
+        state: req.session.oidcState,
+        nonce: req.session.oidcNonce,
+        code_verifier: req.session.oidcCodeVerifier,
+      });
+
+      const userinfo = await oidcClient.userinfo(tokenSet.access_token!);
+
+      // Clear OIDC flow state
+      delete req.session.oidcState;
+      delete req.session.oidcNonce;
+      delete req.session.oidcCodeVerifier;
+
+      req.session.user = {
+        role: 'admin',
+        username: (userinfo.preferred_username || userinfo.email || userinfo.sub) as string,
+        sub: userinfo.sub,
+        email: userinfo.email as string | undefined,
+      };
+
+      oidcLogger.info({ username: req.session.user.username }, 'OIDC login success');
+      res.redirect('/');
+    } catch (err) {
+      oidcLogger.error({ err }, 'OIDC callback failed');
+      res.status(401).json({ message: 'Authentication failed' });
+    }
+  });
+
+  router.get('/auth/logout', (req, res) => {
+    const endSessionUrl = oidcIssuer?.metadata.end_session_endpoint;
+    req.session.destroy(() => {
+      if (endSessionUrl) {
+        res.redirect(endSessionUrl);
+      } else {
+        res.json({ message: 'Logged out' });
+      }
+    });
+  });
+
+  return router;
 }
