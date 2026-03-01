@@ -1,12 +1,60 @@
 ---
 services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      - POSTGRES_DB=fluxhaus
+      - POSTGRES_USER=fluxhaus
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-fluxhaus}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fluxhaus"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  influxdb:
+    image: influxdb:2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=fluxhaus
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-fluxhaus123}
+      - DOCKER_INFLUXDB_INIT_ORG=fluxhaus
+      - DOCKER_INFLUXDB_INIT_BUCKET=fluxhaus
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=${INFLUXDB_TOKEN:-change-me-token}
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
   fluxhaus-server:
     image: ghcr.io/djensenius/fluxhaus-server:latest
     # build: .
-    network_mode: "host"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    ports:
+      - "8888:8888"
     environment:
       - TZ=America/Toronto
     volumes:
       - ./cache:/app/cache
       - .env:/app/.env
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8888/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     restart: unless-stopped
+
+volumes:
+  postgres_data:
+  influxdb_data:

@@ -4,6 +4,10 @@ import { fetchEventData } from 'fetch-sse';
 import { clearError, writeError } from './errors';
 import { MieleDevice } from './types/types';
 import { MieleRoot } from './types/miele';
+import { getToken, saveToken } from './token-store';
+import logger from './logger';
+
+const mieleLogger = logger.child({ subsystem: 'miele' });
 
 export default class Miele {
   public washer: MieleDevice;
@@ -37,7 +41,7 @@ export default class Miele {
   public async authorize(): Promise<void> {
     const url = 'https://api.mcs3.miele.com/thirdparty/login';
     const params = `client_id=${this.clientId}&redirect_uri=${encodeURIComponent(this.redirectUri)}&response_type=code`;
-    console.warn(`Visit ${url}?${params} to authorize your Miele account`);
+    mieleLogger.warn({ url: `${url}?${params}` }, 'Visit URL to authorize your Miele account');
   }
 
   public async getToken(code: string): Promise<void> {
@@ -63,21 +67,18 @@ export default class Miele {
     const body = await response.json();
     if (body.access_token) {
       this.MIELE_TOKEN = body.access_token;
-      fs.writeFileSync(
-        'cache/miele-token.json',
-        JSON.stringify({ timestamp: new Date(), ...body }, null, 2),
-      );
+      await saveToken('miele', { timestamp: new Date().toISOString(), ...body });
     }
   }
 
   public async refreshToken(): Promise<void> {
-    if (!fs.existsSync('cache/miele-token.json')) {
-      console.warn('You need to authorize your Miele account first');
+    const tokenInfo = await getToken('miele');
+    if (!tokenInfo) {
+      mieleLogger.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
 
-    const tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
     const url = 'https://api.mcs3.miele.com/thirdparty/token';
 
     const headers = {
@@ -89,7 +90,7 @@ export default class Miele {
     formBody.push(`client_id=${encodeURIComponent(this.clientId)}`);
     formBody.push(`client_secret=${encodeURIComponent(this.clientSecret)}`);
     formBody.push(`grant_type=${encodeURIComponent('refresh_token')}`);
-    formBody.push(`refresh_token=${encodeURIComponent(tokenInfo.refresh_token)}`);
+    formBody.push(`refresh_token=${encodeURIComponent(tokenInfo.refresh_token as string)}`);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -100,10 +101,7 @@ export default class Miele {
     const body = await response.json();
     if (body.access_token) {
       this.MIELE_TOKEN = body.access_token;
-      fs.writeFileSync(
-        'cache/miele-token.json',
-        JSON.stringify({ timestamp: new Date(), ...body }, null, 2),
-      );
+      await saveToken('miele', { timestamp: new Date().toISOString(), ...body });
     }
   }
 
@@ -130,21 +128,22 @@ export default class Miele {
   }
 
   public async getActivePrograms(): Promise<void> {
-    if (!fs.existsSync('cache/miele-token.json')) {
-      console.warn('You need to authorize your Miele account first');
+    let tokenInfo = await getToken('miele');
+    if (!tokenInfo) {
+      mieleLogger.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
 
-    let tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
-    const dateIssued = new Date(tokenInfo.timestamp);
-    const expiresIn = tokenInfo.expires_in;
+    const dateIssued = new Date(tokenInfo.timestamp as string);
+    const expiresIn = tokenInfo.expires_in as number;
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
 
     if (expireDate <= new Date()) {
-      console.warn('Token has expired, please re-authorize your account');
+      mieleLogger.warn('Token has expired, please re-authorize your account');
       await this.refreshToken();
-      tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
+      tokenInfo = await getToken('miele');
+      if (!tokenInfo) return;
     }
 
     this.MIELE_TOKEN = tokenInfo.access_token;
@@ -164,20 +163,22 @@ export default class Miele {
   }
 
   public async listenEvents(): Promise<void> {
-    if (!fs.existsSync('cache/miele-token.json')) {
-      console.warn('You need to authorize your Miele account first');
+    let tokenInfo = await getToken('miele');
+    if (!tokenInfo) {
+      mieleLogger.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
-    let tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
-    const dateIssued = new Date(tokenInfo.timestamp);
-    const expiresIn = tokenInfo.expires_in;
+
+    const dateIssued = new Date(tokenInfo.timestamp as string);
+    const expiresIn = tokenInfo.expires_in as number;
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
 
     if (expireDate <= new Date()) {
-      console.warn('Token has expired, please re-authorize your account');
+      mieleLogger.warn('Token has expired, please re-authorize your account');
       await this.refreshToken();
-      tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
+      tokenInfo = await getToken('miele');
+      if (!tokenInfo) return;
     }
 
     this.MIELE_TOKEN = tokenInfo.access_token;
@@ -207,21 +208,20 @@ export default class Miele {
             );
           }
         } catch {
-          console.warn(`Could not parse Miele body ${msg!.data}`);
+          mieleLogger.warn({ data: msg!.data }, 'Could not parse Miele body');
         }
       },
       onOpen() {
         clearError('Miele');
-        console.warn('Connected to Miele');
+        mieleLogger.info('Connected to Miele');
       },
       onClose() {
         writeError('Miele', 'Connection closed');
-        console.warn('Miele: Connection closed');
+        mieleLogger.warn('Miele: Connection closed');
       },
       onError(err: Error) {
         writeError('Miele', 'Connection error');
-        console.error('Miele: Connection error');
-        console.error(err);
+        mieleLogger.error({ err }, 'Miele: Connection error');
       },
     });
   }

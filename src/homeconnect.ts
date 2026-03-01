@@ -4,6 +4,10 @@ import 'dotenv/config';
 import { clearError, writeError } from './errors';
 import { EventData, StatusesWrapper } from './types/homeconnect';
 import { DishWasher, DishWasherProgram, OperationState } from './types/types';
+import { getToken, saveToken } from './token-store';
+import logger from './logger';
+
+const hcLogger = logger.child({ subsystem: 'homeconnect' });
 
 export default class HomeConnect {
   public dishwasher: DishWasher;
@@ -49,7 +53,7 @@ export default class HomeConnect {
     });
 
     const body = await response.json();
-    console.warn(`Login to ${body.verification_uri_complete} and enter ${body.user_code} if asked`);
+    hcLogger.info({ verificationUri: body.verification_uri_complete }, 'Login to complete authorization');
     this.deviceCode = body.device_code;
   }
 
@@ -74,23 +78,20 @@ export default class HomeConnect {
 
       const body = await response.json();
       if (body.access_token) {
-        fs.writeFileSync(
-          'cache/homeconnect-token.json',
-          JSON.stringify({ timestamp: new Date(), ...body }, null, 2),
-        );
+        await saveToken('homeconnect', { timestamp: new Date().toISOString(), ...body });
         clearInterval(interval);
       }
     }, 1000 * 10);
   }
 
   public async refreshToken(): Promise<void> {
-    if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+    const existingToken = await getToken('homeconnect');
+    if (!existingToken) {
+      hcLogger.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
 
-    const tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
     const url = `${this.serverURL}/security/oauth/token`;
 
     const headers = {
@@ -102,7 +103,7 @@ export default class HomeConnect {
     formBody.push(`client_id=${encodeURIComponent(this.clientId)}`);
     formBody.push(`client_secret=${encodeURIComponent(this.clientSecret)}`);
     formBody.push(`grant_type=${encodeURIComponent('refresh_token')}`);
-    formBody.push(`refresh_token=${encodeURIComponent(tokenInfo.refresh_token)}`);
+    formBody.push(`refresh_token=${encodeURIComponent(existingToken.refresh_token as string)}`);
 
     const response = await fetch(url, {
       method: 'POST',
@@ -112,37 +113,36 @@ export default class HomeConnect {
 
     const body = await response.json();
     if (body.error) {
-      console.warn('You need to authorize your HomeConnect account first');
+      hcLogger.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
 
     if (body.access_token) {
       this.HOMECONNECT_TOKEN = body.id_token;
-      fs.writeFileSync(
-        'cache/homeconnect-token.json',
-        JSON.stringify({ timestamp: new Date(), ...body }, null, 2),
-      );
+      await saveToken('homeconnect', { timestamp: new Date().toISOString(), ...body });
     }
   }
 
   public async getStatus(): Promise<void> {
-    if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+    let tokenInfo = await getToken('homeconnect');
+    if (!tokenInfo) {
+      hcLogger.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
-    let tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
-    const dateIssued = new Date(tokenInfo.timestamp);
-    const expiresIn = tokenInfo.expires_in;
+
+    const dateIssued = new Date(tokenInfo.timestamp as string);
+    const expiresIn = tokenInfo.expires_in as number;
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
 
     if (expireDate <= new Date()) {
       await this.refreshToken();
-      tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
+      tokenInfo = await getToken('homeconnect');
+      if (!tokenInfo) return;
     }
 
-    this.HOMECONNECT_TOKEN = tokenInfo.id_token;
+    this.HOMECONNECT_TOKEN = tokenInfo.id_token as string;
     const url = `${this.serverURL}/api/homeappliances/${process.env.boschAppliance}/status`;
     const headers = {
       Authorization: `Bearer ${this.HOMECONNECT_TOKEN}`,
@@ -236,22 +236,24 @@ export default class HomeConnect {
   }
 
   public async getActiveProgram(): Promise<void> {
-    if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+    let tokenInfo = await getToken('homeconnect');
+    if (!tokenInfo) {
+      hcLogger.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
-    let tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
-    const dateIssued = new Date(tokenInfo.timestamp);
-    const expiresIn = tokenInfo.expires_in;
+
+    const dateIssued = new Date(tokenInfo.timestamp as string);
+    const expiresIn = tokenInfo.expires_in as number;
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
 
     if (expireDate <= new Date()) {
       await this.refreshToken();
-      tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
+      tokenInfo = await getToken('homeconnect');
+      if (!tokenInfo) return;
     }
 
-    this.HOMECONNECT_TOKEN = tokenInfo.id_token;
+    this.HOMECONNECT_TOKEN = tokenInfo.id_token as string;
     const url = `${this.serverURL}/api/homeappliances/${process.env.boschAppliance}/programs/active`;
     const headers = {
       Authorization: `Bearer ${this.HOMECONNECT_TOKEN}`,
@@ -268,26 +270,30 @@ export default class HomeConnect {
   }
 
   public async listenEvents(): Promise<void> {
-    if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+    let tokenInfo = await getToken('homeconnect');
+    if (!tokenInfo) {
+      hcLogger.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
 
     await this.getStatus();
 
-    let tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
-    const dateIssued = new Date(tokenInfo.timestamp);
-    const expiresIn = tokenInfo.expires_in;
+    tokenInfo = await getToken('homeconnect');
+    if (!tokenInfo) return;
+
+    const dateIssued = new Date(tokenInfo.timestamp as string);
+    const expiresIn = tokenInfo.expires_in as number;
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
     const parseMessage = this.parseMessage.bind(this);
 
     if (expireDate <= new Date()) {
       await this.refreshToken();
-      tokenInfo = JSON.parse(fs.readFileSync('cache/homeconnect-token.json', 'utf8'));
+      tokenInfo = await getToken('homeconnect');
+      if (!tokenInfo) return;
     }
 
-    this.HOMECONNECT_TOKEN = tokenInfo.id_token;
+    this.HOMECONNECT_TOKEN = tokenInfo.id_token as string;
     const url = `${this.serverURL}/api/homeappliances/events`;
     const headers = {
       Authorization: `Bearer ${this.HOMECONNECT_TOKEN}`,
@@ -305,12 +311,12 @@ export default class HomeConnect {
         clearError('HomeConnect');
       },
       onClose() {
-        console.warn('HomeConnect: Connection closed');
+        hcLogger.warn('HomeConnect: Connection closed');
         const message = 'Connection closed';
         writeError('HomeConnect', message);
       },
       onError(err: Error) {
-        console.error(err);
+        hcLogger.error({ err }, 'HomeConnect: Connection error');
         const message = 'Homeconnect: Connection error';
         writeError('HomeConnect', message);
       },
