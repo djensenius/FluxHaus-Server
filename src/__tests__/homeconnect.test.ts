@@ -2,22 +2,32 @@ import fs from 'fs';
 import { fetchEventData } from 'fetch-sse';
 import HomeConnect from '../homeconnect';
 import { writeError } from '../errors';
+import logger from '../logger';
 
 jest.mock('fs');
 jest.mock('fetch-sse');
 jest.mock('../errors');
+jest.mock('../logger', () => ({
+  __esModule: true,
+  default: {
+    child: jest.fn(),
+  },
+}));
 
 // Mock global fetch
 global.fetch = jest.fn();
 
 describe('HomeConnect', () => {
   let homeConnect: HomeConnect;
+  let mockHCLogger: { error: jest.Mock; warn: jest.Mock; info: jest.Mock };
   const mockClientId = 'test-client-id';
   const mockClientSecret = 'test-client-secret';
 
   beforeEach(() => {
     jest.clearAllMocks();
     jest.useFakeTimers();
+    mockHCLogger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+    (logger.child as jest.Mock).mockReturnValue(mockHCLogger);
     homeConnect = new HomeConnect(mockClientId, mockClientSecret);
   });
 
@@ -33,7 +43,6 @@ describe('HomeConnect', () => {
   });
 
   it('should log authorization URL', async () => {
-    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
     const mockResponse = {
       verification_uri_complete: 'http://auth.url',
       user_code: '1234',
@@ -45,9 +54,8 @@ describe('HomeConnect', () => {
 
     await homeConnect.authorize();
 
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('http://auth.url'));
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('1234'));
-    consoleSpy.mockRestore();
+    expect(mockHCLogger.warn).toHaveBeenCalledWith(expect.stringContaining('http://auth.url'));
+    expect(mockHCLogger.warn).toHaveBeenCalledWith(expect.stringContaining('1234'));
   });
 
   it('should get token', async () => {
@@ -122,13 +130,11 @@ describe('HomeConnect', () => {
 
   it('should warn if refreshing token without auth', async () => {
     (fs.existsSync as jest.Mock).mockReturnValue(false);
-    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
 
     await homeConnect.refreshToken();
 
-    expect(consoleSpy).toHaveBeenCalledWith('You need to authorize your HomeConnect account first');
+    expect(mockHCLogger.warn).toHaveBeenCalledWith('You need to authorize your HomeConnect account first');
     expect(writeError).toHaveBeenCalledWith('HomeConnect', 'HomeConnect needs authorized');
-    consoleSpy.mockRestore();
   });
 
   it('should get status', async () => {

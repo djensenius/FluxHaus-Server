@@ -1,16 +1,26 @@
 import HomeAssistantRobot from '../homeassistant-robot';
 import { HomeAssistantClient } from '../homeassistant-client';
+import logger from '../logger';
 
 // Mock HomeAssistantClient
 jest.mock('../homeassistant-client');
+jest.mock('../logger', () => ({
+  __esModule: true,
+  default: {
+    child: jest.fn(),
+  },
+}));
 
 describe('HomeAssistantRobot', () => {
   let mockClient: jest.Mocked<HomeAssistantClient>;
   let robot: HomeAssistantRobot;
+  let mockRobotLogger: { error: jest.Mock; warn: jest.Mock; info: jest.Mock };
   const entityId = 'vacuum.test_robot';
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockRobotLogger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+    (logger.child as jest.Mock).mockReturnValue(mockRobotLogger);
     // Don't use fake timers globally, only where needed
 
     mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as jest.Mocked<HomeAssistantClient>;
@@ -155,7 +165,6 @@ describe('HomeAssistantRobot', () => {
   });
 
   it('should handle poll errors gracefully', async () => {
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     mockClient.getState.mockRejectedValue(new Error('Network error'));
 
     robot = new HomeAssistantRobot({
@@ -166,12 +175,13 @@ describe('HomeAssistantRobot', () => {
 
     await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 
-    expect(consoleSpy).toHaveBeenCalledWith('Failed to poll robot Test Robot:', expect.any(Error));
-    consoleSpy.mockRestore();
+    expect(mockRobotLogger.error).toHaveBeenCalledWith(
+      { err: expect.any(Error) },
+      'Failed to poll robot Test Robot:',
+    );
   });
 
   it('should handle turn on errors', async () => {
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     mockClient.callService.mockRejectedValue(new Error('Service error'));
 
     robot = new HomeAssistantRobot({
@@ -182,12 +192,13 @@ describe('HomeAssistantRobot', () => {
 
     await robot.turnOn();
 
-    expect(consoleSpy).toHaveBeenCalledWith('Failed to turn on robot Test Robot:', expect.any(Error));
-    consoleSpy.mockRestore();
+    expect(mockRobotLogger.error).toHaveBeenCalledWith(
+      { err: expect.any(Error) },
+      'Failed to turn on robot Test Robot:',
+    );
   });
 
   it('should handle turn off errors', async () => {
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
     mockClient.callService.mockRejectedValue(new Error('Service error'));
 
     robot = new HomeAssistantRobot({
@@ -198,12 +209,13 @@ describe('HomeAssistantRobot', () => {
 
     await robot.turnOff();
 
-    expect(consoleSpy).toHaveBeenCalledWith('Failed to turn off robot Test Robot:', expect.any(Error));
-    consoleSpy.mockRestore();
+    expect(mockRobotLogger.error).toHaveBeenCalledWith(
+      { err: expect.any(Error) },
+      'Failed to turn off robot Test Robot:',
+    );
   });
 
   it('should identify (warn only)', () => {
-    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
     robot = new HomeAssistantRobot({
       name: 'Test Robot',
       entityId,
@@ -211,8 +223,7 @@ describe('HomeAssistantRobot', () => {
     });
 
     robot.identify();
-    expect(consoleSpy).toHaveBeenCalledWith('Identify not implemented for Home Assistant robot');
-    consoleSpy.mockRestore();
+    expect(mockRobotLogger.warn).toHaveBeenCalledWith('Identify not implemented for Home Assistant robot');
   });
 
   it('should stop polling when requested', () => {

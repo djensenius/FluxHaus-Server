@@ -2,21 +2,31 @@ import fs from 'fs';
 import { fetchEventData } from 'fetch-sse';
 import Miele from '../miele';
 import { writeError } from '../errors';
+import logger from '../logger';
 
 jest.mock('fs');
 jest.mock('fetch-sse');
 jest.mock('../errors');
+jest.mock('../logger', () => ({
+  __esModule: true,
+  default: {
+    child: jest.fn(),
+  },
+}));
 
 // Mock global fetch
 global.fetch = jest.fn();
 
 describe('Miele', () => {
   let miele: Miele;
+  let mockMieleLogger: { error: jest.Mock; warn: jest.Mock; info: jest.Mock };
   const mockClientId = 'test-client-id';
   const mockClientSecret = 'test-client-secret';
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockMieleLogger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+    (logger.child as jest.Mock).mockReturnValue(mockMieleLogger);
     miele = new Miele(mockClientId, mockClientSecret);
   });
 
@@ -26,10 +36,8 @@ describe('Miele', () => {
   });
 
   it('should log authorization URL', async () => {
-    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
     await miele.authorize();
-    expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('https://api.mcs3.miele.com/thirdparty/login'));
-    consoleSpy.mockRestore();
+    expect(mockMieleLogger.warn).toHaveBeenCalledWith(expect.stringContaining('https://api.mcs3.miele.com/thirdparty/login'));
   });
 
   it('should get token', async () => {
@@ -88,13 +96,11 @@ describe('Miele', () => {
 
   it('should warn if refreshing token without auth', async () => {
     (fs.existsSync as jest.Mock).mockReturnValue(false);
-    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
 
     await miele.refreshToken();
 
-    expect(consoleSpy).toHaveBeenCalledWith('You need to authorize your Miele account first');
+    expect(mockMieleLogger.warn).toHaveBeenCalledWith('You need to authorize your Miele account first');
     expect(writeError).toHaveBeenCalledWith('Miele', 'Miele needs authorized');
-    consoleSpy.mockRestore();
   });
 
   it('should parse message correctly', () => {

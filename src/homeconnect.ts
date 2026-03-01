@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { clearError, writeError } from './errors';
 import { EventData, StatusesWrapper } from './types/homeconnect';
 import { DishWasher, DishWasherProgram, OperationState } from './types/types';
+import logger from './logger';
 
 export default class HomeConnect {
   public dishwasher: DishWasher;
@@ -19,6 +20,8 @@ export default class HomeConnect {
   private serverURL = 'https://api.home-connect.com';
 
   // private serverURL = 'https://simulator.home-connect.com';
+
+  private readonly log = logger.child({ subsystem: 'homeconnect' });
 
   constructor(clientId: string, clientSecret: string) {
     this.clientId = clientId;
@@ -49,7 +52,7 @@ export default class HomeConnect {
     });
 
     const body = await response.json();
-    console.warn(`Login to ${body.verification_uri_complete} and enter ${body.user_code} if asked`);
+    this.log.warn(`Login to ${body.verification_uri_complete} and enter ${body.user_code} if asked`);
     this.deviceCode = body.device_code;
   }
 
@@ -85,7 +88,7 @@ export default class HomeConnect {
 
   public async refreshToken(): Promise<void> {
     if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+      this.log.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
@@ -112,7 +115,7 @@ export default class HomeConnect {
 
     const body = await response.json();
     if (body.error) {
-      console.warn('You need to authorize your HomeConnect account first');
+      this.log.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
@@ -128,7 +131,7 @@ export default class HomeConnect {
 
   public async getStatus(): Promise<void> {
     if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+      this.log.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
@@ -237,7 +240,7 @@ export default class HomeConnect {
 
   public async getActiveProgram(): Promise<void> {
     if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+      this.log.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
@@ -269,7 +272,7 @@ export default class HomeConnect {
 
   public async listenEvents(): Promise<void> {
     if (!fs.existsSync('cache/homeconnect-token.json')) {
-      console.warn('You need to authorize your HomeConnect account first');
+      this.log.warn('You need to authorize your HomeConnect account first');
       writeError('HomeConnect', 'HomeConnect needs authorized');
       return;
     }
@@ -281,6 +284,7 @@ export default class HomeConnect {
     const expiresIn = tokenInfo.expires_in;
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
     const parseMessage = this.parseMessage.bind(this);
+    const { log } = this;
 
     if (expireDate <= new Date()) {
       await this.refreshToken();
@@ -305,12 +309,12 @@ export default class HomeConnect {
         clearError('HomeConnect');
       },
       onClose() {
-        console.warn('HomeConnect: Connection closed');
+        log.warn('HomeConnect: Connection closed');
         const message = 'Connection closed';
         writeError('HomeConnect', message);
       },
       onError(err: Error) {
-        console.error(err);
+        log.error({ err }, 'HomeConnect: Connection error');
         const message = 'Homeconnect: Connection error';
         writeError('HomeConnect', message);
       },

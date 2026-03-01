@@ -1,4 +1,5 @@
 import { HomeAssistantClient } from './homeassistant-client';
+import logger from './logger';
 
 export interface HomeAssistantRobotConfig {
   name: string;
@@ -31,6 +32,8 @@ export default class HomeAssistantRobot {
 
   private pollInterval: NodeJS.Timeout | null = null;
 
+  private readonly log = logger.child({ subsystem: 'robot' });
+
   constructor(config: HomeAssistantRobotConfig) {
     this.config = config;
     this.startPolling();
@@ -39,7 +42,7 @@ export default class HomeAssistantRobot {
   // eslint-disable-next-line class-methods-use-this
   public identify() {
     // Not implemented for Home Assistant
-    console.warn('Identify not implemented for Home Assistant robot');
+    this.log.warn('Identify not implemented for Home Assistant robot');
   }
 
   public isActive(): boolean {
@@ -60,12 +63,12 @@ export default class HomeAssistantRobot {
         try {
           batteryState = await this.config.client.getState(this.config.batteryEntityId);
         } catch (error) {
-          console.warn(`Failed to poll battery for ${this.config.name}:`, error);
+          this.log.warn({ err: error }, `Failed to poll battery for ${this.config.name}:`);
         }
       }
       this.updateStatus(state, batteryState);
     } catch (error) {
-      console.error(`Failed to poll robot ${this.config.name}:`, error);
+      this.log.error({ err: error }, `Failed to poll robot ${this.config.name}:`);
     }
   }
 
@@ -128,7 +131,7 @@ export default class HomeAssistantRobot {
       });
       this.poll();
     } catch (error) {
-      console.error(`Failed to turn on robot ${this.config.name}:`, error);
+      this.log.error({ err: error }, `Failed to turn on robot ${this.config.name}:`);
     }
   }
 
@@ -140,7 +143,7 @@ export default class HomeAssistantRobot {
       });
       this.poll();
     } catch (error) {
-      console.error(`Failed to turn off robot ${this.config.name}:`, error);
+      this.log.error({ err: error }, `Failed to turn off robot ${this.config.name}:`);
     }
   }
 

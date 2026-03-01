@@ -4,6 +4,7 @@ import { fetchEventData } from 'fetch-sse';
 import { clearError, writeError } from './errors';
 import { MieleDevice } from './types/types';
 import { MieleRoot } from './types/miele';
+import logger from './logger';
 
 export default class Miele {
   public washer: MieleDevice;
@@ -17,6 +18,8 @@ export default class Miele {
   private redirectUri: string;
 
   private MIELE_TOKEN: string;
+
+  private readonly log = logger.child({ subsystem: 'miele' });
 
   constructor(clientId: string, clientSecret: string) {
     this.clientId = clientId;
@@ -37,7 +40,7 @@ export default class Miele {
   public async authorize(): Promise<void> {
     const url = 'https://api.mcs3.miele.com/thirdparty/login';
     const params = `client_id=${this.clientId}&redirect_uri=${encodeURIComponent(this.redirectUri)}&response_type=code`;
-    console.warn(`Visit ${url}?${params} to authorize your Miele account`);
+    this.log.warn(`Visit ${url}?${params} to authorize your Miele account`);
   }
 
   public async getToken(code: string): Promise<void> {
@@ -72,7 +75,7 @@ export default class Miele {
 
   public async refreshToken(): Promise<void> {
     if (!fs.existsSync('cache/miele-token.json')) {
-      console.warn('You need to authorize your Miele account first');
+      this.log.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
@@ -131,7 +134,7 @@ export default class Miele {
 
   public async getActivePrograms(): Promise<void> {
     if (!fs.existsSync('cache/miele-token.json')) {
-      console.warn('You need to authorize your Miele account first');
+      this.log.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
@@ -142,7 +145,7 @@ export default class Miele {
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
 
     if (expireDate <= new Date()) {
-      console.warn('Token has expired, please re-authorize your account');
+      this.log.warn('Token has expired, please re-authorize your account');
       await this.refreshToken();
       tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
     }
@@ -165,7 +168,7 @@ export default class Miele {
 
   public async listenEvents(): Promise<void> {
     if (!fs.existsSync('cache/miele-token.json')) {
-      console.warn('You need to authorize your Miele account first');
+      this.log.warn('You need to authorize your Miele account first');
       writeError('Miele', 'Miele needs authorized');
       return;
     }
@@ -175,13 +178,14 @@ export default class Miele {
     const expireDate = new Date(dateIssued.valueOf() + (expiresIn * 1000));
 
     if (expireDate <= new Date()) {
-      console.warn('Token has expired, please re-authorize your account');
+      this.log.warn('Token has expired, please re-authorize your account');
       await this.refreshToken();
       tokenInfo = JSON.parse(fs.readFileSync('cache/miele-token.json', 'utf8'));
     }
 
     this.MIELE_TOKEN = tokenInfo.access_token;
     const parseMessage = this.parseMessage.bind(this);
+    const { log } = this;
     const url = 'https://api.mcs3.miele.com/v1/devices/all/events';
     const headers = {
       'Accept-Language': 'en-CA',
@@ -207,21 +211,20 @@ export default class Miele {
             );
           }
         } catch {
-          console.warn(`Could not parse Miele body ${msg!.data}`);
+          log.warn(`Could not parse Miele body ${msg!.data}`);
         }
       },
       onOpen() {
         clearError('Miele');
-        console.warn('Connected to Miele');
+        log.info('Connected to Miele');
       },
       onClose() {
         writeError('Miele', 'Connection closed');
-        console.warn('Miele: Connection closed');
+        log.warn('Miele: Connection closed');
       },
       onError(err: Error) {
         writeError('Miele', 'Connection error');
-        console.error('Miele: Connection error');
-        console.error(err);
+        log.error({ err }, 'Miele: Connection error');
       },
     });
   }

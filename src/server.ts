@@ -11,6 +11,7 @@ import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
+import logger from './logger';
 
 const port = process.env.PORT || 8888;
 
@@ -65,8 +66,7 @@ export async function createServer(): Promise<Express> {
     token: (process.env.HOMEASSISTANT_TOKEN || '').trim(),
   });
 
-  // eslint-disable-next-line no-console
-  console.log('Using Home Assistant for robots');
+  logger.info('Using Home Assistant for robots');
   const broombot = new HomeAssistantRobot({
     name: 'Broombot',
     entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
@@ -457,7 +457,7 @@ if (process.env.NODE_ENV !== 'test') {
 
   createServer().then((app) => {
     app.listen(port, () => {
-      console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
+      logger.info(`⚡️[server]: Server is running at https://localhost:${port}`);
     });
   });
 }
