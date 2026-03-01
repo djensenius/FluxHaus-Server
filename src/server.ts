@@ -6,6 +6,8 @@ import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
+import auditMiddleware from './middleware/audit.middleware';
+import adminRouter from './routes/admin.routes';
 import HomeAssistantRobot from './homeassistant-robot';
 import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
@@ -41,6 +43,7 @@ export async function createServer(): Promise<Express> {
       challenge: true,
       realm: 'fluxhaus',
     }),
+    auditMiddleware,
   );
   const allowedOrigins = [
     'http://localhost:8080',
@@ -389,6 +392,8 @@ export async function createServer(): Promise<Express> {
       }, 5000);
     }
   });
+
+  app.use('/', adminRouter);
 
   app.use(notFoundHandler);
 
