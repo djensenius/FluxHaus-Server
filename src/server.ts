@@ -9,6 +9,7 @@ import notFoundHandler from './middleware/not-found.middleware';
 import HomeAssistantRobot from './homeassistant-robot';
 import { CarStartOptions } from './car';
 import { createServices } from './services';
+import { executeAICommand } from './ai-command';
 
 const port = process.env.PORT || 8888;
 
@@ -29,6 +30,7 @@ export async function createServer(): Promise<Express> {
   app.use(
     limiter,
     nocache(),
+    express.json(),
     express.urlencoded({ extended: true }),
     basicAuth({
       users: {
@@ -58,6 +60,7 @@ export async function createServer(): Promise<Express> {
     },
   };
 
+  const services = await createServices();
   const {
     broombot,
     mopbot,
@@ -65,7 +68,7 @@ export async function createServer(): Promise<Express> {
     mieleClient,
     hc,
     cameraURL,
-  } = await createServices();
+  } = services;
 
   let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -359,6 +362,26 @@ export async function createServer(): Promise<Express> {
       setTimeout(() => {
         car.resync();
       }, 5000);
+    }
+  });
+
+  app.post('/command', cors(corsOptions), async (req, res) => {
+    const authReq = req as basicAuth.IBasicAuthedRequest;
+    if (authReq.auth.user !== 'admin') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const { command } = req.body as { command?: string };
+    if (!command || typeof command !== 'string') {
+      res.status(400).json({ error: 'command is required' });
+      return;
+    }
+    try {
+      const response = await executeAICommand(command, services);
+      res.json({ response });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
     }
   });
 
