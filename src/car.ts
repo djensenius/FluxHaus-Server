@@ -1,5 +1,8 @@
 import fs from 'fs';
 import { HomeAssistantClient } from './homeassistant-client';
+import logger from './logger';
+
+const carLogger = logger.child({ subsystem: 'car' });
 
 export interface Doors {
   frontRight: number;
@@ -178,8 +181,7 @@ export default class Car {
       const lastUpdated = lastUpdatedEntity.last_changed || lastUpdatedEntity.state;
 
       if (!this.isStatusValid(batteryLevel, evRange, totalRange, lastUpdated)) {
-        // eslint-disable-next-line no-console
-        console.log('Car status returned all zeros/unavailable, keeping last good status');
+        carLogger.info('Car status returned all zeros/unavailable, keeping last good status');
         return;
       }
 
@@ -232,7 +234,7 @@ export default class Car {
 
       this.saveStatusToCache();
     } catch (error) {
-      console.error('Failed to fetch car status from Home Assistant:', error);
+      carLogger.error({ error }, 'Failed to fetch car status from Home Assistant');
     }
   };
 
@@ -278,7 +280,7 @@ export default class Car {
       // Re-fetch status after force update
       setTimeout(() => this.setStatus(), 10000);
     } catch (error) {
-      console.error('Failed to resync car:', error);
+      carLogger.error({ error }, 'Failed to resync car');
     }
   };
 }

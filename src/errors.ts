@@ -3,7 +3,7 @@ import fs from 'fs';
 export async function writeError(device: string, message: string): Promise<void> {
   if (!fs.existsSync('cache/errors.json')) {
     fs.writeFileSync(
-      'cache/error.json',
+      'cache/errors.json',
       JSON.stringify({ timestamp: new Date(), device: message }, null, 2),
     );
   } else {
