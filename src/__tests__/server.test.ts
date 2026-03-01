@@ -77,6 +77,7 @@ describe('Server', () => {
       lock: jest.fn().mockResolvedValue('Locked'),
       unlock: jest.fn().mockResolvedValue('Unlocked'),
       resync: jest.fn(),
+      destroy: jest.fn(),
     };
     (Car as unknown as jest.Mock).mockImplementation(() => mockCar);
 
@@ -95,7 +96,7 @@ describe('Server', () => {
     };
     (HomeConnect as unknown as jest.Mock).mockImplementation(() => mockHomeConnect);
 
-    app = await createServer();
+    ({ app } = await createServer());
   });
 
   it('should return 401 without auth', async () => {

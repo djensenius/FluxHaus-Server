@@ -76,15 +76,21 @@ export default class Car {
 
   private entityPrefix: string;
 
+  private pollInterval: ReturnType<typeof setInterval>;
+
   constructor(carConfig: CarConfig) {
     this.client = carConfig.client;
     this.entityPrefix = carConfig.entityPrefix;
     this.odometer = 0;
 
     this.loadCachedStatus();
-    setInterval(() => {
+    this.pollInterval = setInterval(() => {
       this.setStatus();
     }, carConfig.pollInterval ?? 1000 * 60 * 5);
+  }
+
+  destroy() {
+    clearInterval(this.pollInterval);
   }
 
   private loadCachedStatus() {

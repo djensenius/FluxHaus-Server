@@ -17,7 +17,13 @@ const port = process.env.PORT || 8888;
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
 
-export async function createServer(): Promise<Express> {
+interface ServerResult {
+  app: Express;
+  car: Car;
+  intervals: ReturnType<typeof setInterval>[];
+}
+
+export async function createServer(): Promise<ServerResult> {
   const app: Express = express();
 
   const limiter = rateLimit({
@@ -96,26 +102,26 @@ export async function createServer(): Promise<Express> {
   const mieleClient = new Miele(clientId, secretId);
   mieleClient.getActivePrograms();
   mieleClient.listenEvents();
-  setInterval(() => {
+  const intervals: ReturnType<typeof setInterval>[] = [];
+  intervals.push(setInterval(() => {
     mieleClient.getActivePrograms();
-  }, 600000);
-  mieleClient.listenEvents();
+  }, 600000));
 
   const homeConnectClientId = process.env.boschClientId || '';
   const homeConnectSecretId = process.env.boschSecretId || '';
   const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
   hc.getActiveProgram();
   hc.listenEvents();
-  setInterval(() => {
+  intervals.push(setInterval(() => {
     hc.getActiveProgram();
-  }, 600000);
+  }, 600000));
 
-  setInterval(() => {
+  intervals.push(setInterval(() => {
     fs.writeFileSync(
       'cache/dishwasher.json',
       JSON.stringify(hc.dishwasher),
     );
-  }, 1000 * 60 * 60);
+  }, 1000 * 60 * 60));
 
 
   app.get('/', cors(corsOptions), (req, res) => {
@@ -392,7 +398,7 @@ export async function createServer(): Promise<Express> {
 
   app.use(notFoundHandler);
 
-  return app;
+  return { app, car, intervals };
 }
 
 export const fetchSchedule = () => {
@@ -422,13 +428,6 @@ export const fetchSchedule = () => {
     });
 };
 
-if (process.env.NODE_ENV !== 'test') {
-  fetchSchedule();
-  setInterval(() => {
-    fetchSchedule();
-  }, 1000 * 60 * 60);
-}
-
 const newsURL = 'https://raw.githubusercontent.com/djensenius/Rhizome-Data/main/news.md';
 
 interface GitHubFile {
@@ -448,16 +447,57 @@ export const fetchRhizomePhotos = () => {
     });
 };
 
+const SHUTDOWN_TIMEOUT_MS = 10000;
+
 if (process.env.NODE_ENV !== 'test') {
+  fetchSchedule();
+  const scheduleInterval = setInterval(() => {
+    fetchSchedule();
+  }, 1000 * 60 * 60);
+
   fetchRhizomePhotos();
 
-  setInterval(() => {
+  const photosInterval = setInterval(() => {
     fetchRhizomePhotos();
   }, 1000 * 60 * 60);
 
-  createServer().then((app) => {
-    app.listen(port, () => {
+  createServer().then(({ app, car, intervals: serverIntervals }) => {
+    const server = app.listen(port, () => {
       console.warn(`⚡️[server]: Server is running at https://localhost:${port}`);
     });
+
+    const allIntervals = [scheduleInterval, photosInterval, ...serverIntervals];
+
+    let isShuttingDown = false;
+
+    async function shutdown(signal: string) {
+      if (isShuttingDown) return;
+      isShuttingDown = true;
+
+      console.warn({ signal }, 'Received shutdown signal, cleaning up...');
+      const start = Date.now();
+
+      const forceExitTimer = setTimeout(() => {
+        console.error('Shutdown timed out, forcing exit');
+        process.exit(1);
+      }, SHUTDOWN_TIMEOUT_MS);
+      forceExitTimer.unref();
+
+      allIntervals.forEach(clearInterval);
+      car.destroy();
+
+      await new Promise<void>((resolve) => {
+        server.close((err) => {
+          if (err) console.error('Error closing server:', err);
+          resolve();
+        });
+      });
+
+      console.warn({ durationMs: Date.now() - start }, 'Shutdown complete');
+      process.exit(0);
+    }
+
+    process.on('SIGTERM', () => shutdown('SIGTERM'));
+    process.on('SIGINT', () => shutdown('SIGINT'));
   });
 }
