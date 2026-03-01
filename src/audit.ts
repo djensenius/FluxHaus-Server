@@ -3,6 +3,9 @@ import logger from './logger';
 
 const auditLogger = logger.child({ subsystem: 'audit' });
 
+const DEFAULT_AUDIT_LIMIT = 100;
+const MAX_AUDIT_LIMIT = 1000;
+
 export interface AuditEvent {
   user_sub?: string;
   username?: string;
@@ -72,7 +75,7 @@ export async function getAuditLog(
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = Math.min(query.limit ?? 100, 1000);
+    const limit = Math.min(query.limit ?? DEFAULT_AUDIT_LIMIT, MAX_AUDIT_LIMIT);
     const offset = query.offset ?? 0;
     const limitIdx = idx;
     const offsetIdx = idx + 1;

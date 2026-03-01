@@ -73,7 +73,7 @@ export async function getToken(provider: string): Promise<TokenData | null> {
           refresh_token: row.refresh_token,
           id_token: row.id_token,
           expires_in: row.expires_in,
-          timestamp: row.created_at,
+          timestamp: row.updated_at,
         };
       }
     } catch (err) {

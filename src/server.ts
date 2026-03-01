@@ -512,12 +512,13 @@ if (process.env.NODE_ENV !== 'test') {
     fetchRhizomePhotos();
   }, 1000 * 60 * 60);
 
-  initPool();
-  initDatabase();
-  initInflux();
-  initOidc();
+  (async () => {
+    initPool();
+    await initDatabase();
+    initInflux();
+    await initOidc();
 
-  createServer().then((app) => {
+    const app = await createServer();
     const server = app.listen(port, () => {
       serverLogger.info({ port }, 'Server is running');
     });
@@ -541,5 +542,5 @@ if (process.env.NODE_ENV !== 'test') {
 
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
-  });
+  })();
 }

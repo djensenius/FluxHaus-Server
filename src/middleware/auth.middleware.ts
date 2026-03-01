@@ -53,18 +53,18 @@ export async function authMiddleware(
     const decoded = Buffer.from(encoded, 'base64').toString('utf8');
     const [username, password] = decoded.split(':', 2);
 
-    if (username === 'rhizome' && password === process.env.RHIZOME_PASSWORD && process.env.RHIZOME_PASSWORD) {
+    if (process.env.RHIZOME_PASSWORD && username === 'rhizome' && password === process.env.RHIZOME_PASSWORD) {
       req.user = { role: 'rhizome', username: 'rhizome' };
       next();
       return;
     }
-    if (username === 'demo' && password === process.env.DEMO_PASSWORD && process.env.DEMO_PASSWORD) {
+    if (process.env.DEMO_PASSWORD && username === 'demo' && password === process.env.DEMO_PASSWORD) {
       req.user = { role: 'demo', username: 'demo' };
       next();
       return;
     }
     // Legacy admin basic auth (for backward compat during transition)
-    if (username === 'admin' && password === process.env.BASIC_AUTH_PASSWORD && process.env.BASIC_AUTH_PASSWORD) {
+    if (process.env.BASIC_AUTH_PASSWORD && username === 'admin' && password === process.env.BASIC_AUTH_PASSWORD) {
       req.user = { role: 'admin', username: 'admin' };
       next();
       return;
