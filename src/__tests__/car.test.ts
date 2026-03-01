@@ -79,10 +79,9 @@ describe('Car', () => {
   });
 
   it('should preserve cached range when HA returns zero', async () => {
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify({
-      drvDistance: [{ rangeByFuel: { evModeRange: { value: 150, unit: 1 } }, type: 2 }],
-    }));
+    // First populate with good data so status has evStatus
+    await car.setStatus();
+    expect(car.status!.evStatus.drvDistance[0].rangeByFuel.evModeRange.value).toBe(200);
 
     // Override ev_range to return 0
     mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
@@ -94,16 +93,49 @@ describe('Car', () => {
 
     await car.setStatus();
 
-    expect(car.status!.evStatus.drvDistance[0].rangeByFuel.evModeRange.value).toBe(150);
+    expect(car.status!.evStatus.drvDistance[0].rangeByFuel.evModeRange.value).toBe(200);
   });
 
-  it('should write evStatus to cache', async () => {
+  it('should save status to cache', async () => {
     await car.setStatus();
 
     expect(fs.writeFileSync).toHaveBeenCalledWith(
-      'cache/evStatus.json',
+      'cache/carStatus.json',
       expect.any(String),
     );
+  });
+
+  it('should load cached status on startup', () => {
+    const cachedStatus = {
+      timestamp: '2025-01-17T17:25:52.000Z',
+      lastStatusDate: '20250117172552',
+      airCtrlOn: false,
+      doorLock: true,
+      doorOpen: {
+        frontLeft: 0, frontRight: 0, backLeft: 0, backRight: 0,
+      },
+      trunkOpen: false,
+      defrost: false,
+      hoodOpen: false,
+      engine: false,
+      evStatus: { batteryStatus: 80 },
+      odometer: 12345,
+    };
+
+    (fs.existsSync as jest.Mock).mockImplementation(
+      (path: string) => path === 'cache/carStatus.json',
+    );
+    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify(cachedStatus));
+
+    const config: CarConfig = {
+      client: mockClient,
+      entityPrefix,
+    };
+
+    const cachedCar = new Car(config);
+    expect(cachedCar.status).toBeDefined();
+    expect(cachedCar.status!.evStatus.batteryStatus).toBe(80);
+    expect(cachedCar.odometer).toBe(12345);
   });
 
   it('should handle lock', async () => {

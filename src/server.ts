@@ -121,10 +121,7 @@ export async function createServer(): Promise<Express> {
     const authReq = req as basicAuth.IBasicAuthedRequest;
     res.setHeader('Content-Type', 'application/json');
     // Check if file exists and read it
-    let evStatus = null;
-    if (fs.existsSync('cache/evStatus.json')) {
-      evStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
-    }
+    const evStatus = car.status?.evStatus ?? null;
 
     let rhizomeSchedule = null;
     if (fs.existsSync('cache/rhizome.json')) {
