@@ -162,16 +162,25 @@ export function createAuthRouter(): Router {
       res.clearCookie('oidc_nonce', clearOpts);
       res.clearCookie('oidc_verifier', clearOpts);
 
-      req.session.user = {
-        role: 'admin',
+      const user = {
+        role: 'admin' as const,
         username: (userinfo.preferred_username || userinfo.email || userinfo.sub) as string,
         sub: userinfo.sub,
         email: userinfo.email as string | undefined,
       };
 
+      // Store user in a signed cookie (reliable, unlike PG session store)
+      res.cookie('auth_user', JSON.stringify(user), {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax' as const,
+        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        signed: true,
+      });
+
       logEvent({
         user_sub: userinfo.sub,
-        username: req.session.user.username,
+        username: user.username,
         role: 'admin',
         action: 'oidc_login',
         route: '/auth/callback',
@@ -180,12 +189,7 @@ export function createAuthRouter(): Router {
       }).catch(() => {});
       writePoint('auth', { count: 1 }, { result: 'success', method: 'oidc' });
 
-      oidcLogger.info({ username: req.session.user.username }, 'OIDC login success');
-      req.session.save((err) => {
-        if (err) {
-          oidcLogger.error({ err }, 'Failed to save session after OIDC login');
-        }
-      });
+      oidcLogger.info({ username: user.username }, 'OIDC login success');
       res.redirect('/');
     } catch (err) {
       logEvent({
@@ -215,6 +219,7 @@ export function createAuthRouter(): Router {
       ip: req.ip,
     }).catch(() => {});
     writePoint('auth', { count: 1 }, { result: 'logout' });
+    res.clearCookie('auth_user', { httpOnly: true, signed: true });
     req.session.destroy(() => {
       if (endSessionUrl) {
         res.redirect(endSessionUrl);
