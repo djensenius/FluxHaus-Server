@@ -104,12 +104,12 @@ export default class HomeAssistantRobot {
         timeStarted = new Date(Date.now() - cleaningTime * 1000);
       } else if (!this.cachedStatus.running) {
         // Just started running and no cleaning_time available
-        timeStarted = new Date();
+        timeStarted = new Date(Date.now());
       }
     }
 
     this.cachedStatus = {
-      timestamp: new Date(),
+      timestamp: new Date(Date.now()),
       running,
       docking,
       docked,
