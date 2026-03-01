@@ -10,6 +10,7 @@ import cors, { CorsOptions } from 'cors';
 import notFoundHandler from './middleware/not-found.middleware';
 import { authMiddleware } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
+import { csrfMiddleware, generateCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
 import {
   closePool, getPool, initDatabase, initPool,
@@ -75,6 +76,7 @@ export async function createServer(): Promise<Express> {
     sessionConfig.store = new PgStore({ pool, createTableIfMissing: true });
   }
   app.use(session(sessionConfig));
+  app.use(csrfMiddleware);
 
   const allowedOrigins = (
     process.env.CORS_ORIGINS || 'http://localhost:8080,https://haus.fluxhaus.io'
@@ -151,6 +153,16 @@ export async function createServer(): Promise<Express> {
   // Auth middleware
   app.use(authMiddleware);
   app.use(auditMiddleware);
+
+  // CSRF token endpoint — returns (or lazily generates) the per-session CSRF
+  // token for cookie-authenticated browser clients. API clients using the
+  // Authorization header do not need this.
+  app.get('/auth/csrf-token', (req, res) => {
+    if (!req.session.csrfToken) {
+      req.session.csrfToken = generateCsrfToken();
+    }
+    res.json({ csrfToken: req.session.csrfToken });
+  });
 
   const homeAssistantClient = new HomeAssistantClient({
     url: (process.env.HOMEASSISTANT_URL || 'http://homeassistant.local:8123').trim(),

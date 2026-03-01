@@ -8,7 +8,7 @@
     "build": "webpack --node-env=production --mode=production",
     "watch": "webpack --watch",
     "test": "npx jest",
-    "lint": "npx eslint . --ext .js,.jsx,.ts,.tsx",
+    "lint": "eslint . --ext .js,.jsx,.ts,.tsx",
     "test-watch": "npx jest --watchAll --coverage",
     "build-watch": "npx webpack -w --mode=production",
     "build-production": "npx webpack --mode=production",

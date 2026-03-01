@@ -57,5 +57,8 @@ module.exports = {
     'no-use-before-define': 'off',
     'no-undef': 'off',
     '@typescript-eslint/no-use-before-define': ['error'],
+    // The MCP SDK uses package.json "exports" wildcards that some resolvers
+    // don't understand at lint time; the paths resolve correctly at build time.
+    'import/no-unresolved': ['error', { ignore: ['^@modelcontextprotocol/sdk/'] }],
   },
 };
