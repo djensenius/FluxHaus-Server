@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { Client, Issuer, generators } from 'openid-client';
 import { JWTPayload, createRemoteJWKSet, jwtVerify } from 'jose';
+import { logEvent } from '../audit';
 import logger from '../logger';
 
 const oidcLogger = logger.child({ subsystem: 'oidc' });
@@ -157,9 +158,28 @@ export function createAuthRouter(): Router {
         email: userinfo.email as string | undefined,
       };
 
+      logEvent({
+        user_sub: userinfo.sub,
+        username: req.session.user.username,
+        role: 'admin',
+        action: 'oidc_login',
+        route: '/auth/callback',
+        method: 'GET',
+        ip: req.ip,
+      }).catch(() => {});
+
       oidcLogger.info({ username: req.session.user.username }, 'OIDC login success');
       res.redirect('/');
     } catch (err) {
+      logEvent({
+        role: 'anonymous',
+        action: 'oidc_login_failed',
+        route: '/auth/callback',
+        method: 'GET',
+        ip: req.ip,
+        details: { error: String(err) },
+      }).catch(() => {});
+
       oidcLogger.error({ err }, 'OIDC callback failed');
       res.status(401).json({ message: 'Authentication failed' });
     }
@@ -167,6 +187,15 @@ export function createAuthRouter(): Router {
 
   router.get('/auth/logout', (req, res) => {
     const endSessionUrl = oidcIssuer?.metadata.end_session_endpoint;
+    const username = req.session?.user?.username;
+    logEvent({
+      username,
+      role: req.session?.user?.role ?? 'anonymous',
+      action: 'logout',
+      route: '/auth/logout',
+      method: 'GET',
+      ip: req.ip,
+    }).catch(() => {});
     req.session.destroy(() => {
       if (endSessionUrl) {
         res.redirect(endSessionUrl);

@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { AuthenticatedUser } from '../types/auth';
 import { isOidcEnabled, validateBearerToken } from './oidc.middleware';
+import { logEvent } from '../audit';
 import logger from '../logger';
 
 const authLogger = logger.child({ subsystem: 'auth' });
@@ -86,6 +87,14 @@ export async function authMiddleware(
   }
 
   // 5. No valid auth (API clients get 401)
+  logEvent({
+    role: 'anonymous',
+    action: 'auth_failed',
+    route: req.path,
+    method: req.method,
+    ip: req.ip,
+    details: { reason: authHeader ? 'invalid_credentials' : 'no_credentials' },
+  }).catch(() => {});
   res.setHeader('WWW-Authenticate', 'Bearer');
   res.status(401).json({ message: 'Unauthorized' });
 }
