@@ -82,7 +82,6 @@ export default class Car {
     this.odometer = 0;
 
     this.loadCachedStatus();
-    this.setStatus();
     setInterval(() => {
       this.setStatus();
     }, carConfig.pollInterval ?? 1000 * 60 * 5);

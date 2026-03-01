@@ -4,6 +4,8 @@ services:
     image: ghcr.io/djensenius/fluxhaus-server:latest
     # build: .
     network_mode: "host"
+    environment:
+      - TZ=America/Toronto
     volumes:
       - ./cache:/app/cache
       - .env:/app/.env

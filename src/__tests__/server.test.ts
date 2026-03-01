@@ -71,6 +71,7 @@ describe('Server', () => {
     mockCar = {
       status: {},
       odometer: 1000,
+      setStatus: jest.fn().mockResolvedValue(undefined),
       start: jest.fn().mockResolvedValue('Started'),
       stop: jest.fn().mockResolvedValue('Stopped'),
       lock: jest.fn().mockResolvedValue('Locked'),
