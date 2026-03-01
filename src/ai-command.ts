@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import OpenAI from 'openai';
+import OpenAI, { AzureOpenAI } from 'openai';
 import { FluxHausServices } from './services';
 
 // ── Shared system prompt ──────────────────────────────────────────────────────
@@ -292,12 +292,10 @@ async function executeWithAnthropic(
 async function executeWithOpenAICompatible(
   command: string,
   services: FluxHausServices,
-  baseURL: string,
-  apiKey: string,
+  client: OpenAI,
   defaultModel: string,
 ): Promise<string> {
   const model = process.env.AI_MODEL || defaultModel;
-  const client = new OpenAI({ baseURL, apiKey });
 
   const tools: OpenAI.Chat.ChatCompletionTool[] = TOOL_DEFINITIONS.map((def) => ({
     type: 'function' as const,
@@ -375,8 +373,7 @@ export async function executeAICommand(
     return executeWithOpenAICompatible(
       command,
       services,
-      'https://api.githubcopilot.com',
-      token,
+      new OpenAI({ baseURL: 'https://api.githubcopilot.com', apiKey: token }),
       'gpt-4o',
     );
   }
@@ -389,8 +386,7 @@ export async function executeAICommand(
     return executeWithOpenAICompatible(
       command,
       services,
-      baseURL,
-      apiKey,
+      new OpenAI({ baseURL, apiKey }),
       'glm-4-flash',
     );
   }
@@ -401,15 +397,31 @@ export async function executeAICommand(
     return executeWithOpenAICompatible(
       command,
       services,
-      'https://api.openai.com/v1',
-      apiKey,
+      new OpenAI({ apiKey }),
       'gpt-4o',
+    );
+  }
+
+  case 'azure-openai': {
+    const apiKey = process.env.AZURE_OPENAI_API_KEY;
+    const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+    const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || 'gpt-4o';
+    const apiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
+    if (!apiKey) throw new Error('AZURE_OPENAI_API_KEY is not set for azure-openai provider');
+    if (!endpoint) throw new Error('AZURE_OPENAI_ENDPOINT is not set for azure-openai provider');
+    return executeWithOpenAICompatible(
+      command,
+      services,
+      new AzureOpenAI({
+        apiKey, endpoint, apiVersion,
+      }),
+      deployment,
     );
   }
 
   default:
     throw new Error(
-      `Unknown AI_PROVIDER "${provider}". Supported values: anthropic, copilot, zai, openai`,
+      `Unknown AI_PROVIDER "${provider}". Supported values: anthropic, copilot, zai, openai, azure-openai`,
     );
   }
 }

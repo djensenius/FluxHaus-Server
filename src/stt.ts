@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import OpenAI, { AzureOpenAI } from 'openai';
 import logger from './logger';
 
 // ── Speech-to-Text ────────────────────────────────────────────────────────────
@@ -9,6 +9,10 @@ import logger from './logger';
 //   azure             — Azure Cognitive Services Speech REST API.
 //                       Requires AZURE_SPEECH_KEY and AZURE_SPEECH_REGION.
 //                       Optional: AZURE_SPEECH_LANGUAGE (default: en-US).
+//   azure-openai      — Azure OpenAI Whisper deployment.
+//                       Requires AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT.
+//                       Optional: AZURE_OPENAI_STT_DEPLOYMENT (default: whisper),
+//                                 AZURE_OPENAI_API_VERSION (default: 2024-12-01-preview).
 //   google            — Google Cloud Speech-to-Text REST API.
 //                       Requires GOOGLE_API_KEY.
 //                       Optional: GOOGLE_STT_LANGUAGE (default: en-US),
@@ -17,6 +21,7 @@ import logger from './logger';
 //
 // Provider comparison for STT:
 //   - OpenAI Whisper   ★★★★★  Best accuracy & language coverage.
+//   - Azure OpenAI     ★★★★★  Same Whisper model, hosted on Azure.
 //   - Azure Speech     ★★★★☆  Good for enterprise / on-prem needs.
 //   - Google STT       ★★★★☆  Strong, but higher cost at scale.
 //   - Anthropic        ✗       No STT offering.
@@ -97,6 +102,24 @@ async function transcribeWithAzure(audioBuffer: Buffer, filename: string): Promi
   return data.DisplayText ?? '';
 }
 
+async function transcribeWithAzureOpenAI(audioBuffer: Buffer, filename: string): Promise<string> {
+  const apiKey = process.env.AZURE_OPENAI_API_KEY;
+  const endpoint = process.env.AZURE_OPENAI_ENDPOINT;
+  if (!apiKey) throw new Error('AZURE_OPENAI_API_KEY is required for STT_PROVIDER=azure-openai');
+  if (!endpoint) throw new Error('AZURE_OPENAI_ENDPOINT is required for STT_PROVIDER=azure-openai');
+
+  const deployment = process.env.AZURE_OPENAI_STT_DEPLOYMENT || 'whisper';
+  const apiVersion = process.env.AZURE_OPENAI_API_VERSION || '2024-12-01-preview';
+  sttLogger.debug({ endpoint, deployment, filename }, 'Transcribing audio via Azure OpenAI Whisper');
+
+  const client = new AzureOpenAI({
+    apiKey, endpoint, apiVersion,
+  });
+  const file = new File([new Uint8Array(audioBuffer)], filename, { type: mimeTypeForFilename(filename) });
+  const transcription = await client.audio.transcriptions.create({ file, model: deployment });
+  return transcription.text;
+}
+
 async function transcribeWithGoogle(audioBuffer: Buffer, filename: string): Promise<string> {
   const apiKey = process.env.GOOGLE_API_KEY;
   if (!apiKey) throw new Error('GOOGLE_API_KEY is required for STT_PROVIDER=google');
@@ -134,11 +157,13 @@ export default async function transcribeAudio(audioBuffer: Buffer, filename = 'a
     return transcribeWithOpenAI(audioBuffer, filename);
   case 'azure':
     return transcribeWithAzure(audioBuffer, filename);
+  case 'azure-openai':
+    return transcribeWithAzureOpenAI(audioBuffer, filename);
   case 'google':
     return transcribeWithGoogle(audioBuffer, filename);
   default:
     throw new Error(
-      `Unknown STT_PROVIDER "${provider}". Supported values: openai, azure, google`,
+      `Unknown STT_PROVIDER "${provider}". Supported values: openai, azure, azure-openai, google`,
     );
   }
 }
