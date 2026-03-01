@@ -10,3 +10,53 @@ services:
       - ./cache:/app/cache
       - .env:/app/.env
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: fluxhaus
+      # ⚠️ Change this password before deploying to production
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: fluxhaus
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fluxhaus"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  influxdb:
+    image: influxdb:2
+    environment:
+      DOCKER_INFLUXDB_INIT_MODE: setup
+      DOCKER_INFLUXDB_INIT_USERNAME: admin
+      # ⚠️ Change this password before deploying to production
+      DOCKER_INFLUXDB_INIT_PASSWORD: adminpassword
+      DOCKER_INFLUXDB_INIT_ORG: fluxhaus
+      DOCKER_INFLUXDB_INIT_BUCKET: fluxhaus
+      # ⚠️ Change this token before deploying to production
+      DOCKER_INFLUXDB_INIT_ADMIN_TOKEN: change-me-influxdb-token
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "influx", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  influxdb_data:
