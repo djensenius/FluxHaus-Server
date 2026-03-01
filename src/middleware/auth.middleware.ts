@@ -31,14 +31,32 @@ export async function authMiddleware(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  // 1. Check session (OIDC browser login)
+  // 1. Check signed auth cookie (set by OIDC callback — immediate, reliable)
+  if (req.signedCookies?.auth_user) {
+    try {
+      const cookieUser = JSON.parse(req.signedCookies.auth_user);
+      if (cookieUser.username && cookieUser.role) {
+        req.user = cookieUser;
+        // Populate session for server-side tracking (non-blocking)
+        if (req.session && !req.session.user) {
+          req.session.user = cookieUser;
+        }
+        next();
+        return;
+      }
+    } catch {
+      // invalid cookie — fall through
+    }
+  }
+
+  // 2. Check session (fallback — server-side session store)
   if (req.session?.user) {
     req.user = req.session.user;
     next();
     return;
   }
 
-  // 2. Try Bearer token → OIDC
+  // 3. Try Bearer token → OIDC
   const authHeader = req.headers.authorization || '';
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);

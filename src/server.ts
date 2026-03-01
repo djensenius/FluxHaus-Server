@@ -53,7 +53,7 @@ export async function createServer(): Promise<Express> {
     express.urlencoded({ extended: true }),
   );
 
-  // Session middleware (postgres-backed when pool is available)
+  // PG-backed session store (for server-side session tracking/revocation)
   const PgStore = connectPgSimple(session);
   const pool = getPool();
   const sessionConfig: session.SessionOptions = {
