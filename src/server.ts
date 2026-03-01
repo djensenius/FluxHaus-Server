@@ -14,6 +14,9 @@ import HomeConnect from './homeconnect';
 
 const port = process.env.PORT || 8888;
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { version } = require('../package.json');
+
 export async function createServer(): Promise<Express> {
   const app: Express = express();
 
@@ -148,6 +151,7 @@ export async function createServer(): Promise<Express> {
     if (authReq.auth.user === 'admin') {
       const RobotClass = HomeAssistantRobot;
       data = {
+        version,
         timestamp: new Date(),
         mieleClientId: process.env.mieleClientId,
         mieleSecretId: process.env.mieleSecretId,
@@ -196,6 +200,7 @@ export async function createServer(): Promise<Express> {
       };
     } else if (authReq.auth.user === 'rhizome') {
       data = {
+        version,
         cameraURL,
         rhizomeSchedule,
         rhizomeData,
@@ -203,6 +208,7 @@ export async function createServer(): Promise<Express> {
     } else if (authReq.auth.user === 'demo') {
       const RobotClass = HomeAssistantRobot;
       data = {
+        version,
         timestamp: new Date(),
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
         broombot: {

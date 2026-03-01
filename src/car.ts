@@ -92,6 +92,7 @@ export default class Car {
     return state.state;
   }
 
+  // eslint-disable-next-line class-methods-use-this
   private isStatusValid(
     batteryLevel: string,
     evRange: string,
@@ -151,6 +152,7 @@ export default class Car {
       ]);
 
       if (!this.isStatusValid(batteryLevel, evRange, totalRange, lastUpdated)) {
+        // eslint-disable-next-line no-console
         console.log('Car status returned all zeros/unavailable, keeping last good status');
         return;
       }
