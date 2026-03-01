@@ -103,6 +103,13 @@ export function createAuthRouter(): Router {
   const router = Router();
   const redirectUri = process.env.OIDC_REDIRECT_URI
     || 'http://localhost:8888/auth/callback';
+  const cookieOpts = {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    maxAge: 5 * 60 * 1000, // 5 minutes — just for the login flow
+    signed: true,
+  };
 
   router.get('/auth/login', (req, res) => {
     if (!oidcClient) {
@@ -115,9 +122,10 @@ export function createAuthRouter(): Router {
     const codeVerifier = generators.codeVerifier();
     const codeChallenge = generators.codeChallenge(codeVerifier);
 
-    req.session.oidcState = state;
-    req.session.oidcNonce = nonce;
-    req.session.oidcCodeVerifier = codeVerifier;
+    // Store OIDC flow params in signed cookies (more reliable than session for redirects)
+    res.cookie('oidc_state', state, cookieOpts);
+    res.cookie('oidc_nonce', nonce, cookieOpts);
+    res.cookie('oidc_verifier', codeVerifier, cookieOpts);
 
     const authUrl = oidcClient.authorizationUrl({
       scope: 'openid email profile',
@@ -128,9 +136,7 @@ export function createAuthRouter(): Router {
       redirect_uri: redirectUri,
     });
 
-    req.session.save(() => {
-      res.redirect(authUrl);
-    });
+    res.redirect(authUrl);
   });
 
   router.get('/auth/callback', async (req, res) => {
@@ -142,17 +148,18 @@ export function createAuthRouter(): Router {
     try {
       const params = oidcClient.callbackParams(req);
       const tokenSet = await oidcClient.callback(redirectUri, params, {
-        state: req.session.oidcState,
-        nonce: req.session.oidcNonce,
-        code_verifier: req.session.oidcCodeVerifier,
+        state: req.signedCookies.oidc_state,
+        nonce: req.signedCookies.oidc_nonce,
+        code_verifier: req.signedCookies.oidc_verifier,
       });
 
       const userinfo = await oidcClient.userinfo(tokenSet.access_token!);
 
-      // Clear OIDC flow state
-      delete req.session.oidcState;
-      delete req.session.oidcNonce;
-      delete req.session.oidcCodeVerifier;
+      // Clear OIDC flow cookies
+      const clearOpts = { httpOnly: true, signed: true };
+      res.clearCookie('oidc_state', clearOpts);
+      res.clearCookie('oidc_nonce', clearOpts);
+      res.clearCookie('oidc_verifier', clearOpts);
 
       req.session.user = {
         role: 'admin',
@@ -173,7 +180,12 @@ export function createAuthRouter(): Router {
       writePoint('auth', { count: 1 }, { result: 'success', method: 'oidc' });
 
       oidcLogger.info({ username: req.session.user.username }, 'OIDC login success');
-      res.redirect('/');
+      req.session.save((err) => {
+        if (err) {
+          oidcLogger.error({ err }, 'Failed to save session after OIDC login');
+        }
+        res.redirect('/');
+      });
     } catch (err) {
       logEvent({
         role: 'anonymous',

@@ -8,8 +8,5 @@ export interface AuthenticatedUser {
 declare module 'express-session' {
   interface SessionData {
     user?: AuthenticatedUser;
-    oidcState?: string;
-    oidcNonce?: string;
-    oidcCodeVerifier?: string;
   }
 }

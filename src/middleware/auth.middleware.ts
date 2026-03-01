@@ -81,8 +81,9 @@ export async function authMiddleware(
   }
 
   // 4. Browser request with OIDC enabled → redirect to login
+  // Skip redirect for /auth/* paths to prevent infinite loops
   const acceptsHtml = req.headers.accept?.includes('text/html');
-  if (acceptsHtml && isOidcEnabled() && !authHeader) {
+  if (acceptsHtml && isOidcEnabled() && !authHeader && !req.path.startsWith('/auth/')) {
     res.redirect('/auth/login');
     return;
   }

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import fs from 'fs';
 import express, { Express } from 'express';
+import cookieParser from 'cookie-parser';
 import session from 'express-session';
 import connectPgSimple from 'connect-pg-simple';
 import rateLimit from 'express-rate-limit';
@@ -43,9 +44,12 @@ export async function createServer(): Promise<Express> {
     legacyHeaders: false,
   });
 
+  const sessionSecret = process.env.SESSION_SECRET || 'fluxhaus-dev-secret';
+
   app.use(
     limiter,
     nocache(),
+    cookieParser(sessionSecret),
     express.urlencoded({ extended: true }),
   );
 
@@ -53,7 +57,7 @@ export async function createServer(): Promise<Express> {
   const PgStore = connectPgSimple(session);
   const pool = getPool();
   const sessionConfig: session.SessionOptions = {
-    secret: process.env.SESSION_SECRET || 'fluxhaus-dev-secret',
+    secret: sessionSecret,
     resave: false,
     saveUninitialized: false,
     cookie: {
