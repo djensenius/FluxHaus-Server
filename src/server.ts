@@ -1,13 +1,15 @@
 import 'dotenv/config';
 import fs from 'fs';
 import express, { Express } from 'express';
+import session from 'express-session';
+import connectPgSimple from 'connect-pg-simple';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
 import notFoundHandler from './middleware/not-found.middleware';
 import { authMiddleware } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
-import { getOidcIssuer, initOidc } from './middleware/oidc.middleware';
+import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
 import {
   closePool, getPool, initDatabase, initPool,
 } from './db';
@@ -44,6 +46,25 @@ export async function createServer(): Promise<Express> {
     express.urlencoded({ extended: true }),
   );
 
+  // Session middleware (postgres-backed when pool is available)
+  const PgStore = connectPgSimple(session);
+  const pool = getPool();
+  const sessionConfig: session.SessionOptions = {
+    secret: process.env.SESSION_SECRET || 'fluxhaus-dev-secret',
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      secure: process.env.NODE_ENV === 'production',
+      httpOnly: true,
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: 'lax',
+    },
+  };
+  if (pool) {
+    sessionConfig.store = new PgStore({ pool, createTableIfMissing: true });
+  }
+  app.use(session(sessionConfig));
+
   const allowedOrigins = (
     process.env.CORS_ORIGINS || 'http://localhost:8080,https://haus.fluxhaus.io'
   ).split(',').map((o) => o.trim());
@@ -66,13 +87,13 @@ export async function createServer(): Promise<Express> {
     const services: Record<string, string> = {};
     let overallStatus: 'healthy' | 'degraded' | 'unhealthy' = 'healthy';
 
-    const pool = getPool();
-    if (pool) {
+    const dbPool = getPool();
+    if (dbPool) {
       try {
         const timeoutP = new Promise<never>((_, reject) => {
           setTimeout(() => reject(new Error('timeout')), 3000);
         });
-        await Promise.race([pool.query('SELECT 1'), timeoutP]);
+        await Promise.race([dbPool.query('SELECT 1'), timeoutP]);
         services.postgres = 'up';
       } catch {
         services.postgres = 'down';
@@ -112,6 +133,9 @@ export async function createServer(): Promise<Express> {
       services,
     });
   });
+
+  // OIDC auth routes (login, callback, logout) — unauthenticated
+  app.use(createAuthRouter());
 
   // Auth middleware
   app.use(authMiddleware);

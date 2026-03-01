@@ -1,6 +1,8 @@
 import { NextFunction, Request, Response } from 'express';
 import { AuthenticatedUser } from '../types/auth';
-import { validateBearerToken } from './oidc.middleware';
+import { isOidcEnabled, validateBearerToken } from './oidc.middleware';
+import { logEvent } from '../audit';
+import { writePoint } from '../influx';
 import logger from '../logger';
 
 const authLogger = logger.child({ subsystem: 'auth' });
@@ -29,7 +31,14 @@ export async function authMiddleware(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  // 1. Try Bearer token → OIDC
+  // 1. Check session (OIDC browser login)
+  if (req.session?.user) {
+    req.user = req.session.user;
+    next();
+    return;
+  }
+
+  // 2. Try Bearer token → OIDC
   const authHeader = req.headers.authorization || '';
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
@@ -47,7 +56,7 @@ export async function authMiddleware(
     }
   }
 
-  // 2. Basic auth fallback for demo/rhizome users
+  // 3. Basic auth fallback for demo/rhizome users
   if (authHeader.startsWith('Basic ')) {
     const encoded = authHeader.slice(6);
     const decoded = Buffer.from(encoded, 'base64').toString('utf8');
@@ -71,7 +80,23 @@ export async function authMiddleware(
     }
   }
 
-  // 3. No valid auth
-  res.setHeader('WWW-Authenticate', 'Basic realm="fluxhaus", Bearer');
+  // 4. Browser request with OIDC enabled → redirect to login
+  const acceptsHtml = req.headers.accept?.includes('text/html');
+  if (acceptsHtml && isOidcEnabled() && !authHeader) {
+    res.redirect('/auth/login');
+    return;
+  }
+
+  // 5. No valid auth (API clients get 401)
+  logEvent({
+    role: 'anonymous',
+    action: 'auth_failed',
+    route: req.path,
+    method: req.method,
+    ip: req.ip,
+    details: { reason: authHeader ? 'invalid_credentials' : 'no_credentials' },
+  }).catch(() => {});
+  writePoint('auth', { count: 1 }, { result: 'failed', reason: authHeader ? 'invalid_credentials' : 'no_credentials' });
+  res.setHeader('WWW-Authenticate', 'Bearer');
   res.status(401).json({ message: 'Unauthorized' });
 }

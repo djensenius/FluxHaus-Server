@@ -26,11 +26,17 @@ jest.mock('../influx', () => ({
   flushWrites: jest.fn(),
   closeClient: jest.fn(),
 }));
-jest.mock('../middleware/oidc.middleware', () => ({
-  initOidc: jest.fn(),
-  getOidcIssuer: jest.fn().mockReturnValue(null),
-  validateBearerToken: jest.fn().mockResolvedValue(null),
-}));
+jest.mock('../middleware/oidc.middleware', () => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
+  const { Router } = require('express');
+  return {
+    initOidc: jest.fn(),
+    getOidcIssuer: jest.fn().mockReturnValue(null),
+    validateBearerToken: jest.fn().mockResolvedValue(null),
+    isOidcEnabled: jest.fn().mockReturnValue(false),
+    createAuthRouter: jest.fn().mockReturnValue(Router()),
+  };
+});
 
 // Mock global fetch
 global.fetch = jest.fn(() => Promise.resolve({
@@ -51,6 +57,10 @@ describe('Server', () => {
   let mockMiele: any;
   let mockHomeConnect: any;
   /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -202,7 +212,7 @@ describe('Server', () => {
   });
 
   it('should handle deep clean', async () => {
-    jest.useFakeTimers();
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
     await request(app)
       .get('/turnOnDeepClean')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
