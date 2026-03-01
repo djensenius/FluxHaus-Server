@@ -360,7 +360,7 @@ export async function executeAICommand(
   command: string,
   services: FluxHausServices,
 ): Promise<string> {
-  const provider = (process.env.AI_PROVIDER || 'anthropic').toLowerCase();
+  const provider = (process.env.AI_PROVIDER || 'openai').toLowerCase();
 
   switch (provider) {
   case 'anthropic':
