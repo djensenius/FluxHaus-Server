@@ -2,6 +2,7 @@ import { NextFunction, Request, Response } from 'express';
 import { AuthenticatedUser } from '../types/auth';
 import { isOidcEnabled, validateBearerToken } from './oidc.middleware';
 import { logEvent } from '../audit';
+import { writePoint } from '../influx';
 import logger from '../logger';
 
 const authLogger = logger.child({ subsystem: 'auth' });
@@ -95,6 +96,7 @@ export async function authMiddleware(
     ip: req.ip,
     details: { reason: authHeader ? 'invalid_credentials' : 'no_credentials' },
   }).catch(() => {});
+  writePoint('auth', { count: 1 }, { result: 'failed', reason: authHeader ? 'invalid_credentials' : 'no_credentials' });
   res.setHeader('WWW-Authenticate', 'Bearer');
   res.status(401).json({ message: 'Unauthorized' });
 }

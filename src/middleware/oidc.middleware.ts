@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { Client, Issuer, generators } from 'openid-client';
 import { JWTPayload, createRemoteJWKSet, jwtVerify } from 'jose';
 import { logEvent } from '../audit';
+import { writePoint } from '../influx';
 import logger from '../logger';
 
 const oidcLogger = logger.child({ subsystem: 'oidc' });
@@ -167,6 +168,7 @@ export function createAuthRouter(): Router {
         method: 'GET',
         ip: req.ip,
       }).catch(() => {});
+      writePoint('auth', { count: 1 }, { result: 'success', method: 'oidc' });
 
       oidcLogger.info({ username: req.session.user.username }, 'OIDC login success');
       res.redirect('/');
@@ -179,6 +181,7 @@ export function createAuthRouter(): Router {
         ip: req.ip,
         details: { error: String(err) },
       }).catch(() => {});
+      writePoint('auth', { count: 1 }, { result: 'failed', method: 'oidc' });
 
       oidcLogger.error({ err }, 'OIDC callback failed');
       res.status(401).json({ message: 'Authentication failed' });
@@ -196,6 +199,7 @@ export function createAuthRouter(): Router {
       method: 'GET',
       ip: req.ip,
     }).catch(() => {});
+    writePoint('auth', { count: 1 }, { result: 'logout' });
     req.session.destroy(() => {
       if (endSessionUrl) {
         res.redirect(endSessionUrl);

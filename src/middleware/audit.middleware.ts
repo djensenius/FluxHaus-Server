@@ -1,5 +1,6 @@
 import { NextFunction, Request, Response } from 'express';
 import { logEvent } from '../audit';
+import { writePoint } from '../influx';
 import logger from '../logger';
 
 const auditLogger = logger.child({ subsystem: 'audit-middleware' });
@@ -21,9 +22,10 @@ function auditMiddleware(req: Request, _res: Response, next: NextFunction): void
     method: req.method,
     ip: req.ip,
   }).catch((err) => {
-    // Non-blocking: log at debug level so operators can detect persistent failures
     auditLogger.debug({ err }, 'Audit log write failed');
   });
+
+  writePoint('request', { count: 1 }, { route: req.path, method: req.method, role: user?.role ?? 'anonymous' });
 
   next();
 }
