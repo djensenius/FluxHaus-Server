@@ -6,6 +6,7 @@ import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
 import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
+import { healthCheck } from './health';
 import HomeAssistantRobot from './homeassistant-robot';
 import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
@@ -32,6 +33,14 @@ export async function createServer(): Promise<Express> {
     limiter,
     nocache(),
     express.urlencoded({ extended: true }),
+  );
+
+  app.get('/health', async (_req, res) => {
+    const { body, httpStatus } = await healthCheck();
+    res.status(httpStatus).json(body);
+  });
+
+  app.use(
     basicAuth({
       users: {
         admin: process.env.BASIC_AUTH_PASSWORD!,

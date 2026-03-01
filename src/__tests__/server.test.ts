@@ -6,6 +6,7 @@ import HomeAssistantRobot from '../homeassistant-robot';
 import Car from '../car';
 import Miele from '../miele';
 import HomeConnect from '../homeconnect';
+import * as health from '../health';
 
 // Mock dependencies
 jest.mock('fs');
@@ -14,6 +15,7 @@ jest.mock('../car');
 jest.mock('../miele');
 jest.mock('../homeconnect');
 jest.mock('../homeassistant-client');
+jest.mock('../health');
 
 // Mock global fetch
 global.fetch = jest.fn(() => Promise.resolve({
@@ -95,11 +97,51 @@ describe('Server', () => {
     };
     (HomeConnect as unknown as jest.Mock).mockImplementation(() => mockHomeConnect);
 
+    (health.healthCheck as jest.Mock).mockResolvedValue({
+      body: {
+        status: 'healthy',
+        version: '1.2.15',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        services: {
+          postgres: { status: 'not_configured' },
+          influxdb: { status: 'not_configured' },
+          oidc: { status: 'not_configured' },
+        },
+      },
+      httpStatus: 200,
+    });
+
     app = await createServer();
   });
 
   it('should return 401 without auth', async () => {
     await request(app).get('/').expect(401);
+  });
+
+  it('GET /health should be accessible without authentication', async () => {
+    const response = await request(app).get('/health').expect(200);
+    expect(response.body).toHaveProperty('status', 'healthy');
+    expect(response.body).toHaveProperty('version');
+    expect(response.body).toHaveProperty('timestamp');
+    expect(response.body).toHaveProperty('services');
+  });
+
+  it('GET /health should return 503 when unhealthy', async () => {
+    (health.healthCheck as jest.Mock).mockResolvedValue({
+      body: {
+        status: 'unhealthy',
+        version: '1.2.15',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        services: {
+          postgres: { status: 'down' },
+          influxdb: { status: 'not_configured' },
+          oidc: { status: 'not_configured' },
+        },
+      },
+      httpStatus: 503,
+    });
+    const response = await request(app).get('/health').expect(503);
+    expect(response.body.status).toBe('unhealthy');
   });
 
   it('should return data for admin user', async () => {
