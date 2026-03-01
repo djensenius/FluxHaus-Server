@@ -81,10 +81,35 @@ export default class Car {
     this.entityPrefix = carConfig.entityPrefix;
     this.odometer = 0;
 
+    this.loadCachedStatus();
     this.setStatus();
     setInterval(() => {
       this.setStatus();
     }, carConfig.pollInterval ?? 1000 * 60 * 5);
+  }
+
+  private loadCachedStatus() {
+    try {
+      if (fs.existsSync('cache/carStatus.json')) {
+        const cached = JSON.parse(fs.readFileSync('cache/carStatus.json', 'utf8'));
+        cached.timestamp = new Date(cached.timestamp);
+        this.status = cached;
+        this.odometer = cached.odometer ?? this.odometer;
+      }
+    } catch {
+      // Ignore corrupt cache
+    }
+  }
+
+  private saveStatusToCache() {
+    try {
+      fs.writeFileSync(
+        'cache/carStatus.json',
+        JSON.stringify({ ...this.status, odometer: this.odometer }, null, 2),
+      );
+    } catch {
+      // Ignore write errors
+    }
   }
 
   private async getEntityState(entityId: string): Promise<string> {
@@ -177,15 +202,9 @@ export default class Car {
       };
 
       // Preserve cached range data when HA returns zero
-      if (evModeRange === 0 && fs.existsSync('cache/evStatus.json')) {
-        const oldEvStatus = JSON.parse(fs.readFileSync('cache/evStatus.json', 'utf8'));
-        evStatus.drvDistance = oldEvStatus.drvDistance;
+      if (evModeRange === 0 && this.status?.evStatus) {
+        evStatus.drvDistance = this.status.evStatus.drvDistance;
       }
-
-      fs.writeFileSync(
-        'cache/evStatus.json',
-        JSON.stringify(evStatus, null, 2),
-      );
 
       this.status = {
         timestamp,
@@ -209,6 +228,8 @@ export default class Car {
       if (!Number.isNaN(odo)) {
         this.odometer = odo;
       }
+
+      this.saveStatusToCache();
     } catch (error) {
       console.error('Failed to fetch car status from Home Assistant:', error);
     }
