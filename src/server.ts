@@ -42,10 +42,9 @@ export async function createServer(): Promise<Express> {
       realm: 'fluxhaus',
     }),
   );
-  const allowedOrigins = [
-    'http://localhost:8080',
-    'https://haus.fluxhaus.io',
-  ];
+  const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:8080,https://haus.fluxhaus.io')
+    .split(',')
+    .map((origin) => origin.trim());
 
   const corsOptions: CorsOptions = {
     allowedHeaders: ['Authorization', 'Content-Type'],

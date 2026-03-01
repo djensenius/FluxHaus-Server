@@ -243,6 +243,29 @@ describe('Server', () => {
     expect(mockCar.resync).toHaveBeenCalled();
   });
 
+  it('should reject CORS requests from disallowed origins', async () => {
+    await request(app)
+      .get('/')
+      .auth('admin', 'adminpassword')
+      .set('Origin', 'https://evil.example.com')
+      .expect(500);
+  });
+
+  it('should allow CORS requests from origins in CORS_ORIGINS env var', async () => {
+    process.env.CORS_ORIGINS = 'http://localhost:8080,https://custom.example.com';
+    try {
+      const customApp = await createServer();
+      const response = await request(customApp)
+        .get('/')
+        .auth('admin', 'adminpassword')
+        .set('Origin', 'https://custom.example.com')
+        .expect(200);
+      expect(response.headers['access-control-allow-origin']).toBe('https://custom.example.com');
+    } finally {
+      delete process.env.CORS_ORIGINS;
+    }
+  });
+
   it('should fetch schedule', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
       json: jest.fn().mockResolvedValue({ schedule: [] }),
