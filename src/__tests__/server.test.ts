@@ -6,6 +6,9 @@ import HomeAssistantRobot from '../homeassistant-robot';
 import Car from '../car';
 import Miele from '../miele';
 import HomeConnect from '../homeconnect';
+import transcribeAudio from '../stt';
+import synthesizeSpeech from '../tts';
+import { executeAICommand } from '../ai-command';
 
 // Mock dependencies
 jest.mock('fs');
@@ -14,6 +17,17 @@ jest.mock('../car');
 jest.mock('../miele');
 jest.mock('../homeconnect');
 jest.mock('../homeassistant-client');
+jest.mock('../stt', () => ({
+  __esModule: true,
+  default: jest.fn().mockResolvedValue('Turn on the lights'),
+}));
+jest.mock('../tts', () => ({
+  __esModule: true,
+  default: jest.fn().mockResolvedValue(Buffer.from('fake-audio')),
+}));
+jest.mock('../ai-command', () => ({
+  executeAICommand: jest.fn().mockResolvedValue('Lights are on.'),
+}));
 jest.mock('../db', () => ({
   initPool: jest.fn(),
   initDatabase: jest.fn(),
@@ -327,5 +341,105 @@ describe('Server', () => {
       'cache/rhizomePhotos.json',
       expect.anything(),
     );
+  });
+
+  describe('POST /voice', () => {
+    const mockedTranscribeAudio = jest.mocked(transcribeAudio);
+    const mockedSynthesizeSpeech = jest.mocked(synthesizeSpeech);
+    const mockedExecuteAICommand = jest.mocked(executeAICommand);
+
+    beforeEach(() => {
+      mockedTranscribeAudio.mockResolvedValue('Turn on the lights');
+      mockedSynthesizeSpeech.mockResolvedValue(Buffer.from('fake-audio'));
+      mockedExecuteAICommand.mockResolvedValue('Lights are on.');
+    });
+
+    it('returns 403 for non-admin', async () => {
+      await request(app)
+        .post('/voice')
+        .set('Authorization', basicAuthHeader('rhizome', 'rhizomepassword'))
+        .send({ text: 'hello' })
+        .expect(403);
+    });
+
+    it('returns 400 when neither audio nor text is provided', async () => {
+      await request(app)
+        .post('/voice')
+        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .send({})
+        .expect(400);
+    });
+
+    it('processes text input and returns audio/mpeg', async () => {
+      const response = await request(app)
+        .post('/voice')
+        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .send({ text: 'Turn on the lights' })
+        .expect(200);
+
+      expect(response.headers['content-type']).toMatch(/audio\/mpeg/);
+      expect(mockedExecuteAICommand).toHaveBeenCalledWith(
+        'Turn on the lights',
+        expect.anything(),
+      );
+      expect(mockedSynthesizeSpeech).toHaveBeenCalledWith('Lights are on.');
+      expect(response.headers['x-transcript']).toBe(encodeURIComponent('Turn on the lights'));
+      expect(response.headers['x-response']).toBe(encodeURIComponent('Lights are on.'));
+    });
+
+    it('processes base64 audio input via STT then returns audio/mpeg', async () => {
+      const fakeAudio = Buffer.from('fake audio bytes').toString('base64');
+      await request(app)
+        .post('/voice')
+        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .send({ audio: fakeAudio, filename: 'recording.webm' })
+        .expect(200);
+
+      expect(mockedTranscribeAudio).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'recording.webm',
+      );
+      expect(mockedExecuteAICommand).toHaveBeenCalledWith(
+        'Turn on the lights',
+        expect.anything(),
+      );
+    });
+
+    it('defaults filename to audio.webm when not provided', async () => {
+      const fakeAudio = Buffer.from('fake').toString('base64');
+      await request(app)
+        .post('/voice')
+        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .send({ audio: fakeAudio })
+        .expect(200);
+
+      expect(mockedTranscribeAudio).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'audio.webm',
+      );
+    });
+
+    it('returns 500 when STT throws', async () => {
+      mockedTranscribeAudio.mockRejectedValue(new Error('STT failed'));
+      const fakeAudio = Buffer.from('fake').toString('base64');
+      const response = await request(app)
+        .post('/voice')
+        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .send({ audio: fakeAudio })
+        .expect(500);
+
+      expect(response.body.error).toBe('STT failed');
+    });
+
+    it('returns 500 when TTS throws', async () => {
+      mockedSynthesizeSpeech.mockRejectedValue(new Error('TTS failed'));
+      const response = await request(app)
+        .post('/voice')
+        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .send({ text: 'hello' })
+        .expect(500);
+
+      expect(response.body.error).toBe('TTS failed');
+    });
   });
 });

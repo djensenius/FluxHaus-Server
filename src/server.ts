@@ -22,6 +22,8 @@ import Miele from './miele';
 import HomeConnect from './homeconnect';
 import adminRouter from './routes/admin.routes';
 import { executeAICommand } from './ai-command';
+import transcribeAudio from './stt';
+import synthesizeSpeech from './tts';
 import logger from './logger';
 
 const serverLogger = logger.child({ subsystem: 'server' });
@@ -51,6 +53,7 @@ export async function createServer(): Promise<Express> {
     limiter,
     nocache(),
     cookieParser(sessionSecret),
+    express.json({ limit: '10mb' }),
     express.urlencoded({ extended: true }),
   );
 
@@ -500,6 +503,56 @@ export async function createServer(): Promise<Express> {
       };
       const response = await executeAICommand(command, services);
       res.json({ response });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // POST /voice — voice-in/voice-out or text-in/voice-out
+  // Pipeline: STT (OpenAI Whisper) → LLM (AI_PROVIDER) → TTS (OpenAI TTS)
+  // Request body (JSON):
+  //   { audio: "<base64>", filename?: "recording.webm" }  — voice input
+  //   { text:  "Turn on the lights" }                     — text input
+  // Response: audio/mpeg binary. X-Transcript and X-Response headers carry the
+  //   transcribed input and LLM text reply for clients that want to display them.
+  app.post('/voice', cors(corsOptions), async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const { audio, filename, text } = req.body as {
+      audio?: string;
+      filename?: string;
+      text?: string;
+    };
+    if (!audio && !text) {
+      res.status(400).json({ error: 'Either audio (base64) or text is required' });
+      return;
+    }
+    try {
+      let command: string;
+      if (audio) {
+        const audioBuffer = Buffer.from(audio, 'base64');
+        command = await transcribeAudio(audioBuffer, filename || 'audio.webm');
+      } else {
+        command = text as string;
+      }
+      const services = {
+        homeAssistantClient,
+        broombot,
+        mopbot,
+        car,
+        mieleClient,
+        hc,
+        cameraURL,
+      };
+      const response = await executeAICommand(command, services);
+      const audioResponse = await synthesizeSpeech(response);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('X-Transcript', encodeURIComponent(command));
+      res.setHeader('X-Response', encodeURIComponent(response));
+      res.send(audioResponse);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       res.status(500).json({ error: message });
