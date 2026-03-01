@@ -14,6 +14,42 @@ jest.mock('../car');
 jest.mock('../miele');
 jest.mock('../homeconnect');
 jest.mock('../homeassistant-client');
+jest.mock('../db');
+jest.mock('../middleware/auth.middleware', () => ({
+  authMiddleware: (
+    req: import('express').Request,
+    res: import('express').Response,
+    next: import('express').NextFunction,
+  ) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader) {
+      res.status(401).json({ message: 'Unauthorized' });
+      return;
+    }
+    if (authHeader === 'Bearer test-admin-token') {
+      req.user = { name: 'admin', role: 'admin' };
+      next();
+      return;
+    }
+    if (authHeader.startsWith('Basic ')) {
+      const decoded = Buffer.from(authHeader.slice(6), 'base64').toString('utf8');
+      const colonIdx = decoded.indexOf(':');
+      const username = decoded.slice(0, colonIdx);
+      const password = decoded.slice(colonIdx + 1);
+      if (username === 'rhizome' && password === process.env.RHIZOME_PASSWORD) {
+        req.user = { name: 'rhizome', role: 'rhizome' };
+        next();
+        return;
+      }
+      if (username === 'demo' && password === process.env.DEMO_PASSWORD) {
+        req.user = { name: 'demo', role: 'demo' };
+        next();
+        return;
+      }
+    }
+    res.status(401).json({ message: 'Unauthorized' });
+  },
+}));
 
 // Mock global fetch
 global.fetch = jest.fn(() => Promise.resolve({
@@ -32,7 +68,6 @@ describe('Server', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    process.env.BASIC_AUTH_PASSWORD = 'adminpassword';
     process.env.RHIZOME_PASSWORD = 'rhizomepassword';
     process.env.DEMO_PASSWORD = 'demopassword';
     process.env.mieleAppliances = 'Washer, Dryer';
@@ -105,7 +140,7 @@ describe('Server', () => {
   it('should return data for admin user', async () => {
     const response = await request(app)
       .get('/')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
 
     expect(response.body).toHaveProperty('timestamp');
@@ -121,7 +156,7 @@ describe('Server', () => {
 
     const response = await request(app)
       .get('/')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
 
     expect(response.body.broombot).not.toHaveProperty('batteryLevel');
@@ -150,7 +185,7 @@ describe('Server', () => {
   it('should turn on broombot', async () => {
     await request(app)
       .get('/turnOnBroombot')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockBroombot.turnOn).toHaveBeenCalled();
   });
@@ -158,7 +193,7 @@ describe('Server', () => {
   it('should turn off broombot', async () => {
     await request(app)
       .get('/turnOffBroombot')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockBroombot.turnOff).toHaveBeenCalled();
   });
@@ -166,7 +201,7 @@ describe('Server', () => {
   it('should turn on mopbot', async () => {
     await request(app)
       .get('/turnOnMopbot')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockMopbot.turnOn).toHaveBeenCalled();
   });
@@ -174,7 +209,7 @@ describe('Server', () => {
   it('should turn off mopbot', async () => {
     await request(app)
       .get('/turnOffMopbot')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockMopbot.turnOff).toHaveBeenCalled();
   });
@@ -183,7 +218,7 @@ describe('Server', () => {
     jest.useFakeTimers();
     await request(app)
       .get('/turnOnDeepClean')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
 
     expect(mockBroombot.turnOn).toHaveBeenCalled();
@@ -196,7 +231,7 @@ describe('Server', () => {
   it('should stop deep clean', async () => {
     await request(app)
       .get('/turnOffDeepClean')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
 
     expect(mockBroombot.turnOff).toHaveBeenCalled();
@@ -206,7 +241,7 @@ describe('Server', () => {
   it('should start car', async () => {
     await request(app)
       .get('/startCar')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockCar.start).toHaveBeenCalled();
   });
@@ -214,7 +249,7 @@ describe('Server', () => {
   it('should stop car', async () => {
     await request(app)
       .get('/stopCar')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockCar.stop).toHaveBeenCalled();
   });
@@ -222,7 +257,7 @@ describe('Server', () => {
   it('should lock car', async () => {
     await request(app)
       .get('/lockCar')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockCar.lock).toHaveBeenCalled();
   });
@@ -230,7 +265,7 @@ describe('Server', () => {
   it('should unlock car', async () => {
     await request(app)
       .get('/unlockCar')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockCar.unlock).toHaveBeenCalled();
   });
@@ -238,7 +273,7 @@ describe('Server', () => {
   it('should resync car', async () => {
     await request(app)
       .get('/resyncCar')
-      .auth('admin', 'adminpassword')
+      .set('Authorization', 'Bearer test-admin-token')
       .expect(200);
     expect(mockCar.resync).toHaveBeenCalled();
   });

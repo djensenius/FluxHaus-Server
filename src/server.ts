@@ -4,8 +4,8 @@ import express, { Express } from 'express';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
-import basicAuth from 'express-basic-auth';
 import notFoundHandler from './middleware/not-found.middleware';
+import { authMiddleware } from './middleware/auth.middleware';
 import HomeAssistantRobot from './homeassistant-robot';
 import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
@@ -32,16 +32,13 @@ export async function createServer(): Promise<Express> {
     limiter,
     nocache(),
     express.urlencoded({ extended: true }),
-    basicAuth({
-      users: {
-        admin: process.env.BASIC_AUTH_PASSWORD!,
-        rhizome: process.env.RHIZOME_PASSWORD!,
-        demo: process.env.DEMO_PASSWORD!,
-      },
-      challenge: true,
-      realm: 'fluxhaus',
-    }),
   );
+
+  app.get('/health', (req, res) => {
+    res.json({ status: 'ok', timestamp: new Date() });
+  });
+
+  app.use(authMiddleware);
   const allowedOrigins = [
     'http://localhost:8080',
     'https://haus.fluxhaus.io',
@@ -119,7 +116,6 @@ export async function createServer(): Promise<Express> {
 
 
   app.get('/', cors(corsOptions), (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
     res.setHeader('Content-Type', 'application/json');
     // Check if file exists and read it
     const evStatus = car.status?.evStatus ?? null;
@@ -146,7 +142,7 @@ export async function createServer(): Promise<Express> {
 
     let data = {};
 
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const RobotClass = HomeAssistantRobot;
       data = {
         version,
@@ -196,14 +192,14 @@ export async function createServer(): Promise<Express> {
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
       };
-    } else if (authReq.auth.user === 'rhizome') {
+    } else if (req.user?.role === 'rhizome') {
       data = {
         version,
         cameraURL,
         rhizomeSchedule,
         rhizomeData,
       };
-    } else if (authReq.auth.user === 'demo') {
+    } else if (req.user?.role === 'demo') {
       const RobotClass = HomeAssistantRobot;
       data = {
         version,
@@ -250,8 +246,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning on mopbot
   app.get('/turnOnMopbot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await mopbot.turnOn();
     }
     res.send('Mopbot is turned on.');
@@ -259,8 +254,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning off mopbot
   app.get('/turnOffMopbot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await mopbot.turnOff();
     }
     res.send('Mopbot is turned off.');
@@ -268,8 +262,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning on broombot
   app.get('/turnOnBroombot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
     res.send('Broombot is turned on.');
@@ -277,8 +270,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for turning off broombot
   app.get('/turnOffBroombot', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
     res.send('Broombot is turned off.');
@@ -286,8 +278,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for starting a deep clean
   app.get('/turnOnDeepClean', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
     cleanTimeout = setTimeout(() => {
@@ -298,8 +289,7 @@ export async function createServer(): Promise<Express> {
 
   // Route handler for stopping a deep clean
   app.get('/turnOffDeepClean', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
     if (cleanTimeout) {
@@ -310,8 +300,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/startCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const {
         temp,
         heatedFeatures,
@@ -350,8 +339,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/stopCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const result = car.stop();
       res.send(JSON.stringify({ result }));
       setTimeout(() => {
@@ -361,16 +349,14 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/resyncCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       car.resync();
     }
     res.send('Resyncing car');
   });
 
   app.get('/lockCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const result = car.lock();
       res.send(JSON.stringify({ result }));
       setTimeout(() => {
@@ -380,8 +366,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.get('/unlockCar', cors(corsOptions), async (req, res) => {
-    const authReq = req as basicAuth.IBasicAuthedRequest;
-    if (authReq.auth.user === 'admin') {
+    if (req.user?.role === 'admin') {
       const result = car.unlock();
       res.send(result);
       setTimeout(() => {
