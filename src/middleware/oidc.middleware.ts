@@ -30,6 +30,7 @@ export async function initOidc(): Promise<void> {
       client_secret: clientSecret,
       redirect_uris: redirectUri ? [redirectUri] : undefined,
       response_types: ['code'],
+      token_endpoint_auth_method: 'client_secret_post',
     });
 
     if (oidcIssuer.metadata.jwks_uri) {
