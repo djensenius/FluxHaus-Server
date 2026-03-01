@@ -156,9 +156,10 @@ export function createAuthRouter(): Router {
       const userinfo = await oidcClient.userinfo(tokenSet.access_token!);
 
       // Clear OIDC flow cookies
-      res.clearCookie('oidc_state');
-      res.clearCookie('oidc_nonce');
-      res.clearCookie('oidc_verifier');
+      const clearOpts = { httpOnly: true, signed: true };
+      res.clearCookie('oidc_state', clearOpts);
+      res.clearCookie('oidc_nonce', clearOpts);
+      res.clearCookie('oidc_verifier', clearOpts);
 
       req.session.user = {
         role: 'admin',
@@ -179,7 +180,12 @@ export function createAuthRouter(): Router {
       writePoint('auth', { count: 1 }, { result: 'success', method: 'oidc' });
 
       oidcLogger.info({ username: req.session.user.username }, 'OIDC login success');
-      res.redirect('/');
+      req.session.save((err) => {
+        if (err) {
+          oidcLogger.error({ err }, 'Failed to save session after OIDC login');
+        }
+        res.redirect('/');
+      });
     } catch (err) {
       logEvent({
         role: 'anonymous',
