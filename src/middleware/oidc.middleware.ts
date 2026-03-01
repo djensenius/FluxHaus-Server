@@ -185,8 +185,8 @@ export function createAuthRouter(): Router {
         if (err) {
           oidcLogger.error({ err }, 'Failed to save session after OIDC login');
         }
-        res.redirect('/');
       });
+      res.redirect('/');
     } catch (err) {
       logEvent({
         role: 'anonymous',
