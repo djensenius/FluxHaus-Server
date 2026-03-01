@@ -154,7 +154,7 @@ export default class Car {
         defrost,
         engine,
         odometerState,
-        lastUpdated,
+        lastUpdatedEntity,
       ] = await Promise.all([
         this.getEntityState(`sensor.${prefix}_ev_battery_level`),
         this.getEntityState(`binary_sensor.${prefix}_ev_battery_charge`),
@@ -172,8 +172,10 @@ export default class Car {
         this.getEntityState(`binary_sensor.${prefix}_defrost`),
         this.getEntityState(`binary_sensor.${prefix}_engine`),
         this.getEntityState(`sensor.${prefix}_odometer`),
-        this.getEntityState(`sensor.${prefix}_last_updated_at`),
+        this.client.getState(`sensor.${prefix}_last_updated_at`),
       ]);
+
+      const lastUpdated = lastUpdatedEntity.last_changed || lastUpdatedEntity.state;
 
       if (!this.isStatusValid(batteryLevel, evRange, totalRange, lastUpdated)) {
         // eslint-disable-next-line no-console
