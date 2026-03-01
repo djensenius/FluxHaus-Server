@@ -47,6 +47,7 @@
     "webpack-node-externals": "^3.0.0"
   },
   "dependencies": {
+    "@influxdata/influxdb-client": "^1.35.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
