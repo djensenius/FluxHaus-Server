@@ -327,6 +327,49 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     },
   );
 
+  server.tool(
+    'get_car_status',
+    'Get the car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer',
+    async () => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2),
+      }],
+    }),
+  );
+
+  server.tool(
+    'get_robot_status',
+    'Get the status of robot vacuums (Broombot and Mopbot): battery, running, charging, bin full',
+    async () => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          broombot: broombot.cachedStatus,
+          mopbot: mopbot.cachedStatus,
+        }, null, 2),
+      }],
+    }),
+  );
+
+  server.tool(
+    'get_appliance_status',
+    'Get the status of home appliances: washer, dryer (Miele), and dishwasher (HomeConnect)',
+    async () => {
+      const { mieleClient, hc } = services;
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            washer: mieleClient.washer,
+            dryer: mieleClient.dryer,
+            dishwasher: hc.dishwasher,
+          }, null, 2),
+        }],
+      };
+    },
+  );
+
   // ── Prompts ──────────────────────────────────────────────────────────────────
 
   server.prompt(

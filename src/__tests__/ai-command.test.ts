@@ -55,8 +55,8 @@ describe('executeTool', () => {
       broombot: mockBroombot,
       mopbot: mockMopbot,
       car: mockCar,
-      mieleClient: {} as any,
-      hc: {} as any,
+      mieleClient: { washer: { status: 'Idle' }, dryer: { status: 'Running' } } as any,
+      hc: { dishwasher: { operationState: 'Run', programProgress: 50 } } as any,
       cameraURL: '',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -164,6 +164,31 @@ describe('executeTool', () => {
     );
     expect(mockHaClient.callService).toHaveBeenCalledWith('light', 'turn_on', { entity_id: 'light.bedroom' });
     expect(result).toBe('Called light.turn_on on light.bedroom');
+  });
+
+  it('get_car_status returns car status and odometer', async () => {
+    mockCar.status = { batteryLevel: 80, locked: true };
+    mockCar.odometer = 12345;
+    const result = await executeTool('get_car_status', {}, mockServices);
+    const parsed = JSON.parse(result);
+    expect(parsed.status.batteryLevel).toBe(80);
+    expect(parsed.odometer).toBe(12345);
+  });
+
+  it('get_robot_status returns robot statuses', async () => {
+    mockBroombot.cachedStatus = { batteryLevel: 90, running: false };
+    mockMopbot.cachedStatus = { batteryLevel: 60, running: true };
+    const result = await executeTool('get_robot_status', {}, mockServices);
+    const parsed = JSON.parse(result);
+    expect(parsed.broombot.batteryLevel).toBe(90);
+    expect(parsed.mopbot.running).toBe(true);
+  });
+
+  it('get_appliance_status returns appliance data', async () => {
+    const result = await executeTool('get_appliance_status', {}, mockServices);
+    const parsed = JSON.parse(result);
+    expect(parsed.washer.status).toBe('Idle');
+    expect(parsed.dishwasher.programProgress).toBe(50);
   });
 
   it('unknown tool returns error message', async () => {

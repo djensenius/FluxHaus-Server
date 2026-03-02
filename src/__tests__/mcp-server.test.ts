@@ -76,8 +76,8 @@ describe('MCP Server', () => {
       broombot: mockBroombot,
       mopbot: mockMopbot,
       car: mockCar,
-      mieleClient: { getActivePrograms: jest.fn(), listenEvents: jest.fn() } as any,
-      hc: { getActiveProgram: jest.fn(), listenEvents: jest.fn(), dishwasher: {} } as any,
+      mieleClient: { washer: {}, dryer: {}, getActivePrograms: jest.fn(), listenEvents: jest.fn() } as any,
+      hc: { dishwasher: {}, getActiveProgram: jest.fn(), listenEvents: jest.fn() } as any,
       cameraURL: 'http://camera.local/stream',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -237,6 +237,21 @@ describe('MCP Server', () => {
       expect(getTools(server)).toHaveProperty('call_ha_service');
     });
 
+    it('should have get_car_status tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('get_car_status');
+    });
+
+    it('should have get_robot_status tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('get_robot_status');
+    });
+
+    it('should have get_appliance_status tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('get_appliance_status');
+    });
+
     it('lock_car tool calls car.lock()', async () => {
       jest.useFakeTimers();
       const server = createMcpServer(mockServices);
@@ -362,6 +377,35 @@ describe('MCP Server', () => {
       const parsed = JSON.parse(result.content[0].text as string);
       expect(parsed.entity_id).toBe('light.bedroom');
       expect(parsed.state).toBe('on');
+    });
+
+    it('get_car_status tool returns car data', async () => {
+      mockCar.status = { batteryLevel: 75 };
+      mockCar.odometer = 5000;
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).get_car_status.handler({}, {});
+      const parsed = JSON.parse(result.content[0].text as string);
+      expect(parsed.status.batteryLevel).toBe(75);
+      expect(parsed.odometer).toBe(5000);
+    });
+
+    it('get_robot_status tool returns robot data', async () => {
+      mockBroombot.cachedStatus = { batteryLevel: 100 };
+      mockMopbot.cachedStatus = { batteryLevel: 50, running: true };
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).get_robot_status.handler({}, {});
+      const parsed = JSON.parse(result.content[0].text as string);
+      expect(parsed.broombot.batteryLevel).toBe(100);
+      expect(parsed.mopbot.running).toBe(true);
+    });
+
+    it('get_appliance_status tool returns appliance data', async () => {
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).get_appliance_status.handler({}, {});
+      const parsed = JSON.parse(result.content[0].text as string);
+      expect(parsed).toHaveProperty('washer');
+      expect(parsed).toHaveProperty('dryer');
+      expect(parsed).toHaveProperty('dishwasher');
     });
   });
 

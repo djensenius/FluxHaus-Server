@@ -145,6 +145,21 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['domain', 'service', 'entity_id'],
     },
   },
+  {
+    name: 'get_car_status',
+    description: 'Get the car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_robot_status',
+    description: 'Get the status of robot vacuums (Broombot and Mopbot): battery, running, charging, bin full',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_appliance_status',
+    description: 'Get the status of home appliances: washer, dryer (Miele), and dishwasher (HomeConnect)',
+    parameters: { type: 'object', properties: {} },
+  },
 ];
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
@@ -157,7 +172,7 @@ export async function executeTool(
   services: FluxHausServices,
 ): Promise<string> {
   const {
-    car, broombot, mopbot, homeAssistantClient,
+    car, broombot, mopbot, homeAssistantClient, mieleClient, hc,
   } = services;
 
   switch (name) {
@@ -251,6 +266,22 @@ export async function executeTool(
     await homeAssistantClient.callService(domain, service, serviceData);
     return `Called ${domain}.${service} on ${entityId}`;
   }
+
+  case 'get_car_status':
+    return JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
+
+  case 'get_robot_status':
+    return JSON.stringify({
+      broombot: broombot.cachedStatus,
+      mopbot: mopbot.cachedStatus,
+    }, null, 2);
+
+  case 'get_appliance_status':
+    return JSON.stringify({
+      washer: mieleClient.washer,
+      dryer: mieleClient.dryer,
+      dishwasher: hc.dishwasher,
+    }, null, 2);
 
   default:
     return `Unknown tool: ${name}`;
