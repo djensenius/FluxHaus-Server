@@ -307,7 +307,7 @@ describe('executeAICommand', () => {
       );
 
       await executeAICommand('hello', mockServices);
-      expect(capturedHeaders).toMatchObject({ 'Copilot-Integration-Id': 'fluxhaus' });
+      expect(capturedHeaders).toMatchObject({ 'Copilot-Integration-Id': 'vscode-chat' });
     });
 
     it('executes tool_calls and returns final text', async () => {

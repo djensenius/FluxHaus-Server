@@ -376,7 +376,7 @@ export async function executeAICommand(
       new OpenAI({
         baseURL: 'https://api.githubcopilot.com',
         apiKey: token,
-        defaultHeaders: { 'Copilot-Integration-Id': 'fluxhaus' },
+        defaultHeaders: { 'Copilot-Integration-Id': 'vscode-chat' },
       }),
       'gpt-4o',
     );
