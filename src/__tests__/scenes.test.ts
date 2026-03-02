@@ -28,12 +28,14 @@ describe('/scenes endpoints', () => {
         const allStates = Array.isArray(states) ? states : [];
 
         const switchStates = new Map<string, string>();
-        for (const s of allStates) {
-          const sid = s.entity_id as string;
-          if (sid?.startsWith('switch.') && typeof s.state === 'string') {
-            switchStates.set(sid, s.state);
-          }
-        }
+        allStates
+          .filter((s) => {
+            const sid = s.entity_id as string;
+            return sid?.startsWith('switch.') && typeof s.state === 'string';
+          })
+          .forEach((s) => {
+            switchStates.set(s.entity_id as string, s.state as string);
+          });
 
         const scenes = allStates
           .filter((s: Record<string, unknown>) => typeof s.entity_id === 'string'
