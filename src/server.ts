@@ -22,6 +22,8 @@ import Car, { CarConfig, CarStartOptions } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
 import adminRouter from './routes/admin.routes';
+import createMcpServer from './mcp-server';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp';
 import { executeAICommand } from './ai-command';
 import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
@@ -427,7 +429,7 @@ export async function createServer(): Promise<Express> {
         seatFR,
         seatRL,
         seatRR,
-      } = req.body as {
+      } = (req.body ?? {}) as {
         temp?: string;
         heatedFeatures?: string;
         defrost?: string;
@@ -573,6 +575,38 @@ export async function createServer(): Promise<Express> {
       res.setHeader('X-Transcript', encodeURIComponent(command));
       res.setHeader('X-Response', encodeURIComponent(response));
       res.send(audioResponse);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // MCP HTTP endpoint — requires OIDC authentication (req.user.sub is only set for
+  // OIDC-authenticated users; Basic-auth users do not have a sub claim).
+  app.post('/mcp', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ message: 'OIDC authentication required for MCP access' });
+      return;
+    }
+    try {
+      // sessionIdGenerator: undefined opts into stateless mode — each POST
+      // request is self-contained with no server-side session tracking.
+      const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const mcpServer = createMcpServer({
+        homeAssistantClient,
+        broombot,
+        mopbot,
+        car,
+        mieleClient,
+        hc,
+        cameraURL,
+      });
+      await mcpServer.connect(mcpTransport);
+      try {
+        await mcpTransport.handleRequest(req, res, req.body);
+      } finally {
+        await mcpServer.close();
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       res.status(500).json({ error: message });

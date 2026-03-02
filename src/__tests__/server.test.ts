@@ -195,7 +195,7 @@ describe('Server', () => {
 
   it('should turn on broombot', async () => {
     await request(app)
-      .get('/turnOnBroombot')
+      .post('/turnOnBroombot')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockBroombot.turnOn).toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe('Server', () => {
 
   it('should turn off broombot', async () => {
     await request(app)
-      .get('/turnOffBroombot')
+      .post('/turnOffBroombot')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockBroombot.turnOff).toHaveBeenCalled();
@@ -211,7 +211,7 @@ describe('Server', () => {
 
   it('should turn on mopbot', async () => {
     await request(app)
-      .get('/turnOnMopbot')
+      .post('/turnOnMopbot')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockMopbot.turnOn).toHaveBeenCalled();
@@ -219,7 +219,7 @@ describe('Server', () => {
 
   it('should turn off mopbot', async () => {
     await request(app)
-      .get('/turnOffMopbot')
+      .post('/turnOffMopbot')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockMopbot.turnOff).toHaveBeenCalled();
@@ -228,7 +228,7 @@ describe('Server', () => {
   it('should handle deep clean', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
     await request(app)
-      .get('/turnOnDeepClean')
+      .post('/turnOnDeepClean')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
 
@@ -241,7 +241,7 @@ describe('Server', () => {
 
   it('should stop deep clean', async () => {
     await request(app)
-      .get('/turnOffDeepClean')
+      .post('/turnOffDeepClean')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
 
@@ -251,7 +251,7 @@ describe('Server', () => {
 
   it('should start car', async () => {
     await request(app)
-      .get('/startCar')
+      .post('/startCar')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockCar.start).toHaveBeenCalled();
@@ -259,7 +259,7 @@ describe('Server', () => {
 
   it('should stop car', async () => {
     await request(app)
-      .get('/stopCar')
+      .post('/stopCar')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockCar.stop).toHaveBeenCalled();
@@ -267,7 +267,7 @@ describe('Server', () => {
 
   it('should lock car', async () => {
     await request(app)
-      .get('/lockCar')
+      .post('/lockCar')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockCar.lock).toHaveBeenCalled();
@@ -275,7 +275,7 @@ describe('Server', () => {
 
   it('should unlock car', async () => {
     await request(app)
-      .get('/unlockCar')
+      .post('/unlockCar')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockCar.unlock).toHaveBeenCalled();
@@ -283,7 +283,7 @@ describe('Server', () => {
 
   it('should resync car', async () => {
     await request(app)
-      .get('/resyncCar')
+      .post('/resyncCar')
       .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
       .expect(200);
     expect(mockCar.resync).toHaveBeenCalled();
