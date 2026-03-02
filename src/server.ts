@@ -557,14 +557,21 @@ export async function createServer(): Promise<Express> {
         return;
       }
       try {
-        // Try toggling via stateful scene switch first
+        // Check if a stateful scene switch exists before toggling
         const switchId = entityId.replace('scene.', 'switch.');
+        let usedSwitch = false;
         try {
-          /* eslint-disable camelcase */
-          await homeAssistantClient.callService('switch', 'toggle', { entity_id: switchId });
-          /* eslint-enable camelcase */
+          const switchState = await homeAssistantClient.getState(switchId);
+          if (switchState && switchState.state) {
+            /* eslint-disable camelcase */
+            await homeAssistantClient.callService('switch', 'toggle', { entity_id: switchId });
+            /* eslint-enable camelcase */
+            usedSwitch = true;
+          }
         } catch {
-          // Fall back to standard scene activation if no switch exists
+          // Switch doesn't exist — fall through to scene activation
+        }
+        if (!usedSwitch) {
           /* eslint-disable camelcase */
           await homeAssistantClient.callService('scene', 'turn_on', { entity_id: entityId });
           /* eslint-enable camelcase */
