@@ -373,7 +373,11 @@ export async function executeAICommand(
     return executeWithOpenAICompatible(
       command,
       services,
-      new OpenAI({ baseURL: 'https://api.githubcopilot.com', apiKey: token }),
+      new OpenAI({
+        baseURL: 'https://api.githubcopilot.com',
+        apiKey: token,
+        defaultHeaders: { 'Copilot-Integration-Id': 'vscode-chat' },
+      }),
       'gpt-4o',
     );
   }
