@@ -76,8 +76,12 @@ describe('MCP Server', () => {
       broombot: mockBroombot,
       mopbot: mockMopbot,
       car: mockCar,
-      mieleClient: { washer: {}, dryer: {}, getActivePrograms: jest.fn(), listenEvents: jest.fn() } as any,
-      hc: { dishwasher: {}, getActiveProgram: jest.fn(), listenEvents: jest.fn() } as any,
+      mieleClient: {
+        washer: {}, dryer: {}, getActivePrograms: jest.fn(), listenEvents: jest.fn(),
+      } as any,
+      hc: {
+        dishwasher: {}, getActiveProgram: jest.fn(), listenEvents: jest.fn(),
+      } as any,
       cameraURL: 'http://camera.local/stream',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
