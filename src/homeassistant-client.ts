@@ -34,7 +34,8 @@ export class HomeAssistantClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public async getState(entityId: string): Promise<any> {
-    return this.request(`/api/states/${entityId}`);
+    const path = entityId ? `/api/states/${entityId}` : '/api/states';
+    return this.request(path);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

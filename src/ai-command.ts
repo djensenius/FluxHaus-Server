@@ -109,20 +109,41 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     },
   },
   {
-    name: 'activate_scene',
-    description: 'Activate a Home Assistant scene (lighting mood or blinds preset)',
+    name: 'list_entities',
+    description: 'List Home Assistant entities, optionally filtered by domain (light, switch, scene, climate, etc.)',
     parameters: {
       type: 'object',
       properties: {
-        sceneId: { type: 'string', description: 'Scene entity ID (e.g. scene.living_room_relax)' },
+        domain: { type: 'string', description: 'Entity domain filter (e.g. light, switch, scene, climate). Omit to list all.' },
       },
-      required: ['sceneId'],
     },
   },
   {
-    name: 'list_scenes',
-    description: 'List all available Home Assistant scenes',
-    parameters: { type: 'object', properties: {} },
+    name: 'get_entity_state',
+    description: 'Get the current state and attributes of a Home Assistant entity',
+    parameters: {
+      type: 'object',
+      properties: {
+        entity_id: { type: 'string', description: 'Entity ID (e.g. light.bedroom, switch.porch)' },
+      },
+      required: ['entity_id'],
+    },
+  },
+  {
+    name: 'call_ha_service',
+    description: 'Call a Home Assistant service (e.g. turn on a light, toggle a switch, set climate temperature)',
+    parameters: {
+      type: 'object',
+      properties: {
+        domain: { type: 'string', description: 'Service domain (e.g. light, switch, climate, scene)' },
+        service: { type: 'string', description: 'Service name (e.g. turn_on, turn_off, toggle)' },
+        entity_id: { type: 'string', description: 'Target entity ID (e.g. light.bedroom)' },
+        brightness_pct: { type: 'number', description: 'Brightness percentage (0-100), for lights only' },
+        color_temp: { type: 'number', description: 'Color temperature in mireds, for lights only' },
+        temperature: { type: 'number', description: 'Target temperature, for climate entities only' },
+      },
+      required: ['domain', 'service', 'entity_id'],
+    },
   },
 ];
 
@@ -194,22 +215,41 @@ export async function executeTool(
     }
     return `${args.robot} returning to base`;
 
-  case 'activate_scene':
-    await homeAssistantClient.callService('scene', 'turn_on', { entity_id: args.sceneId });
-    return `Scene ${args.sceneId} activated`;
-
-  case 'list_scenes': {
+  case 'list_entities': {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const allStates: any[] = await homeAssistantClient.getState('');
-    const scenes = Array.isArray(allStates)
-      ? allStates
-        .filter((s) => s.entity_id && s.entity_id.startsWith('scene.'))
-        .map((s) => ({
-          entityId: s.entity_id,
-          name: s.attributes?.friendly_name ?? s.entity_id,
-        }))
-      : [];
-    return JSON.stringify({ scenes }, null, 2);
+    let entities = Array.isArray(allStates) ? allStates : [];
+    if (args.domain) {
+      entities = entities.filter((s) => s.entity_id?.startsWith(`${args.domain}.`));
+    }
+    const result = entities.map((s) => ({
+      entity_id: s.entity_id,
+      state: s.state,
+      name: s.attributes?.friendly_name ?? s.entity_id,
+    }));
+    return JSON.stringify({ entities: result }, null, 2);
+  }
+
+  case 'get_entity_state': {
+    const state = await homeAssistantClient.getState(args.entity_id);
+    return JSON.stringify({
+      entity_id: state.entity_id,
+      state: state.state,
+      attributes: state.attributes,
+    }, null, 2);
+  }
+
+  case 'call_ha_service': {
+    const {
+      domain, service, entity_id: entityId, ...extraData
+    } = args;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const serviceData: Record<string, any> = { entity_id: entityId };
+    for (const [key, value] of Object.entries(extraData)) {
+      if (value !== undefined) serviceData[key] = value;
+    }
+    await homeAssistantClient.callService(domain, service, serviceData);
+    return `Called ${domain}.${service} on ${entityId}`;
   }
 
   default:

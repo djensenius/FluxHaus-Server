@@ -137,21 +137,33 @@ describe('executeTool', () => {
     expect(result).toBe('mopbot returning to base');
   });
 
-  it('activate_scene calls HA callService', async () => {
-    const result = await executeTool(
-      'activate_scene',
-      { sceneId: 'scene.relax' },
-      mockServices,
-    );
-    expect(mockHaClient.callService).toHaveBeenCalledWith('scene', 'turn_on', { entity_id: 'scene.relax' });
-    expect(result).toBe('Scene scene.relax activated');
+  it('list_entities returns filtered entities', async () => {
+    const result = await executeTool('list_entities', { domain: 'scene' }, mockServices);
+    const parsed = JSON.parse(result);
+    expect(parsed.entities).toHaveLength(1);
+    expect(parsed.entities[0].entity_id).toBe('scene.relax');
   });
 
-  it('list_scenes returns filtered scenes', async () => {
-    const result = await executeTool('list_scenes', {}, mockServices);
+  it('get_entity_state returns entity state', async () => {
+    mockHaClient.getState.mockResolvedValue({
+      entity_id: 'light.bedroom',
+      state: 'on',
+      attributes: { friendly_name: 'Bedroom Light', brightness: 255 },
+    });
+    const result = await executeTool('get_entity_state', { entity_id: 'light.bedroom' }, mockServices);
     const parsed = JSON.parse(result);
-    expect(parsed.scenes).toHaveLength(1);
-    expect(parsed.scenes[0].entityId).toBe('scene.relax');
+    expect(parsed.entity_id).toBe('light.bedroom');
+    expect(parsed.state).toBe('on');
+  });
+
+  it('call_ha_service calls HA callService', async () => {
+    const result = await executeTool(
+      'call_ha_service',
+      { domain: 'light', service: 'turn_on', entity_id: 'light.bedroom' },
+      mockServices,
+    );
+    expect(mockHaClient.callService).toHaveBeenCalledWith('light', 'turn_on', { entity_id: 'light.bedroom' });
+    expect(result).toBe('Called light.turn_on on light.bedroom');
   });
 
   it('unknown tool returns error message', async () => {
