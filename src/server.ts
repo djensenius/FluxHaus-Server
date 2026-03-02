@@ -25,9 +25,10 @@ import Miele from './miele';
 import HomeConnect from './homeconnect';
 import adminRouter from './routes/admin.routes';
 import createMcpServer from './mcp-server';
-import { executeAICommand } from './ai-command';
+import { ConversationMessage, executeAICommand } from './ai-command';
 import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
+import { decrypt, encrypt } from './encryption';
 import logger from './logger';
 
 const serverLogger = logger.child({ subsystem: 'server' });
@@ -504,12 +505,223 @@ export async function createServer(): Promise<Express> {
     }
   });
 
+  // ── Conversation CRUD ─────────────────────────────────────────────────────
+
+  app.get('/conversations', cors(corsOptions), async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ error: 'OIDC authentication required' });
+      return;
+    }
+    const db = getPool();
+    if (!db) { res.status(503).json({ error: 'Database unavailable' }); return; }
+    try {
+      const result = await db.query(
+        `SELECT c.id, c.title, c.created_at, c.updated_at,
+                COUNT(m.id)::int AS message_count
+         FROM conversations c
+         LEFT JOIN conversation_messages m ON m.conversation_id = c.id
+         WHERE c.user_sub = $1
+         GROUP BY c.id
+         ORDER BY c.updated_at DESC`,
+        [req.user.sub],
+      );
+      const conversations = result.rows.map((row) => ({
+        ...row,
+        title: row.title ? decrypt(row.title, req.user!.sub!) : null,
+      }));
+      res.json({ conversations });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.post('/conversations', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ error: 'OIDC authentication required' });
+      return;
+    }
+    const db = getPool();
+    if (!db) { res.status(503).json({ error: 'Database unavailable' }); return; }
+    const { title } = req.body as { title?: string };
+    try {
+      const encTitle = title ? encrypt(title, req.user.sub) : null;
+      const result = await db.query(
+        'INSERT INTO conversations (user_sub, title) VALUES ($1, $2) RETURNING id, created_at, updated_at',
+        [req.user.sub, encTitle],
+      );
+      res.status(201).json({
+        id: result.rows[0].id,
+        title: title || null,
+        created_at: result.rows[0].created_at,
+        updated_at: result.rows[0].updated_at,
+        message_count: 0,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.get('/conversations/:id', cors(corsOptions), async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ error: 'OIDC authentication required' });
+      return;
+    }
+    const db = getPool();
+    if (!db) { res.status(503).json({ error: 'Database unavailable' }); return; }
+    try {
+      const convResult = await db.query(
+        'SELECT id, title, created_at, updated_at FROM conversations WHERE id = $1 AND user_sub = $2',
+        [req.params.id, req.user.sub],
+      );
+      if (convResult.rows.length === 0) {
+        res.status(404).json({ error: 'Conversation not found' });
+        return;
+      }
+      const conv = convResult.rows[0];
+      const msgResult = await db.query(
+        `SELECT id, role, content, is_voice, created_at
+         FROM conversation_messages
+         WHERE conversation_id = $1 ORDER BY created_at`,
+        [req.params.id],
+      );
+      const messages = msgResult.rows.map((m) => ({
+        ...m,
+        content: decrypt(m.content, req.user!.sub!),
+      }));
+      res.json({
+        id: conv.id,
+        title: conv.title ? decrypt(conv.title, req.user.sub) : null,
+        created_at: conv.created_at,
+        updated_at: conv.updated_at,
+        messages,
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.patch('/conversations/:id', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ error: 'OIDC authentication required' });
+      return;
+    }
+    const db = getPool();
+    if (!db) { res.status(503).json({ error: 'Database unavailable' }); return; }
+    const { title } = req.body as { title?: string };
+    if (!title) { res.status(400).json({ error: 'title is required' }); return; }
+    try {
+      const encTitle = encrypt(title, req.user.sub);
+      const result = await db.query(
+        'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2 AND user_sub = $3 RETURNING id',
+        [encTitle, req.params.id, req.user.sub],
+      );
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: 'Conversation not found' });
+        return;
+      }
+      res.json({ id: result.rows[0].id, title });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  app.delete('/conversations/:id', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ error: 'OIDC authentication required' });
+      return;
+    }
+    const db = getPool();
+    if (!db) { res.status(503).json({ error: 'Database unavailable' }); return; }
+    try {
+      const result = await db.query(
+        'DELETE FROM conversations WHERE id = $1 AND user_sub = $2 RETURNING id',
+        [req.params.id, req.user.sub],
+      );
+      if (result.rows.length === 0) {
+        res.status(404).json({ error: 'Conversation not found' });
+        return;
+      }
+      res.status(204).send();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // ── AI command & voice endpoints ──────────────────────────────────────────
+
+  /**
+   * Load conversation history for an optional conversationId.
+   * Returns decrypted messages for LLM context.
+   */
+  async function loadConversationHistory(
+    conversationId: string,
+    userSub: string,
+  ): Promise<ConversationMessage[]> {
+    const db = getPool();
+    if (!db) return [];
+    const result = await db.query(
+      'SELECT role, content FROM conversation_messages WHERE conversation_id = $1 ORDER BY created_at',
+      [conversationId],
+    );
+    return result.rows.map((m) => ({
+      role: m.role as 'user' | 'assistant',
+      content: decrypt(m.content, userSub),
+    }));
+  }
+
+  /**
+   * Store a user+assistant message pair in an existing conversation (encrypted).
+   * Auto-generates title from first user message if conversation has no title.
+   */
+  async function storeMessages(
+    conversationId: string,
+    userSub: string,
+    userContent: string,
+    assistantContent: string,
+    isVoice: boolean,
+  ): Promise<void> {
+    const db = getPool();
+    if (!db) return;
+    const encUser = encrypt(userContent, userSub);
+    const encAssistant = encrypt(assistantContent, userSub);
+    await db.query(
+      `INSERT INTO conversation_messages (conversation_id, role, content, is_voice)
+       VALUES ($1, 'user', $2, $3), ($1, 'assistant', $4, false)`,
+      [conversationId, encUser, isVoice, encAssistant],
+    );
+    // Auto-title from first message if no title exists
+    const conv = await db.query(
+      'SELECT title FROM conversations WHERE id = $1',
+      [conversationId],
+    );
+    if (conv.rows.length > 0 && !conv.rows[0].title) {
+      const autoTitle = encrypt(userContent.substring(0, 50), userSub);
+      await db.query(
+        'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2',
+        [autoTitle, conversationId],
+      );
+    } else {
+      await db.query(
+        'UPDATE conversations SET updated_at = NOW() WHERE id = $1',
+        [conversationId],
+      );
+    }
+  }
+
   app.post('/command', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role !== 'admin') {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const { command } = req.body as { command?: string };
+    const { command, conversationId } = req.body as {
+      command?: string;
+      conversationId?: string;
+    };
     if (!command || typeof command !== 'string') {
       res.status(400).json({ error: 'command is required' });
       return;
@@ -524,7 +736,14 @@ export async function createServer(): Promise<Express> {
         hc,
         cameraURL,
       };
-      const response = await executeAICommand(command, services);
+      let history: ConversationMessage[] = [];
+      if (conversationId && req.user?.sub) {
+        history = await loadConversationHistory(conversationId, req.user.sub);
+      }
+      const response = await executeAICommand(command, services, history);
+      if (conversationId && req.user?.sub) {
+        await storeMessages(conversationId, req.user.sub, command, response, false);
+      }
       res.json({ response });
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
@@ -544,10 +763,13 @@ export async function createServer(): Promise<Express> {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const { audio, filename, text } = req.body as {
+    const {
+      audio, filename, text, conversationId,
+    } = req.body as {
       audio?: string;
       filename?: string;
       text?: string;
+      conversationId?: string;
     };
     if (!audio && !text) {
       res.status(400).json({ error: 'Either audio (base64) or text is required' });
@@ -570,7 +792,14 @@ export async function createServer(): Promise<Express> {
         hc,
         cameraURL,
       };
-      const response = await executeAICommand(command, services);
+      let history: ConversationMessage[] = [];
+      if (conversationId && req.user?.sub) {
+        history = await loadConversationHistory(conversationId, req.user.sub);
+      }
+      const response = await executeAICommand(command, services, history);
+      if (conversationId && req.user?.sub) {
+        await storeMessages(conversationId, req.user.sub, command, response, true);
+      }
       const audioResponse = await synthesizeSpeech(response);
       res.setHeader('Content-Type', 'audio/mpeg');
       res.setHeader('X-Transcript', encodeURIComponent(command));
