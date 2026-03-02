@@ -381,6 +381,7 @@ describe('Server', () => {
       expect(mockedExecuteAICommand).toHaveBeenCalledWith(
         'Turn on the lights',
         expect.anything(),
+        [],
       );
       expect(mockedSynthesizeSpeech).toHaveBeenCalledWith('Lights are on.');
       expect(response.headers['x-transcript']).toBe(encodeURIComponent('Turn on the lights'));
@@ -402,6 +403,7 @@ describe('Server', () => {
       expect(mockedExecuteAICommand).toHaveBeenCalledWith(
         'Turn on the lights',
         expect.anything(),
+        [],
       );
     });
 
