@@ -259,33 +259,119 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
   );
 
   server.tool(
-    'activate_scene',
-    'Activate a Home Assistant scene (lighting mood or blinds preset)',
-    { sceneId: z.string().describe('Scene entity ID (e.g. scene.living_room_relax)') },
-    async ({ sceneId }) => {
-      await homeAssistantClient.callService('scene', 'turn_on', { entity_id: sceneId });
-      return { content: [{ type: 'text' as const, text: `Scene ${sceneId} activated` }] };
+    'list_entities',
+    'List Home Assistant entities, optionally filtered by domain (light, switch, scene, climate, etc.)',
+    {
+      domain: z.string().optional().describe(
+        'Entity domain filter (e.g. light, switch, scene, climate). Omit to list all.',
+      ),
+    },
+    async ({ domain }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let allStates: any[] = await homeAssistantClient.getState('');
+      if (!Array.isArray(allStates)) allStates = [];
+      if (domain) {
+        allStates = allStates.filter((s) => s.entity_id?.startsWith(`${domain}.`));
+      }
+      const entities = allStates.map((s) => ({
+        entity_id: s.entity_id,
+        state: s.state,
+        name: s.attributes?.friendly_name ?? s.entity_id,
+      }));
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({ entities }, null, 2),
+        }],
+      };
     },
   );
 
   server.tool(
-    'list_scenes',
-    'List all available Home Assistant scenes',
-    async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const allStates: any[] = await homeAssistantClient.getState('');
-      const scenes = Array.isArray(allStates)
-        ? allStates
-          .filter((s) => s.entity_id && s.entity_id.startsWith('scene.'))
-          .map((s) => ({
-            entityId: s.entity_id,
-            name: s.attributes?.friendly_name ?? s.entity_id,
-          }))
-        : [];
+    'get_entity_state',
+    'Get the current state and attributes of a Home Assistant entity',
+    // eslint-disable-next-line camelcase
+    { entity_id: z.string().describe('Entity ID (e.g. light.bedroom, switch.porch)') },
+    // eslint-disable-next-line camelcase
+    async ({ entity_id }) => {
+      // eslint-disable-next-line camelcase
+      const state = await homeAssistantClient.getState(entity_id);
       return {
         content: [{
           type: 'text' as const,
-          text: JSON.stringify({ scenes }, null, 2),
+          text: JSON.stringify({
+            entity_id: state.entity_id,
+            state: state.state,
+            attributes: state.attributes,
+          }, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'call_ha_service',
+    'Call a Home Assistant service (e.g. turn on a light, toggle a switch, set climate temperature)',
+    {
+      domain: z.string().describe('Service domain (e.g. light, switch, climate, scene)'),
+      service: z.string().describe('Service name (e.g. turn_on, turn_off, toggle)'),
+      entity_id: z.string().describe('Target entity ID (e.g. light.bedroom)'), // eslint-disable-line camelcase
+      brightness_pct: z.number().optional().describe('Brightness percentage (0-100), for lights only'),
+      color_temp: z.number().optional().describe('Color temperature in mireds, for lights only'),
+      temperature: z.number().optional().describe('Target temperature, for climate entities only'),
+    },
+    async ({
+      // eslint-disable-next-line @typescript-eslint/no-shadow
+      domain, service, entity_id: entityId, ...extraData
+    }) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const serviceData: Record<string, any> = { entity_id: entityId };
+      Object.entries(extraData).forEach(([key, value]) => {
+        if (value !== undefined) { serviceData[key] = value; }
+      });
+      await homeAssistantClient.callService(domain, service, serviceData);
+      return { content: [{ type: 'text' as const, text: `Called ${domain}.${service} on ${entityId}` }] };
+    },
+  );
+
+  server.tool(
+    'get_car_status',
+    'Get the car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer',
+    async () => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2),
+      }],
+    }),
+  );
+
+  server.tool(
+    'get_robot_status',
+    'Get the status of robot vacuums (Broombot and Mopbot): battery, running, charging, bin full',
+    async () => ({
+      content: [{
+        type: 'text' as const,
+        text: JSON.stringify({
+          broombot: broombot.cachedStatus,
+          mopbot: mopbot.cachedStatus,
+        }, null, 2),
+      }],
+    }),
+  );
+
+  server.tool(
+    'get_appliance_status',
+    'Get the status of home appliances: washer, dryer (Miele), and dishwasher (HomeConnect)',
+    async () => {
+      const { mieleClient, hc } = services;
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            washer: mieleClient.washer,
+            dryer: mieleClient.dryer,
+            dishwasher: hc.dishwasher,
+          }, null, 2),
         }],
       };
     },

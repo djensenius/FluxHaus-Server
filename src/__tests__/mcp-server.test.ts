@@ -76,8 +76,12 @@ describe('MCP Server', () => {
       broombot: mockBroombot,
       mopbot: mockMopbot,
       car: mockCar,
-      mieleClient: { getActivePrograms: jest.fn(), listenEvents: jest.fn() } as any,
-      hc: { getActiveProgram: jest.fn(), listenEvents: jest.fn(), dishwasher: {} } as any,
+      mieleClient: {
+        washer: {}, dryer: {}, getActivePrograms: jest.fn(), listenEvents: jest.fn(),
+      } as any,
+      hc: {
+        dishwasher: {}, getActiveProgram: jest.fn(), listenEvents: jest.fn(),
+      } as any,
       cameraURL: 'http://camera.local/stream',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -222,14 +226,34 @@ describe('MCP Server', () => {
       expect(getTools(server)).toHaveProperty('stop_robot');
     });
 
-    it('should have activate_scene tool registered', () => {
+    it('should have list_entities tool registered', () => {
       const server = createMcpServer(mockServices);
-      expect(getTools(server)).toHaveProperty('activate_scene');
+      expect(getTools(server)).toHaveProperty('list_entities');
     });
 
-    it('should have list_scenes tool registered', () => {
+    it('should have get_entity_state tool registered', () => {
       const server = createMcpServer(mockServices);
-      expect(getTools(server)).toHaveProperty('list_scenes');
+      expect(getTools(server)).toHaveProperty('get_entity_state');
+    });
+
+    it('should have call_ha_service tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('call_ha_service');
+    });
+
+    it('should have get_car_status tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('get_car_status');
+    });
+
+    it('should have get_robot_status tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('get_robot_status');
+    });
+
+    it('should have get_appliance_status tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('get_appliance_status');
     });
 
     it('lock_car tool calls car.lock()', async () => {
@@ -317,30 +341,75 @@ describe('MCP Server', () => {
       expect(result.content[0].text).toBe('broombot returning to base');
     });
 
-    it('activate_scene tool calls HA callService', async () => {
+    it('call_ha_service tool calls HA callService', async () => {
       const server = createMcpServer(mockServices);
-      const result = await getTools(server).activate_scene.handler(
-        { sceneId: 'scene.living_room_relax' },
+      const result = await getTools(server).call_ha_service.handler(
+        { domain: 'light', service: 'turn_on', entity_id: 'light.bedroom' },
         {},
       );
       expect(mockHaClient.callService).toHaveBeenCalledWith(
-        'scene',
+        'light',
         'turn_on',
-        { entity_id: 'scene.living_room_relax' },
+        { entity_id: 'light.bedroom' },
       );
-      expect(result.content[0].text).toBe('Scene scene.living_room_relax activated');
+      expect(result.content[0].text).toBe('Called light.turn_on on light.bedroom');
     });
 
-    it('list_scenes tool returns filtered scene list', async () => {
+    it('list_entities tool returns filtered entity list', async () => {
       mockHaClient.getState.mockResolvedValue([
-        { entity_id: 'scene.bedroom_relax', attributes: { friendly_name: 'Bedroom Relax' } },
-        { entity_id: 'input_boolean.something', attributes: {} },
+        { entity_id: 'light.bedroom', state: 'on', attributes: { friendly_name: 'Bedroom Light' } },
+        { entity_id: 'switch.porch', state: 'off', attributes: { friendly_name: 'Porch Switch' } },
       ]);
       const server = createMcpServer(mockServices);
-      const result = await getTools(server).list_scenes.handler({}, {});
+      const result = await getTools(server).list_entities.handler({ domain: 'light' }, {});
       const parsed = JSON.parse(result.content[0].text as string);
-      expect(parsed.scenes).toHaveLength(1);
-      expect(parsed.scenes[0].name).toBe('Bedroom Relax');
+      expect(parsed.entities).toHaveLength(1);
+      expect(parsed.entities[0].name).toBe('Bedroom Light');
+    });
+
+    it('get_entity_state tool returns entity state', async () => {
+      mockHaClient.getState.mockResolvedValue({
+        entity_id: 'light.bedroom',
+        state: 'on',
+        attributes: { friendly_name: 'Bedroom Light', brightness: 255 },
+      });
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).get_entity_state.handler(
+        { entity_id: 'light.bedroom' },
+        {},
+      );
+      const parsed = JSON.parse(result.content[0].text as string);
+      expect(parsed.entity_id).toBe('light.bedroom');
+      expect(parsed.state).toBe('on');
+    });
+
+    it('get_car_status tool returns car data', async () => {
+      mockCar.status = { batteryLevel: 75 };
+      mockCar.odometer = 5000;
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).get_car_status.handler({}, {});
+      const parsed = JSON.parse(result.content[0].text as string);
+      expect(parsed.status.batteryLevel).toBe(75);
+      expect(parsed.odometer).toBe(5000);
+    });
+
+    it('get_robot_status tool returns robot data', async () => {
+      mockBroombot.cachedStatus = { batteryLevel: 100 };
+      mockMopbot.cachedStatus = { batteryLevel: 50, running: true };
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).get_robot_status.handler({}, {});
+      const parsed = JSON.parse(result.content[0].text as string);
+      expect(parsed.broombot.batteryLevel).toBe(100);
+      expect(parsed.mopbot.running).toBe(true);
+    });
+
+    it('get_appliance_status tool returns appliance data', async () => {
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).get_appliance_status.handler({}, {});
+      const parsed = JSON.parse(result.content[0].text as string);
+      expect(parsed).toHaveProperty('washer');
+      expect(parsed).toHaveProperty('dryer');
+      expect(parsed).toHaveProperty('dishwasher');
     });
   });
 
