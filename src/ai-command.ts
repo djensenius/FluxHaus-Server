@@ -219,9 +219,15 @@ export async function executeTool(
 
 // ── Anthropic provider ────────────────────────────────────────────────────────
 
+export interface ConversationMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
 async function executeWithAnthropic(
   command: string,
   services: FluxHausServices,
+  conversationHistory: ConversationMessage[] = [],
 ): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
@@ -236,6 +242,10 @@ async function executeWithAnthropic(
   }));
 
   const messages: Anthropic.MessageParam[] = [
+    ...conversationHistory.map((m) => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    })),
     { role: 'user', content: command },
   ];
 
@@ -294,6 +304,7 @@ async function executeWithOpenAICompatible(
   services: FluxHausServices,
   client: OpenAI,
   defaultModel: string,
+  conversationHistory: ConversationMessage[] = [],
 ): Promise<string> {
   const model = process.env.AI_MODEL || defaultModel;
 
@@ -308,6 +319,10 @@ async function executeWithOpenAICompatible(
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
     { role: 'system', content: SYSTEM_PROMPT },
+    ...conversationHistory.map((m) => ({
+      role: m.role as 'user' | 'assistant',
+      content: m.content,
+    })),
     { role: 'user', content: command },
   ];
 
@@ -359,12 +374,13 @@ async function executeWithOpenAICompatible(
 export async function executeAICommand(
   command: string,
   services: FluxHausServices,
+  conversationHistory: ConversationMessage[] = [],
 ): Promise<string> {
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
 
   switch (provider) {
   case 'anthropic':
-    return executeWithAnthropic(command, services);
+    return executeWithAnthropic(command, services, conversationHistory);
 
   case 'copilot':
   case 'github-copilot': {
@@ -379,6 +395,7 @@ export async function executeAICommand(
         defaultHeaders: { 'Copilot-Integration-Id': 'vscode-chat' },
       }),
       'gpt-4o',
+      conversationHistory,
     );
   }
 
@@ -392,6 +409,7 @@ export async function executeAICommand(
       services,
       new OpenAI({ baseURL, apiKey }),
       'glm-4-flash',
+      conversationHistory,
     );
   }
 
@@ -403,6 +421,7 @@ export async function executeAICommand(
       services,
       new OpenAI({ apiKey }),
       'gpt-4o',
+      conversationHistory,
     );
   }
 
@@ -420,6 +439,7 @@ export async function executeAICommand(
         apiKey, endpoint, apiVersion,
       }),
       deployment,
+      conversationHistory,
     );
   }
 

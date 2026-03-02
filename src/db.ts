@@ -49,6 +49,27 @@ export async function initDatabase(): Promise<void> {
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS conversations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        title TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_conversations_user
+        ON conversations (user_sub, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS conversation_messages (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        is_voice BOOLEAN DEFAULT false,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_messages_conversation
+        ON conversation_messages (conversation_id, created_at);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {
