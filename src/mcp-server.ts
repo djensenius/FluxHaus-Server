@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
 
