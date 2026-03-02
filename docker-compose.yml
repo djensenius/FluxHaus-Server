@@ -28,8 +28,8 @@ services:
     environment:
       - TZ=America/Toronto
     volumes:
-      - /home/david/Code/docker-images/FluxHaus-Server/cache:/app/cache
-      - /home/david/Code/docker-images/FluxHaus-Server/.env:/app/.env
+      - ./cache:/app/cache
+      - ./.env:/app/.env
     healthcheck:
       test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:8888/health || exit 1"]
       interval: 30s

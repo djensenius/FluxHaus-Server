@@ -8,5 +8,6 @@ export interface AuthenticatedUser {
 declare module 'express-session' {
   interface SessionData {
     user?: AuthenticatedUser;
+    csrfToken?: string;
   }
 }

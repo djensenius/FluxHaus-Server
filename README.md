@@ -16,6 +16,8 @@ A Node.js server that acts as the central nervous system for the FluxHaus smart 
 *   **Structured Logging**: JSON-structured output via pino.
 *   **Session Management**: PostgreSQL-backed sessions via `connect-pg-simple`. Sessions persist across server restarts.
 *   **Graceful Shutdown**: Clean teardown of database connections, InfluxDB writes, and HTTP server on SIGTERM/SIGINT.
+*   **AI Command Endpoint**: Natural-language `POST /command` endpoint powered by Anthropic, OpenAI, GitHub Copilot, or Z.ai.
+*   **MCP Server**: Model Context Protocol server so AI assistants (Claude Desktop, etc.) can control your home directly.
 
 ## Prerequisites
 
@@ -274,8 +276,74 @@ GET /audit?limit=50&offset=0&username=admin&since=2024-01-01T00:00:00Z
 | `MOPBOT_ENTITY_ID` | Entity ID for Mopbot | `vacuum.mopbot` |
 | `MOPBOT_BATTERY_ENTITY_ID` | Battery sensor entity for Mopbot | |
 | `CAR_ENTITY_PREFIX` | HA entity prefix for the car | `kia` |
+| **AI** | | |
+| `AI_PROVIDER` | AI provider: `anthropic`, `copilot`, `github-copilot`, `zai`, `z.ai`, or `openai` | `anthropic` |
+| `AI_MODEL` | Model name override | *(provider default)* |
+| `ANTHROPIC_API_KEY` | Anthropic API key | |
+| `GITHUB_TOKEN` | GitHub token with `copilot` scope (Copilot provider) | |
+| `ZAI_API_KEY` | Z.ai API key | |
+| `ZAI_BASE_URL` | Z.ai base URL | `https://api.z.ai/api/v1` |
+| `OPENAI_API_KEY` | OpenAI API key | |
 
 See `.env-example` for the complete list including Miele, HomeConnect, and Modern Dog integrations.
+
+## AI Command Endpoint
+
+Send a plain-English command to control your home. The server runs a full tool-calling loop and returns a natural-language confirmation. This endpoint is admin-only.
+
+```
+POST /command
+Authorization: Bearer <token>
+Content-Type: application/json
+
+{ "command": "Lock the car and start the broombot" }
+```
+
+Response:
+```json
+{ "response": "Done! Your car is locked and the broombot is cleaning." }
+```
+
+Configure the provider with `AI_PROVIDER` (default: `anthropic`) and the matching API key. Default models per provider:
+
+| Provider | Default model |
+| :--- | :--- |
+| `anthropic` | `claude-3-5-sonnet-20241022` |
+| `copilot` / `github-copilot` | `gpt-4o` |
+| `zai` / `z.ai` | `glm-4-flash` |
+| `openai` | `gpt-4o` |
+
+## MCP Server
+
+FluxHaus ships a [Model Context Protocol](https://modelcontextprotocol.io) server so AI assistants like Claude Desktop can control your home directly.
+
+### Running the MCP server
+
+```bash
+node dist/mcp.js
+```
+
+### Claude Desktop configuration
+
+Add the following to your `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "fluxhaus": {
+      "command": "node",
+      "args": ["/path/to/FluxHaus-Server/dist/mcp.js"],
+      "env": {
+        "HOMEASSISTANT_URL": "http://homeassistant.local:8123",
+        "HOMEASSISTANT_TOKEN": "<your-token>",
+        "CAR_ENTITY_PREFIX": "kia"
+      }
+    }
+  }
+}
+```
+
+The MCP server exposes the same tools as the `/command` endpoint (lock/unlock/start/stop car, control robots, activate Home Assistant scenes, list appliance status).
 
 ## Breaking Changes
 

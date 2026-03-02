@@ -7,9 +7,11 @@ import connectPgSimple from 'connect-pg-simple';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp';
 import notFoundHandler from './middleware/not-found.middleware';
 import { authMiddleware } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
+import { csrfMiddleware, generateCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
 import {
   closePool, getPool, initDatabase, initPool,
@@ -21,6 +23,10 @@ import Car, { CarConfig, CarStartOptions } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
 import adminRouter from './routes/admin.routes';
+import createMcpServer from './mcp-server';
+import { executeAICommand } from './ai-command';
+import transcribeAudio from './stt';
+import synthesizeSpeech from './tts';
 import logger from './logger';
 
 const serverLogger = logger.child({ subsystem: 'server' });
@@ -50,6 +56,7 @@ export async function createServer(): Promise<Express> {
     limiter,
     nocache(),
     cookieParser(sessionSecret),
+    express.json({ limit: '10mb' }),
     express.urlencoded({ extended: true }),
   );
 
@@ -71,13 +78,14 @@ export async function createServer(): Promise<Express> {
     sessionConfig.store = new PgStore({ pool, createTableIfMissing: true });
   }
   app.use(session(sessionConfig));
+  app.use(csrfMiddleware);
 
   const allowedOrigins = (
     process.env.CORS_ORIGINS || 'http://localhost:8080,https://haus.fluxhaus.io'
   ).split(',').map((o) => o.trim());
 
   const corsOptions: CorsOptions = {
-    allowedHeaders: ['Authorization', 'Content-Type'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-CSRF-Token'],
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.indexOf(origin) === -1) {
@@ -147,6 +155,16 @@ export async function createServer(): Promise<Express> {
   // Auth middleware
   app.use(authMiddleware);
   app.use(auditMiddleware);
+
+  // CSRF token endpoint — returns (or lazily generates) the per-session CSRF
+  // token for cookie-authenticated browser clients. API clients using the
+  // Authorization header do not need this.
+  app.get('/auth/csrf-token', (req, res) => {
+    if (!req.session.csrfToken) {
+      req.session.csrfToken = generateCsrfToken();
+    }
+    res.json({ csrfToken: req.session.csrfToken });
+  });
 
   const homeAssistantClient = new HomeAssistantClient({
     url: (process.env.HOMEASSISTANT_URL || 'http://homeassistant.local:8123').trim(),
@@ -347,7 +365,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning on mopbot
-  app.get('/turnOnMopbot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOnMopbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await mopbot.turnOn();
     }
@@ -355,7 +373,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning off mopbot
-  app.get('/turnOffMopbot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOffMopbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await mopbot.turnOff();
     }
@@ -363,7 +381,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning on broombot
-  app.get('/turnOnBroombot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOnBroombot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
@@ -371,7 +389,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning off broombot
-  app.get('/turnOffBroombot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOffBroombot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
@@ -379,7 +397,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for starting a deep clean
-  app.get('/turnOnDeepClean', cors(corsOptions), async (req, res) => {
+  app.post('/turnOnDeepClean', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
@@ -390,7 +408,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for stopping a deep clean
-  app.get('/turnOffDeepClean', cors(corsOptions), async (req, res) => {
+  app.post('/turnOffDeepClean', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
@@ -401,7 +419,7 @@ export async function createServer(): Promise<Express> {
     res.send('Broombot is turned off.');
   });
 
-  app.get('/startCar', cors(corsOptions), async (req, res) => {
+  app.post('/startCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const {
         temp,
@@ -411,7 +429,15 @@ export async function createServer(): Promise<Express> {
         seatFR,
         seatRL,
         seatRR,
-      } = req.query;
+      } = (req.body ?? {}) as {
+        temp?: string;
+        heatedFeatures?: string;
+        defrost?: string;
+        seatFL?: string;
+        seatFR?: string;
+        seatRL?: string;
+        seatRR?: string;
+      };
 
       const config: Partial<CarStartOptions> = {};
       if (temp) {
@@ -440,7 +466,7 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  app.get('/stopCar', cors(corsOptions), async (req, res) => {
+  app.post('/stopCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const result = car.stop();
       res.send(JSON.stringify({ result }));
@@ -450,14 +476,14 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  app.get('/resyncCar', cors(corsOptions), async (req, res) => {
+  app.post('/resyncCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       car.resync();
     }
     res.send('Resyncing car');
   });
 
-  app.get('/lockCar', cors(corsOptions), async (req, res) => {
+  app.post('/lockCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const result = car.lock();
       res.send(JSON.stringify({ result }));
@@ -467,13 +493,123 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  app.get('/unlockCar', cors(corsOptions), async (req, res) => {
+  app.post('/unlockCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const result = car.unlock();
       res.send(result);
       setTimeout(() => {
         car.resync();
       }, 5000);
+    }
+  });
+
+  app.post('/command', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const { command } = req.body as { command?: string };
+    if (!command || typeof command !== 'string') {
+      res.status(400).json({ error: 'command is required' });
+      return;
+    }
+    try {
+      const services = {
+        homeAssistantClient,
+        broombot,
+        mopbot,
+        car,
+        mieleClient,
+        hc,
+        cameraURL,
+      };
+      const response = await executeAICommand(command, services);
+      res.json({ response });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // POST /voice — voice-in/voice-out or text-in/voice-out
+  // Pipeline: STT (OpenAI Whisper) → LLM (AI_PROVIDER) → TTS (OpenAI TTS)
+  // Request body (JSON):
+  //   { audio: "<base64>", filename?: "recording.webm" }  — voice input
+  //   { text:  "Turn on the lights" }                     — text input
+  // Response: audio/mpeg binary. X-Transcript and X-Response headers carry the
+  //   transcribed input and LLM text reply for clients that want to display them.
+  app.post('/voice', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const { audio, filename, text } = req.body as {
+      audio?: string;
+      filename?: string;
+      text?: string;
+    };
+    if (!audio && !text) {
+      res.status(400).json({ error: 'Either audio (base64) or text is required' });
+      return;
+    }
+    try {
+      let command: string;
+      if (audio) {
+        const audioBuffer = Buffer.from(audio, 'base64');
+        command = await transcribeAudio(audioBuffer, filename || 'audio.webm');
+      } else {
+        command = text as string;
+      }
+      const services = {
+        homeAssistantClient,
+        broombot,
+        mopbot,
+        car,
+        mieleClient,
+        hc,
+        cameraURL,
+      };
+      const response = await executeAICommand(command, services);
+      const audioResponse = await synthesizeSpeech(response);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('X-Transcript', encodeURIComponent(command));
+      res.setHeader('X-Response', encodeURIComponent(response));
+      res.send(audioResponse);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
+  // MCP HTTP endpoint — requires OIDC authentication (req.user.sub is only set for
+  // OIDC-authenticated users; Basic-auth users do not have a sub claim).
+  app.post('/mcp', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ message: 'OIDC authentication required for MCP access' });
+      return;
+    }
+    try {
+      // sessionIdGenerator: undefined opts into stateless mode — each POST
+      // request is self-contained with no server-side session tracking.
+      const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const mcpServer = createMcpServer({
+        homeAssistantClient,
+        broombot,
+        mopbot,
+        car,
+        mieleClient,
+        hc,
+        cameraURL,
+      });
+      await mcpServer.connect(mcpTransport);
+      try {
+        await mcpTransport.handleRequest(req, res, req.body);
+      } finally {
+        await mcpServer.close();
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
     }
   });
 
