@@ -83,6 +83,7 @@ describe('Server', () => {
     process.env.DEMO_PASSWORD = 'demopassword';
     process.env.mieleAppliances = 'Washer, Dryer';
     process.env.favouriteHomeKit = 'Light, Switch';
+    process.env.favouriteScenes = 'Good Morning, Bedtime';
     process.env.MODERN_DOG_URL = 'https://moddogkitchener.portal.gingrapp.com/api/v1/reservations';
 
     // Setup mocks
