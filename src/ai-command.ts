@@ -114,7 +114,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     parameters: {
       type: 'object',
       properties: {
-        domain: { type: 'string', description: 'Entity domain filter (e.g. light, switch, scene, climate). Omit to list all.' },
+        domain: {
+          type: 'string',
+          description: 'Entity domain filter (e.g. light, switch, scene, climate). Omit to list all.',
+        },
       },
     },
   },
@@ -260,9 +263,9 @@ export async function executeTool(
     } = args;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const serviceData: Record<string, any> = { entity_id: entityId };
-    for (const [key, value] of Object.entries(extraData)) {
-      if (value !== undefined) serviceData[key] = value;
-    }
+    Object.entries(extraData).forEach(([key, value]) => {
+      if (value !== undefined) { serviceData[key] = value; }
+    });
     await homeAssistantClient.callService(domain, service, serviceData);
     return `Called ${domain}.${service} on ${entityId}`;
   }

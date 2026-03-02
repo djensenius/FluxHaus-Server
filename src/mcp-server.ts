@@ -261,7 +261,11 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
   server.tool(
     'list_entities',
     'List Home Assistant entities, optionally filtered by domain (light, switch, scene, climate, etc.)',
-    { domain: z.string().optional().describe('Entity domain filter (e.g. light, switch, scene, climate). Omit to list all.') },
+    {
+      domain: z.string().optional().describe(
+        'Entity domain filter (e.g. light, switch, scene, climate). Omit to list all.',
+      ),
+    },
     async ({ domain }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let allStates: any[] = await homeAssistantClient.getState('');
@@ -286,8 +290,11 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
   server.tool(
     'get_entity_state',
     'Get the current state and attributes of a Home Assistant entity',
+    // eslint-disable-next-line camelcase
     { entity_id: z.string().describe('Entity ID (e.g. light.bedroom, switch.porch)') },
+    // eslint-disable-next-line camelcase
     async ({ entity_id }) => {
+      // eslint-disable-next-line camelcase
       const state = await homeAssistantClient.getState(entity_id);
       return {
         content: [{
@@ -308,22 +315,22 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     {
       domain: z.string().describe('Service domain (e.g. light, switch, climate, scene)'),
       service: z.string().describe('Service name (e.g. turn_on, turn_off, toggle)'),
-      entity_id: z.string().describe('Target entity ID (e.g. light.bedroom)'),
+      entity_id: z.string().describe('Target entity ID (e.g. light.bedroom)'), // eslint-disable-line camelcase
       brightness_pct: z.number().optional().describe('Brightness percentage (0-100), for lights only'),
       color_temp: z.number().optional().describe('Color temperature in mireds, for lights only'),
       temperature: z.number().optional().describe('Target temperature, for climate entities only'),
     },
     async ({
       // eslint-disable-next-line @typescript-eslint/no-shadow
-      domain, service, entity_id, ...extraData
+      domain, service, entity_id: entityId, ...extraData
     }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const serviceData: Record<string, any> = { entity_id };
-      for (const [key, value] of Object.entries(extraData)) {
-        if (value !== undefined) serviceData[key] = value;
-      }
+      const serviceData: Record<string, any> = { entity_id: entityId };
+      Object.entries(extraData).forEach(([key, value]) => {
+        if (value !== undefined) { serviceData[key] = value; }
+      });
       await homeAssistantClient.callService(domain, service, serviceData);
-      return { content: [{ type: 'text' as const, text: `Called ${domain}.${service} on ${entity_id}` }] };
+      return { content: [{ type: 'text' as const, text: `Called ${domain}.${service} on ${entityId}` }] };
     },
   );
 
