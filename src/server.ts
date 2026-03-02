@@ -83,7 +83,7 @@ export async function createServer(): Promise<Express> {
   ).split(',').map((o) => o.trim());
 
   const corsOptions: CorsOptions = {
-    allowedHeaders: ['Authorization', 'Content-Type'],
+    allowedHeaders: ['Authorization', 'Content-Type', 'X-CSRF-Token'],
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (allowedOrigins.indexOf(origin) === -1) {
@@ -363,7 +363,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning on mopbot
-  app.get('/turnOnMopbot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOnMopbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await mopbot.turnOn();
     }
@@ -371,7 +371,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning off mopbot
-  app.get('/turnOffMopbot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOffMopbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await mopbot.turnOff();
     }
@@ -379,7 +379,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning on broombot
-  app.get('/turnOnBroombot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOnBroombot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
@@ -387,7 +387,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for turning off broombot
-  app.get('/turnOffBroombot', cors(corsOptions), async (req, res) => {
+  app.post('/turnOffBroombot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
@@ -395,7 +395,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for starting a deep clean
-  app.get('/turnOnDeepClean', cors(corsOptions), async (req, res) => {
+  app.post('/turnOnDeepClean', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOn();
     }
@@ -406,7 +406,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Route handler for stopping a deep clean
-  app.get('/turnOffDeepClean', cors(corsOptions), async (req, res) => {
+  app.post('/turnOffDeepClean', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       await broombot.turnOff();
     }
@@ -417,7 +417,7 @@ export async function createServer(): Promise<Express> {
     res.send('Broombot is turned off.');
   });
 
-  app.get('/startCar', cors(corsOptions), async (req, res) => {
+  app.post('/startCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const {
         temp,
@@ -427,7 +427,15 @@ export async function createServer(): Promise<Express> {
         seatFR,
         seatRL,
         seatRR,
-      } = req.query;
+      } = req.body as {
+        temp?: string;
+        heatedFeatures?: string;
+        defrost?: string;
+        seatFL?: string;
+        seatFR?: string;
+        seatRL?: string;
+        seatRR?: string;
+      };
 
       const config: Partial<CarStartOptions> = {};
       if (temp) {
@@ -456,7 +464,7 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  app.get('/stopCar', cors(corsOptions), async (req, res) => {
+  app.post('/stopCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const result = car.stop();
       res.send(JSON.stringify({ result }));
@@ -466,14 +474,14 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  app.get('/resyncCar', cors(corsOptions), async (req, res) => {
+  app.post('/resyncCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       car.resync();
     }
     res.send('Resyncing car');
   });
 
-  app.get('/lockCar', cors(corsOptions), async (req, res) => {
+  app.post('/lockCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const result = car.lock();
       res.send(JSON.stringify({ result }));
@@ -483,7 +491,7 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  app.get('/unlockCar', cors(corsOptions), async (req, res) => {
+  app.post('/unlockCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
       const result = car.unlock();
       res.send(result);
@@ -493,7 +501,7 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  app.post('/command', cors(corsOptions), async (req, res) => {
+  app.post('/command', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role !== 'admin') {
       res.status(403).json({ error: 'Forbidden' });
       return;
@@ -528,7 +536,7 @@ export async function createServer(): Promise<Express> {
   //   { text:  "Turn on the lights" }                     — text input
   // Response: audio/mpeg binary. X-Transcript and X-Response headers carry the
   //   transcribed input and LLM text reply for clients that want to display them.
-  app.post('/voice', cors(corsOptions), async (req, res) => {
+  app.post('/voice', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role !== 'admin') {
       res.status(403).json({ error: 'Forbidden' });
       return;
