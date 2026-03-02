@@ -510,14 +510,31 @@ export async function createServer(): Promise<Express> {
   app.get('/scenes', cors(corsOptions), async (req, res) => {
     try {
       const states = await homeAssistantClient.getState('');
-      const scenes = (Array.isArray(states) ? states : [])
+      const allStates = Array.isArray(states) ? states : [];
+
+      // Build lookup for stateful scene switches (switch.<scene_slug>)
+      const switchStates = new Map<string, string>();
+      for (const s of allStates) {
+        const sid = s.entity_id as string;
+        if (sid?.startsWith('switch.') && typeof s.state === 'string') {
+          switchStates.set(sid, s.state);
+        }
+      }
+
+      const scenes = allStates
         .filter((s: Record<string, unknown>) => typeof s.entity_id === 'string'
           && s.entity_id.startsWith('scene.'))
-        .map((s: Record<string, unknown>) => ({
-          entityId: s.entity_id,
-          name: (s.attributes as Record<string, unknown>)?.friendly_name
-            || s.entity_id,
-        }));
+        .map((s: Record<string, unknown>) => {
+          const sceneId = s.entity_id as string;
+          // scene.good_morning → switch.good_morning
+          const switchId = sceneId.replace('scene.', 'switch.');
+          const switchState = switchStates.get(switchId);
+          return {
+            entityId: sceneId,
+            name: (s.attributes as Record<string, unknown>)?.friendly_name || sceneId,
+            isActive: switchState === 'on',
+          };
+        });
       res.json(scenes);
     } catch (err) {
       serverLogger.error(err, 'Failed to fetch scenes');
@@ -536,9 +553,18 @@ export async function createServer(): Promise<Express> {
         return;
       }
       try {
-        /* eslint-disable camelcase */
-        await homeAssistantClient.callService('scene', 'turn_on', { entity_id: entityId });
-        /* eslint-enable camelcase */
+        // Try toggling via stateful scene switch first
+        const switchId = entityId.replace('scene.', 'switch.');
+        try {
+          /* eslint-disable camelcase */
+          await homeAssistantClient.callService('switch', 'toggle', { entity_id: switchId });
+          /* eslint-enable camelcase */
+        } catch {
+          // Fall back to standard scene activation if no switch exists
+          /* eslint-disable camelcase */
+          await homeAssistantClient.callService('scene', 'turn_on', { entity_id: entityId });
+          /* eslint-enable camelcase */
+        }
         res.json({ success: true });
       } catch (err) {
         serverLogger.error(err, 'Failed to activate scene');

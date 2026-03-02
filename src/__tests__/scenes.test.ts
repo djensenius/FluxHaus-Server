@@ -25,14 +25,29 @@ describe('/scenes endpoints', () => {
     app.get('/scenes', async (_req, res) => {
       try {
         const states = await mockHaClient.getState('');
-        const scenes = (Array.isArray(states) ? states : [])
+        const allStates = Array.isArray(states) ? states : [];
+
+        const switchStates = new Map<string, string>();
+        for (const s of allStates) {
+          const sid = s.entity_id as string;
+          if (sid?.startsWith('switch.') && typeof s.state === 'string') {
+            switchStates.set(sid, s.state);
+          }
+        }
+
+        const scenes = allStates
           .filter((s: Record<string, unknown>) => typeof s.entity_id === 'string'
             && s.entity_id.startsWith('scene.'))
-          .map((s: Record<string, unknown>) => ({
-            entityId: s.entity_id,
-            name: (s.attributes as Record<string, unknown>)?.friendly_name
-              || s.entity_id,
-          }));
+          .map((s: Record<string, unknown>) => {
+            const sceneId = s.entity_id as string;
+            const switchId = sceneId.replace('scene.', 'switch.');
+            const switchState = switchStates.get(switchId);
+            return {
+              entityId: sceneId,
+              name: (s.attributes as Record<string, unknown>)?.friendly_name || sceneId,
+              isActive: switchState === 'on',
+            };
+          });
         res.json(scenes);
       } catch {
         res.status(502).json({ error: 'Failed to fetch scenes' });
@@ -47,9 +62,16 @@ describe('/scenes endpoints', () => {
         return;
       }
       try {
-        /* eslint-disable camelcase */
-        await mockHaClient.callService('scene', 'turn_on', { entity_id: entityId });
-        /* eslint-enable camelcase */
+        const switchId = entityId.replace('scene.', 'switch.');
+        try {
+          /* eslint-disable camelcase */
+          await mockHaClient.callService('switch', 'toggle', { entity_id: switchId });
+          /* eslint-enable camelcase */
+        } catch {
+          /* eslint-disable camelcase */
+          await mockHaClient.callService('scene', 'turn_on', { entity_id: entityId });
+          /* eslint-enable camelcase */
+        }
         res.json({ success: true });
       } catch {
         res.status(502).json({ error: 'Failed to activate scene' });
@@ -83,8 +105,8 @@ describe('/scenes endpoints', () => {
       expect(res.status).toBe(200);
       expect(res.body).toHaveLength(2);
       expect(res.body).toEqual([
-        { entityId: 'scene.good_morning', name: 'Good Morning' },
-        { entityId: 'scene.bedtime', name: 'Bedtime' },
+        { entityId: 'scene.good_morning', name: 'Good Morning', isActive: false },
+        { entityId: 'scene.bedtime', name: 'Bedtime', isActive: false },
       ]);
       expect(mockHaClient.getState).toHaveBeenCalledWith('');
     });
@@ -101,7 +123,7 @@ describe('/scenes endpoints', () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual([
-        { entityId: 'scene.unnamed', name: 'scene.unnamed' },
+        { entityId: 'scene.unnamed', name: 'scene.unnamed', isActive: false },
       ]);
     });
 
@@ -138,10 +160,41 @@ describe('/scenes endpoints', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual([]);
     });
+
+    it('returns isActive=true when stateful scene switch is on', async () => {
+      mockHaClient.getState.mockResolvedValue([
+        {
+          entity_id: 'scene.good_morning',
+          attributes: { friendly_name: 'Good Morning' },
+        },
+        {
+          entity_id: 'scene.bedtime',
+          attributes: { friendly_name: 'Bedtime' },
+        },
+        {
+          entity_id: 'switch.good_morning',
+          state: 'on',
+          attributes: { friendly_name: 'Good Morning' },
+        },
+        {
+          entity_id: 'switch.bedtime',
+          state: 'off',
+          attributes: { friendly_name: 'Bedtime' },
+        },
+      ]);
+
+      const res = await request(app).get('/scenes');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual([
+        { entityId: 'scene.good_morning', name: 'Good Morning', isActive: true },
+        { entityId: 'scene.bedtime', name: 'Bedtime', isActive: false },
+      ]);
+    });
   });
 
   describe('POST /scenes/activate', () => {
-    it('activates a valid scene', async () => {
+    it('activates a valid scene via switch toggle', async () => {
       mockHaClient.callService.mockResolvedValue({});
 
       const res = await request(app)
@@ -151,9 +204,27 @@ describe('/scenes endpoints', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ success: true });
       expect(mockHaClient.callService).toHaveBeenCalledWith(
+        'switch',
+        'toggle',
+        { entity_id: 'switch.good_morning' },
+      );
+    });
+
+    it('falls back to scene.turn_on when switch toggle fails', async () => {
+      mockHaClient.callService
+        .mockRejectedValueOnce(new Error('Switch not found'))
+        .mockResolvedValueOnce({});
+
+      const res = await request(app)
+        .post('/scenes/activate')
+        .send({ entityId: 'scene.bedtime' });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ success: true });
+      expect(mockHaClient.callService).toHaveBeenCalledWith(
         'scene',
         'turn_on',
-        { entity_id: 'scene.good_morning' },
+        { entity_id: 'scene.bedtime' },
       );
     });
 
