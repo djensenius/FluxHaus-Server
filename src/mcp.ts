@@ -1,4 +1,5 @@
 import 'dotenv/config';
+// eslint-disable-next-line import/extensions
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createServices } from './services';
 import createMcpServer from './mcp-server';

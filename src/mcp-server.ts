@@ -1,4 +1,5 @@
 import fs from 'fs';
+// eslint-disable-next-line import/extensions
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
