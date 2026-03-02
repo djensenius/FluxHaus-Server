@@ -520,7 +520,7 @@ export async function createServer(): Promise<Express> {
         }));
       res.json(scenes);
     } catch (err) {
-      serverLogger.error('Failed to fetch scenes', err);
+      serverLogger.error(err, 'Failed to fetch scenes');
       res.status(502).json({ error: 'Failed to fetch scenes' });
     }
   });
@@ -541,7 +541,7 @@ export async function createServer(): Promise<Express> {
         /* eslint-enable camelcase */
         res.json({ success: true });
       } catch (err) {
-        serverLogger.error('Failed to activate scene', err);
+        serverLogger.error(err, 'Failed to activate scene');
         res.status(502).json({ error: 'Failed to activate scene' });
       }
     },
