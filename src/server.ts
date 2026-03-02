@@ -505,6 +505,48 @@ export async function createServer(): Promise<Express> {
     }
   });
 
+  // ── Scene endpoints ──────────────────────────────────────────────────────
+
+  app.get('/scenes', cors(corsOptions), async (req, res) => {
+    try {
+      const states = await homeAssistantClient.getState('');
+      const scenes = (Array.isArray(states) ? states : [])
+        .filter((s: Record<string, unknown>) => typeof s.entity_id === 'string'
+          && s.entity_id.startsWith('scene.'))
+        .map((s: Record<string, unknown>) => ({
+          entityId: s.entity_id,
+          name: (s.attributes as Record<string, unknown>)?.friendly_name
+            || s.entity_id,
+        }));
+      res.json(scenes);
+    } catch (err) {
+      serverLogger.error(err, 'Failed to fetch scenes');
+      res.status(502).json({ error: 'Failed to fetch scenes' });
+    }
+  });
+
+  app.post(
+    '/scenes/activate',
+    cors(corsOptions),
+    csrfMiddleware,
+    async (req, res) => {
+      const { entityId } = req.body as { entityId?: string };
+      if (!entityId || !entityId.startsWith('scene.')) {
+        res.status(400).json({ error: 'Invalid entityId' });
+        return;
+      }
+      try {
+        /* eslint-disable camelcase */
+        await homeAssistantClient.callService('scene', 'turn_on', { entity_id: entityId });
+        /* eslint-enable camelcase */
+        res.json({ success: true });
+      } catch (err) {
+        serverLogger.error(err, 'Failed to activate scene');
+        res.status(502).json({ error: 'Failed to activate scene' });
+      }
+    },
+  );
+
   // ── Conversation CRUD ─────────────────────────────────────────────────────
 
   app.get('/conversations', cors(corsOptions), async (req, res) => {
