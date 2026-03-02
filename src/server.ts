@@ -7,7 +7,8 @@ import connectPgSimple from 'connect-pg-simple';
 import rateLimit from 'express-rate-limit';
 import nocache from 'nocache';
 import cors, { CorsOptions } from 'cors';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp';
+// eslint-disable-next-line import/extensions
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import notFoundHandler from './middleware/not-found.middleware';
 import { authMiddleware } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
