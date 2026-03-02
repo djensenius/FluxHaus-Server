@@ -289,6 +289,27 @@ describe('executeAICommand', () => {
       expect(result).toBe('Broombot started.');
     });
 
+    it('includes Copilot-Integration-Id header', async () => {
+      let capturedHeaders: Record<string, string> | undefined;
+      (OpenAI as unknown as jest.Mock).mockImplementation(
+        ({ defaultHeaders }: { defaultHeaders?: Record<string, string> }) => {
+          capturedHeaders = defaultHeaders;
+          return {
+            chat: {
+              completions: {
+                create: jest.fn().mockResolvedValue({
+                  choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
+                }),
+              },
+            },
+          };
+        },
+      );
+
+      await executeAICommand('hello', mockServices);
+      expect(capturedHeaders).toMatchObject({ 'Copilot-Integration-Id': 'fluxhaus' });
+    });
+
     it('executes tool_calls and returns final text', async () => {
       const mockCreate = jest.fn()
         .mockResolvedValueOnce({
