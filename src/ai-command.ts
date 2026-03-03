@@ -163,6 +163,285 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     description: 'Get the status of home appliances: washer, dryer (Miele), and dishwasher (HomeConnect)',
     parameters: { type: 'object', properties: {} },
   },
+
+  // ── Plex ──
+  {
+    name: 'plex_get_sessions',
+    description: 'Get current Plex streaming sessions (who is watching what)',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'plex_get_recently_added',
+    description: 'Get recently added media from Plex',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'plex_get_libraries',
+    description: 'List all Plex libraries (Movies, TV Shows, Music, etc.)',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'plex_search',
+    description: 'Search Plex for movies, shows, music, etc.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+      },
+      required: ['query'],
+    },
+  },
+
+  // ── Overseerr ──
+  {
+    name: 'overseerr_search',
+    description: 'Search for movies/TV shows to request via Overseerr',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'overseerr_get_requests',
+    description: 'Get pending media requests from Overseerr',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'overseerr_request_media',
+    description: 'Request a movie or TV show via Overseerr',
+    parameters: {
+      type: 'object',
+      properties: {
+        mediaType: { type: 'string', description: 'Type of media', enum: ['movie', 'tv'] },
+        mediaId: { type: 'number', description: 'TMDB ID of the media' },
+      },
+      required: ['mediaType', 'mediaId'],
+    },
+  },
+
+  // ── Tautulli ──
+  {
+    name: 'tautulli_get_activity',
+    description: 'Get current Plex streaming activity via Tautulli',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'tautulli_get_history',
+    description: 'Get Plex watch history via Tautulli',
+    parameters: {
+      type: 'object',
+      properties: {
+        length: { type: 'number', description: 'Number of items (default 10)' },
+      },
+    },
+  },
+
+  // ── Grafana ──
+  {
+    name: 'grafana_list_dashboards',
+    description: 'List all Grafana dashboards',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'grafana_get_alerts',
+    description: 'Get active Grafana alerts',
+    parameters: { type: 'object', properties: {} },
+  },
+
+  // ── Portainer ──
+  {
+    name: 'portainer_list_containers',
+    description: 'List Docker containers via Portainer',
+    parameters: {
+      type: 'object',
+      properties: {
+        endpointId: { type: 'number', description: 'Portainer endpoint ID (default 1)' },
+      },
+    },
+  },
+  {
+    name: 'portainer_list_stacks',
+    description: 'List Docker stacks via Portainer',
+    parameters: { type: 'object', properties: {} },
+  },
+
+  // ── Prometheus ──
+  {
+    name: 'prometheus_get_alerts',
+    description: 'Get active Prometheus alerts',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'prometheus_query',
+    description: 'Execute a PromQL query',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'PromQL expression' },
+      },
+      required: ['query'],
+    },
+  },
+
+  // ── Komga ──
+  {
+    name: 'komga_get_recently_added',
+    description: 'Get recently added books/comics from Komga',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'komga_search',
+    description: 'Search Komga for series or books',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+      },
+      required: ['query'],
+    },
+  },
+
+  // ── Audiobookshelf ──
+  {
+    name: 'audiobookshelf_get_in_progress',
+    description: 'Get audiobooks/podcasts currently in progress',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'audiobookshelf_search',
+    description: 'Search Audiobookshelf library',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+        libraryId: { type: 'string', description: 'Library ID to search' },
+      },
+      required: ['query', 'libraryId'],
+    },
+  },
+  {
+    name: 'audiobookshelf_get_listening_stats',
+    description: 'Get listening statistics from Audiobookshelf',
+    parameters: { type: 'object', properties: {} },
+  },
+
+  // ── Immich ──
+  {
+    name: 'immich_get_statistics',
+    description: 'Get Immich photo library statistics',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'immich_list_albums',
+    description: 'List photo albums from Immich',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'immich_search',
+    description: 'Search photos in Immich',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query (e.g. "beach vacation")' },
+      },
+      required: ['query'],
+    },
+  },
+
+  // ── UniFi ──
+  {
+    name: 'unifi_get_health',
+    description: 'Get UniFi network health overview',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'unifi_list_clients',
+    description: 'List connected UniFi network clients',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'unifi_list_devices',
+    description: 'List UniFi network devices (APs, switches, gateways)',
+    parameters: { type: 'object', properties: {} },
+  },
+
+  // ── Forgejo ──
+  {
+    name: 'forgejo_list_repos',
+    description: 'List Forgejo git repositories',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'forgejo_list_issues',
+    description: 'List issues in a Forgejo repository',
+    parameters: {
+      type: 'object',
+      properties: {
+        owner: { type: 'string', description: 'Repository owner' },
+        repo: { type: 'string', description: 'Repository name' },
+      },
+      required: ['owner', 'repo'],
+    },
+  },
+
+  // ── Pi-hole ──
+  {
+    name: 'pihole_get_summary',
+    description: 'Get Pi-hole DNS blocking summary stats',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'pihole_blocking_status',
+    description: 'Get or set Pi-hole blocking status',
+    parameters: { type: 'object', properties: {} },
+  },
+
+  // ── Booklore ──
+  {
+    name: 'booklore_search',
+    description: 'Search books in the Booklore library',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+      },
+      required: ['query'],
+    },
+  },
+
+  // ── ROMm ──
+  {
+    name: 'romm_search',
+    description: 'Search for ROMs/games in the ROMm library',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Search query' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'romm_list_platforms',
+    description: 'List available gaming platforms in ROMm',
+    parameters: { type: 'object', properties: {} },
+  },
+
+  // ── InfluxDB ──
+  {
+    name: 'influxdb_query',
+    description: 'Query InfluxDB with a Flux query',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Flux query string' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
@@ -285,6 +564,162 @@ export async function executeTool(
       dryer: mieleClient.dryer,
       dishwasher: hc.dishwasher,
     }, null, 2);
+
+  // ── Plex ──
+  case 'plex_get_sessions':
+    if (!services.plex?.configured) return 'Plex is not configured';
+    return JSON.stringify(await services.plex.getSessions(), null, 2);
+  case 'plex_get_libraries':
+    if (!services.plex?.configured) return 'Plex is not configured';
+    return JSON.stringify(await services.plex.getLibraries(), null, 2);
+  case 'plex_get_recently_added':
+    if (!services.plex?.configured) return 'Plex is not configured';
+    return JSON.stringify(await services.plex.getRecentlyAdded(), null, 2);
+  case 'plex_search':
+    if (!services.plex?.configured) return 'Plex is not configured';
+    return JSON.stringify(await services.plex.search(args.query), null, 2);
+
+  // ── Overseerr ──
+  case 'overseerr_search':
+    if (!services.overseerr?.configured) return 'Overseerr is not configured';
+    return JSON.stringify(await services.overseerr.search(args.query), null, 2);
+  case 'overseerr_get_requests':
+    if (!services.overseerr?.configured) return 'Overseerr is not configured';
+    return JSON.stringify(await services.overseerr.getRequests(), null, 2);
+  case 'overseerr_request_media':
+    if (!services.overseerr?.configured) return 'Overseerr is not configured';
+    return JSON.stringify(
+      await services.overseerr.requestMedia(args.mediaType, args.mediaId),
+      null,
+      2,
+    );
+
+  // ── Tautulli ──
+  case 'tautulli_get_activity':
+    if (!services.tautulli?.configured) return 'Tautulli is not configured';
+    return JSON.stringify(await services.tautulli.getActivity(), null, 2);
+  case 'tautulli_get_history':
+    if (!services.tautulli?.configured) return 'Tautulli is not configured';
+    return JSON.stringify(
+      await services.tautulli.getHistory(args.length),
+      null,
+      2,
+    );
+
+  // ── Grafana ──
+  case 'grafana_list_dashboards':
+    if (!services.grafana?.configured) return 'Grafana is not configured';
+    return JSON.stringify(await services.grafana.listDashboards(), null, 2);
+  case 'grafana_get_alerts':
+    if (!services.grafana?.configured) return 'Grafana is not configured';
+    return JSON.stringify(await services.grafana.getAlerts(), null, 2);
+
+  // ── Portainer ──
+  case 'portainer_list_containers':
+    if (!services.portainer?.configured) return 'Portainer is not configured';
+    return JSON.stringify(
+      await services.portainer.listContainers(args.endpointId ?? 1),
+      null,
+      2,
+    );
+  case 'portainer_list_stacks':
+    if (!services.portainer?.configured) return 'Portainer is not configured';
+    return JSON.stringify(await services.portainer.listStacks(), null, 2);
+
+  // ── Prometheus ──
+  case 'prometheus_get_alerts':
+    if (!services.prometheus?.configured) return 'Prometheus is not configured';
+    return JSON.stringify(await services.prometheus.getAlerts(), null, 2);
+  case 'prometheus_query':
+    if (!services.prometheus?.configured) return 'Prometheus is not configured';
+    return JSON.stringify(await services.prometheus.query(args.query), null, 2);
+
+  // ── Komga ──
+  case 'komga_get_recently_added':
+    if (!services.komga?.configured) return 'Komga is not configured';
+    return JSON.stringify(await services.komga.getRecentlyAdded(), null, 2);
+  case 'komga_search':
+    if (!services.komga?.configured) return 'Komga is not configured';
+    return JSON.stringify(await services.komga.search(args.query), null, 2);
+
+  // ── Audiobookshelf ──
+  case 'audiobookshelf_get_in_progress':
+    if (!services.audiobookshelf?.configured) return 'Audiobookshelf is not configured';
+    return JSON.stringify(await services.audiobookshelf.getInProgress(), null, 2);
+  case 'audiobookshelf_search':
+    if (!services.audiobookshelf?.configured) return 'Audiobookshelf is not configured';
+    return JSON.stringify(
+      await services.audiobookshelf.search(args.query, args.libraryId),
+      null,
+      2,
+    );
+  case 'audiobookshelf_get_listening_stats':
+    if (!services.audiobookshelf?.configured) return 'Audiobookshelf is not configured';
+    return JSON.stringify(
+      await services.audiobookshelf.getListeningStats(),
+      null,
+      2,
+    );
+
+  // ── Immich ──
+  case 'immich_get_statistics':
+    if (!services.immich?.configured) return 'Immich is not configured';
+    return JSON.stringify(await services.immich.getStatistics(), null, 2);
+  case 'immich_list_albums':
+    if (!services.immich?.configured) return 'Immich is not configured';
+    return JSON.stringify(await services.immich.listAlbums(), null, 2);
+  case 'immich_search':
+    if (!services.immich?.configured) return 'Immich is not configured';
+    return JSON.stringify(await services.immich.search(args.query), null, 2);
+
+  // ── UniFi ──
+  case 'unifi_get_health':
+    if (!services.unifi?.configured) return 'UniFi is not configured';
+    return JSON.stringify(await services.unifi.getHealth(), null, 2);
+  case 'unifi_list_clients':
+    if (!services.unifi?.configured) return 'UniFi is not configured';
+    return JSON.stringify(await services.unifi.listClients(), null, 2);
+  case 'unifi_list_devices':
+    if (!services.unifi?.configured) return 'UniFi is not configured';
+    return JSON.stringify(await services.unifi.listDevices(), null, 2);
+
+  // ── Forgejo ──
+  case 'forgejo_list_repos':
+    if (!services.forgejo?.configured) return 'Forgejo is not configured';
+    return JSON.stringify(await services.forgejo.listRepos(), null, 2);
+  case 'forgejo_list_issues':
+    if (!services.forgejo?.configured) return 'Forgejo is not configured';
+    return JSON.stringify(
+      await services.forgejo.listIssues(args.owner, args.repo),
+      null,
+      2,
+    );
+
+  // ── Pi-hole ──
+  case 'pihole_get_summary':
+    if (!services.pihole?.configured) return 'Pi-hole is not configured';
+    return JSON.stringify(await services.pihole.getSummary(), null, 2);
+  case 'pihole_blocking_status':
+    if (!services.pihole?.configured) return 'Pi-hole is not configured';
+    return JSON.stringify(await services.pihole.getBlockingStatus(), null, 2);
+
+  // ── Booklore ──
+  case 'booklore_search':
+    if (!services.booklore?.configured) return 'Booklore is not configured';
+    return JSON.stringify(await services.booklore.search(args.query), null, 2);
+
+  // ── ROMm ──
+  case 'romm_search':
+    if (!services.romm?.configured) return 'ROMm is not configured';
+    return JSON.stringify(await services.romm.search(args.query), null, 2);
+  case 'romm_list_platforms':
+    if (!services.romm?.configured) return 'ROMm is not configured';
+    return JSON.stringify(await services.romm.listPlatforms(), null, 2);
+
+  // ── InfluxDB ──
+  case 'influxdb_query':
+    if (!services.influxdb?.configured) return 'InfluxDB is not configured';
+    return JSON.stringify(await services.influxdb.query(args.query), null, 2);
 
   default:
     return `Unknown tool: ${name}`;
