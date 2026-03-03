@@ -14,16 +14,10 @@ export interface UniFiConfig {
 export class UniFiClient {
   private config: UniFiConfig;
 
-  private baseUrl: string;
-
-  private site: string;
-
   private cookie: string | null = null;
 
   constructor(config: UniFiConfig) {
     this.config = config;
-    this.baseUrl = config.url;
-    this.site = config.site;
   }
 
   get configured(): boolean {
@@ -46,11 +40,10 @@ export class UniFiClient {
     const loginPath = this.config.isUdm
       ? '/api/auth/login'
       : `${this.pathPrefix}/api/login`;
-    const url = `${this.baseUrl}${loginPath}`;
 
     unifiLogger.debug('Logging in to UniFi controller');
 
-    const response = await fetch(url, {
+    const response = await fetch(`${this.config.url}${loginPath}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -78,19 +71,21 @@ export class UniFiClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     if (this.useApiKey) {
-      const url = `${this.baseUrl}${this.pathPrefix}/api/s/${this.site}${path}`;
-      unifiLogger.debug({ url }, 'Making UniFi request (API key)');
+      unifiLogger.debug({ path }, 'Making UniFi request (API key)');
 
-      const response = await fetch(url, {
-        headers: {
-          'X-API-Key': this.config.apiKey!,
-          'Content-Type': 'application/json',
+      const response = await fetch(
+        `${this.config.url}${this.pathPrefix}/api/s/${this.config.site}${path}`,
+        {
+          headers: {
+            'X-API-Key': this.config.apiKey!,
+            'Content-Type': 'application/json',
+          },
         },
-      });
+      );
 
       if (!response.ok) {
         const msg = `UniFi request failed: ${response.status} ${response.statusText}`;
-        unifiLogger.error({ url, status: response.status }, msg);
+        unifiLogger.error({ status: response.status }, msg);
         throw new Error(msg);
       }
 
@@ -99,15 +94,17 @@ export class UniFiClient {
 
     if (!this.cookie) await this.login();
 
-    const url = `${this.baseUrl}${this.pathPrefix}/api/s/${this.site}${path}`;
-    unifiLogger.debug({ url }, 'Making UniFi request');
+    unifiLogger.debug({ path }, 'Making UniFi request');
 
-    const response = await fetch(url, {
-      headers: {
-        Cookie: this.cookie || '',
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      `${this.config.url}${this.pathPrefix}/api/s/${this.config.site}${path}`,
+      {
+        headers: {
+          Cookie: this.cookie || '',
+          'Content-Type': 'application/json',
+        },
       },
-    });
+    );
 
     if (response.status === 401 && retry) {
       unifiLogger.debug('Got 401, re-authenticating');
@@ -117,7 +114,7 @@ export class UniFiClient {
 
     if (!response.ok) {
       const msg = `UniFi request failed: ${response.status} ${response.statusText}`;
-      unifiLogger.error({ url, status: response.status }, msg);
+      unifiLogger.error({ status: response.status }, msg);
       throw new Error(msg);
     }
 
