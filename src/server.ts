@@ -14,6 +14,7 @@ import { authMiddleware } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
 import { csrfMiddleware, generateCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
+import createMcpOAuthRouter from './routes/mcp-oauth.routes';
 import {
   closePool, getPool, initDatabase, initPool,
 } from './db';
@@ -153,6 +154,9 @@ export async function createServer(): Promise<Express> {
 
   // OIDC auth routes (login, callback, logout) — unauthenticated
   app.use(createAuthRouter());
+
+  // MCP OAuth proxy routes (authorize, token, metadata) — unauthenticated
+  app.use(createMcpOAuthRouter());
 
   // Auth middleware
   app.use(authMiddleware);
