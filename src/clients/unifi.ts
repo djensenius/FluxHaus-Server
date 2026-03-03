@@ -72,10 +72,10 @@ export class UniFiClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     if (this.useApiKey) {
-      const url = `${this.config.url}${this.pathPrefix}/api/s/${this.config.site}${path}`;
-      unifiLogger.debug({ url }, 'Making UniFi request (API key)');
+      const reqPath = `${this.pathPrefix}/api/s/${this.config.site}${path}`;
+      unifiLogger.debug({ path: reqPath }, 'Making UniFi request (API key)');
 
-      const response = await fetch(url, {
+      const response = await fetch(`${this.config.url}${reqPath}`, {
         headers: {
           'X-API-Key': this.config.apiKey!,
           'Content-Type': 'application/json',
@@ -84,7 +84,7 @@ export class UniFiClient {
 
       if (!response.ok) {
         const msg = `UniFi request failed: ${response.status} ${response.statusText}`;
-        unifiLogger.error({ url, status: response.status }, msg);
+        unifiLogger.error({ status: response.status }, msg);
         throw new Error(msg);
       }
 
