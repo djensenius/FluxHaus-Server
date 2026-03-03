@@ -42,7 +42,7 @@ describe('PrometheusClient', () => {
 
     await client.query('up');
 
-    const headers = (global.fetch as jest.Mock).mock.calls[0][1].headers;
+    const { headers } = (global.fetch as jest.Mock).mock.calls[0][1];
     expect(headers).not.toHaveProperty('Authorization');
     expect(headers).toHaveProperty('Content-Type', 'application/json');
   });

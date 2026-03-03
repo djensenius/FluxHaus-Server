@@ -57,12 +57,16 @@ describe('KomgaClient', () => {
   });
 
   it('configured returns true with apiKey only (no user/pass)', () => {
-    const tokenClient = new KomgaClient({ url: 'http://komga:25600', user: '', password: '', apiKey: 'my-token' });
+    const tokenClient = new KomgaClient({
+      url: 'http://komga:25600', user: '', password: '', apiKey: 'my-token',
+    });
     expect(tokenClient.configured).toBe(true);
   });
 
   it('uses Bearer auth when apiKey is set', async () => {
-    const tokenClient = new KomgaClient({ url: 'http://komga:25600', user: '', password: '', apiKey: 'my-token' });
+    const tokenClient = new KomgaClient({
+      url: 'http://komga:25600', user: '', password: '', apiKey: 'my-token',
+    });
     mockFetchOk([{ id: '1' }]);
 
     await tokenClient.listLibraries();
