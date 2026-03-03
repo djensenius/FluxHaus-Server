@@ -377,6 +377,103 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     },
   );
 
+  server.tool(
+    'get_entity_history',
+    'Get state history for a Home Assistant entity over a time period (e.g. temperature changes, on/off history)',
+    {
+      entity_id: z.string().describe('Entity ID (e.g. sensor.bedroom_temperature)'), // eslint-disable-line camelcase
+      start: z.string().describe('Start time as ISO 8601 timestamp (e.g. 2025-03-01T00:00:00Z)'),
+      end: z.string().optional().describe('End time as ISO 8601 timestamp. Defaults to now.'),
+    },
+    // eslint-disable-next-line camelcase
+    async ({ entity_id, start, end }) => {
+      // eslint-disable-next-line camelcase
+      const history = await homeAssistantClient.getHistory(entity_id, start, end);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(history, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'get_logbook',
+    'Get the Home Assistant logbook — a human-readable event log (e.g. "Light turned on", "Door opened")',
+    {
+      start: z.string().describe('Start time as ISO 8601 timestamp'),
+      end: z.string().optional().describe('End time as ISO 8601 timestamp. Defaults to now.'),
+      entity_id: z.string().optional().describe('Filter to a specific entity ID'), // eslint-disable-line camelcase
+    },
+    // eslint-disable-next-line camelcase
+    async ({ start, end, entity_id }) => {
+      // eslint-disable-next-line camelcase
+      const logbook = await homeAssistantClient.getLogbook(start, end, entity_id);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(logbook, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'get_calendar_events',
+    'Get events from a Home Assistant calendar for a date range',
+    {
+      calendar_id: z.string().describe('Calendar entity ID (e.g. calendar.family)'), // eslint-disable-line camelcase
+      start: z.string().describe('Start time as ISO 8601 timestamp'),
+      end: z.string().describe('End time as ISO 8601 timestamp'),
+    },
+    // eslint-disable-next-line camelcase
+    async ({ calendar_id, start, end }) => {
+      // eslint-disable-next-line camelcase
+      const events = await homeAssistantClient.getCalendarEvents(calendar_id, start, end);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(events, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'list_calendars',
+    'List all available Home Assistant calendars',
+    async () => {
+      const calendars = await homeAssistantClient.getCalendars();
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(calendars, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'render_template',
+    'Render a Home Assistant Jinja2 template (e.g. count lights on, compute averages, complex queries)',
+    {
+      template: z.string().describe(
+        'Jinja2 template string (e.g. "{{ states.light '
+        + "| selectattr('state', 'eq', 'on') | list | count }} lights on\")",
+      ),
+    },
+    async ({ template }) => {
+      const result = await homeAssistantClient.renderTemplate(template);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: result,
+        }],
+      };
+    },
+  );
+
   // ── Prompts ──────────────────────────────────────────────────────────────────
 
   server.prompt(
