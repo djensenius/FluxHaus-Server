@@ -190,36 +190,35 @@ export default function createMcpOAuthRouter(): Router {
       grant_type: grantType,
       code,
       code_verifier: codeVerifier,
-      client_id: clientId,
-      client_secret: clientSecret,
     } = req.body;
 
-    if (grantType !== 'authorization_code') {
-      res.status(400).json({ error: 'unsupported_grant_type' });
-      return;
-    }
+    oauthLogger.info({ grantType }, 'Token request received');
 
-    if (clientId !== oidcClientId || clientSecret !== oidcClientSecret) {
-      res.status(401).json({ error: 'invalid_client' });
+    if (grantType !== 'authorization_code') {
+      oauthLogger.warn({ grantType }, 'Unsupported grant type');
+      res.status(400).json({ error: 'unsupported_grant_type' });
       return;
     }
 
     const stored = authCodes.get(code);
     if (!stored || Date.now() > stored.expiresAt) {
       if (stored) authCodes.delete(code);
+      oauthLogger.warn('Invalid or expired auth code');
       res.status(400).json({ error: 'invalid_grant' });
       return;
     }
     authCodes.delete(code);
 
-    // Verify PKCE
+    // Verify PKCE (primary security mechanism — no client secret validation needed)
     if (stored.codeChallengeMethod === 'S256') {
       if (s256(codeVerifier) !== stored.codeChallenge) {
+        oauthLogger.warn('PKCE verification failed');
         res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
         return;
       }
     }
 
+    oauthLogger.info('Token issued successfully');
     res.json({
       access_token: stored.accessToken,
       token_type: 'Bearer',
