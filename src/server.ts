@@ -990,29 +990,58 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  // MCP HTTP endpoint — requires OIDC authentication (req.user.sub is only set for
-  // OIDC-authenticated users; Basic-auth users do not have a sub claim).
-  // Uses open CORS so Claude and other remote MCP clients can make cross-origin requests.
+  // MCP HTTP endpoint (Streamable HTTP transport, stateless mode)
+  // Uses open CORS so Claude and other remote MCP clients can connect.
   const mcpCors = cors();
   app.options('/mcp', mcpCors);
   app.post('/mcp', mcpCors, csrfMiddleware, async (req, res) => {
     if (!req.user?.sub) {
-      res.status(403).json({ message: 'OIDC authentication required for MCP access' });
+      res.status(403).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Authentication required' },
+        id: null,
+      });
       return;
     }
     try {
-      const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      const mcpTransport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+      });
       const mcpServer = createMcpServer(allServices);
+      res.on('close', () => {
+        mcpTransport.close();
+        mcpServer.close();
+      });
       await mcpServer.connect(mcpTransport);
-      try {
-        await mcpTransport.handleRequest(req, res, req.body);
-      } finally {
-        await mcpServer.close();
-      }
+      await mcpTransport.handleRequest(req, res, req.body);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
-      res.status(500).json({ error: message });
+      if (!res.headersSent) {
+        res.status(500).json({
+          jsonrpc: '2.0',
+          error: { code: -32603, message },
+          id: null,
+        });
+      }
     }
+  });
+
+  // GET /mcp — not supported in stateless mode (per MCP Streamable HTTP spec)
+  app.get('/mcp', mcpCors, (_req, res) => {
+    res.status(405).set('Allow', 'POST').json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed in stateless mode' },
+      id: null,
+    });
+  });
+
+  // DELETE /mcp — not supported in stateless mode
+  app.delete('/mcp', mcpCors, (_req, res) => {
+    res.status(405).set('Allow', 'POST').json({
+      jsonrpc: '2.0',
+      error: { code: -32000, message: 'Method not allowed in stateless mode' },
+      id: null,
+    });
   });
 
   app.use(adminRouter);

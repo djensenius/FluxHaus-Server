@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { AuthenticatedUser } from '../types/auth';
 import { isOidcEnabled, validateBearerToken } from './oidc.middleware';
+import { serverOrigin, verifyMcpToken } from '../mcp-auth';
 import { logEvent } from '../audit';
 import { writePoint } from '../influx';
 import logger from '../logger';
@@ -31,6 +32,12 @@ export async function authMiddleware(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  // OPTIONS (CORS preflight) is never authenticated
+  if (req.method === 'OPTIONS') {
+    next();
+    return;
+  }
+
   // 1. Check signed auth cookie (set by OIDC callback — immediate, reliable)
   if (req.signedCookies?.auth_user) {
     try {
@@ -56,10 +63,31 @@ export async function authMiddleware(
     return;
   }
 
-  // 3. Try Bearer token → OIDC
+  // 3. Try Bearer token → MCP JWT first, then OIDC
   const authHeader = req.headers.authorization || '';
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
+
+    // 3a. Check for self-issued MCP JWT (signed with SESSION_SECRET)
+    const mcpClaims = await verifyMcpToken(token);
+    if (mcpClaims) {
+      req.user = {
+        role: 'admin',
+        username: mcpClaims.preferred_username
+          || mcpClaims.email
+          || mcpClaims.sub,
+        sub: mcpClaims.sub,
+        email: mcpClaims.email,
+      };
+      authLogger.debug(
+        { username: req.user.username },
+        'MCP token auth success',
+      );
+      next();
+      return;
+    }
+
+    // 3b. OIDC Bearer token validation
     const claims = await validateBearerToken(token);
     if (claims) {
       req.user = {
@@ -116,6 +144,13 @@ export async function authMiddleware(
     details: { reason: authHeader ? 'invalid_credentials' : 'no_credentials' },
   }).catch(() => {});
   writePoint('auth', { count: 1 }, { result: 'failed', reason: authHeader ? 'invalid_credentials' : 'no_credentials' });
-  res.setHeader('WWW-Authenticate', 'Bearer');
+
+  // RFC 9728 — include resource_metadata pointer for MCP clients
+  const origin = serverOrigin(req);
+  const resourceMetadata = `${origin}/.well-known/oauth-protected-resource`;
+  res.setHeader(
+    'WWW-Authenticate',
+    `Bearer resource_metadata="${resourceMetadata}"`,
+  );
   res.status(401).json({ message: 'Unauthorized' });
 }

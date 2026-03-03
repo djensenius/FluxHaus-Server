@@ -1,10 +1,14 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import cors from 'cors';
+import { SignJWT, decodeJwt } from 'jose';
 import { getOidcIssuer } from '../middleware/oidc.middleware';
+import { getMcpSigningKey, serverOrigin } from '../mcp-auth';
 import logger from '../logger';
 
 const oauthLogger = logger.child({ subsystem: 'mcp-oauth' });
+
+const MCP_TOKEN_EXPIRY_SECONDS = 3600; // 1 hour
 
 interface PendingAuth {
   claudeRedirectUri: string;
@@ -15,8 +19,14 @@ interface PendingAuth {
   createdAt: number;
 }
 
+interface UserClaims {
+  sub: string;
+  email?: string;
+  preferred_username?: string;
+}
+
 interface AuthCode {
-  accessToken: string;
+  userClaims: UserClaims;
   codeChallenge: string;
   codeChallengeMethod: string;
   expiresAt: number;
@@ -42,13 +52,9 @@ function base64url(buf: Buffer): string {
 }
 
 function s256(verifier: string): string {
-  return base64url(crypto.createHash('sha256').update(verifier).digest());
-}
-
-function serverOrigin(req: { protocol: string; get(name: string): string | undefined }): string {
-  // Force https in production — reverse proxies don't always forward X-Forwarded-Proto
-  const proto = process.env.NODE_ENV === 'production' ? 'https' : req.protocol;
-  return `${proto}://${req.get('host')}`;
+  return base64url(
+    crypto.createHash('sha256').update(verifier).digest(),
+  );
 }
 
 export default function createMcpOAuthRouter(): Router {
@@ -59,21 +65,57 @@ export default function createMcpOAuthRouter(): Router {
   // Allow cross-origin requests from Claude and other MCP clients
   const openCors = cors();
 
+  // RFC 9728 — Protected Resource Metadata (MCP spec MUST)
+  router.get(
+    '/.well-known/oauth-protected-resource',
+    openCors,
+    (req, res) => {
+      const origin = serverOrigin(req);
+      res.json({
+        resource: origin,
+        authorization_servers: [origin],
+        bearer_methods_supported: ['header'],
+      });
+    },
+  );
+
   // RFC 8414 — Authorization Server Metadata
-  router.get('/.well-known/oauth-authorization-server', openCors, (req, res) => {
-    const origin = serverOrigin(req);
-    res.json({
-      issuer: origin,
-      authorization_endpoint: `${origin}/authorize`,
-      token_endpoint: `${origin}/token`,
-      response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code'],
-      code_challenge_methods_supported: ['S256'],
-      token_endpoint_auth_methods_supported: ['client_secret_post'],
+  router.get(
+    '/.well-known/oauth-authorization-server',
+    openCors,
+    (req, res) => {
+      const origin = serverOrigin(req);
+      res.json({
+        issuer: origin,
+        authorization_endpoint: `${origin}/authorize`,
+        token_endpoint: `${origin}/token`,
+        registration_endpoint: `${origin}/register`,
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code'],
+        code_challenge_methods_supported: ['S256'],
+        token_endpoint_auth_methods_supported: ['none'],
+      });
+    },
+  );
+
+  // RFC 7591 — Dynamic Client Registration (accepts any registration)
+  router.options('/register', openCors);
+  router.post('/register', openCors, (req, res) => {
+    const {
+      client_name: clientName,
+      redirect_uris: redirectUris,
+    } = req.body || {};
+    const clientId = `mcp-client-${base64url(crypto.randomBytes(16))}`;
+    oauthLogger.info({ clientName, clientId }, 'Dynamic client registered');
+    res.status(201).json({
+      client_id: clientId,
+      client_name: clientName || 'MCP Client',
+      redirect_uris: redirectUris || [],
+      token_endpoint_auth_method: 'none',
     });
   });
 
-  // Authorization endpoint — stores Claude's params, redirects to Authentik
+  // Authorization endpoint — stores Claude's params, redirects to OIDC
   router.get('/authorize', (req, res) => {
     const {
       redirect_uri: redirectUri,
@@ -92,7 +134,6 @@ export default function createMcpOAuthRouter(): Router {
       return;
     }
 
-    // PKCE pair for the Authentik leg
     const pkceVerifier = base64url(crypto.randomBytes(32));
     const internalState = base64url(crypto.randomBytes(32));
 
@@ -117,10 +158,13 @@ export default function createMcpOAuthRouter(): Router {
     });
 
     oauthLogger.info('Redirecting to OIDC provider for MCP authorization');
-    res.redirect(`${issuer.metadata.authorization_endpoint}?${params}`);
+    res.redirect(
+      `${issuer.metadata.authorization_endpoint}?${params}`,
+    );
   });
 
-  // Callback from Authentik — exchange code, generate our own code, redirect to Claude
+  // Callback from OIDC provider — exchange code, extract user claims,
+  // issue our own auth code, redirect to MCP client
   router.get('/oauth/mcp-callback', async (req, res) => {
     const { code, state, error } = req.query as Record<string, string>;
 
@@ -147,7 +191,9 @@ export default function createMcpOAuthRouter(): Router {
       const origin = serverOrigin(req);
       const tokenRes = await fetch(issuer.metadata.token_endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
         body: new URLSearchParams({
           grant_type: 'authorization_code',
           code,
@@ -160,17 +206,77 @@ export default function createMcpOAuthRouter(): Router {
 
       if (!tokenRes.ok) {
         const body = await tokenRes.text();
-        oauthLogger.error({ status: tokenRes.status, body }, 'OIDC token exchange failed');
-        res.status(502).json({ error: 'Token exchange with OIDC provider failed' });
+        oauthLogger.error(
+          { status: tokenRes.status, body },
+          'OIDC token exchange failed',
+        );
+        res.status(502).json({
+          error: 'Token exchange with OIDC provider failed',
+        });
         return;
       }
 
-      const { access_token: accessToken } = (await tokenRes.json()) as { access_token: string };
+      const tokenData = (await tokenRes.json()) as {
+        access_token: string;
+        id_token?: string;
+      };
 
-      // Issue our own short-lived auth code for Claude
+      // Extract user claims — prefer id_token, fall back to userinfo
+      let userClaims: UserClaims | null = null;
+
+      if (tokenData.id_token) {
+        try {
+          const payload = decodeJwt(tokenData.id_token);
+          if (payload.sub) {
+            userClaims = {
+              sub: payload.sub,
+              email: payload.email as string | undefined,
+              preferred_username: payload
+                .preferred_username as string | undefined,
+            };
+          }
+        } catch {
+          oauthLogger.debug('Failed to decode id_token');
+        }
+      }
+
+      if (!userClaims && issuer.metadata.userinfo_endpoint) {
+        try {
+          const uiRes = await fetch(
+            issuer.metadata.userinfo_endpoint,
+            {
+              headers: {
+                Authorization: `Bearer ${tokenData.access_token}`,
+              },
+            },
+          );
+          if (uiRes.ok) {
+            const ui = (await uiRes.json()) as Record<string, unknown>;
+            if (ui.sub) {
+              userClaims = {
+                sub: ui.sub as string,
+                email: ui.email as string | undefined,
+                preferred_username: ui
+                  .preferred_username as string | undefined,
+              };
+            }
+          }
+        } catch {
+          oauthLogger.debug('Userinfo fallback failed');
+        }
+      }
+
+      if (!userClaims) {
+        oauthLogger.error('Could not extract user claims');
+        res.status(502).json({
+          error: 'Could not determine user identity',
+        });
+        return;
+      }
+
       const mcpCode = base64url(crypto.randomBytes(32));
       authCodes.set(mcpCode, {
-        accessToken,
+        userClaims,
         codeChallenge: pending.claudeCodeChallenge,
         codeChallengeMethod: pending.claudeCodeChallengeMethod,
         expiresAt: Date.now() + 5 * 60 * 1000,
@@ -180,17 +286,22 @@ export default function createMcpOAuthRouter(): Router {
       redirectUrl.searchParams.set('code', mcpCode);
       redirectUrl.searchParams.set('state', pending.claudeState);
 
-      oauthLogger.info('MCP OAuth complete, redirecting to client');
+      oauthLogger.info(
+        { sub: userClaims.sub },
+        'MCP OAuth complete, redirecting to client',
+      );
       res.redirect(redirectUrl.toString());
     } catch (err) {
       oauthLogger.error({ err }, 'MCP OAuth callback failed');
-      res.status(500).json({ error: 'Internal error during token exchange' });
+      res.status(500).json({
+        error: 'Internal error during token exchange',
+      });
     }
   });
 
-  // Token endpoint — Claude exchanges our code for the Authentik access token
+  // Token endpoint — exchanges our auth code for a self-issued JWT
   router.options('/token', openCors);
-  router.post('/token', openCors, (req, res) => {
+  router.post('/token', openCors, async (req, res) => {
     const {
       grant_type: grantType,
       code,
@@ -214,19 +325,37 @@ export default function createMcpOAuthRouter(): Router {
     }
     authCodes.delete(code);
 
-    // Verify PKCE (primary security mechanism — no client secret validation needed)
     if (stored.codeChallengeMethod === 'S256') {
       if (s256(codeVerifier) !== stored.codeChallenge) {
         oauthLogger.warn('PKCE verification failed');
-        res.status(400).json({ error: 'invalid_grant', error_description: 'PKCE verification failed' });
+        res.status(400).json({
+          error: 'invalid_grant',
+          error_description: 'PKCE verification failed',
+        });
         return;
       }
     }
 
-    oauthLogger.info('Token issued successfully');
+    // Issue our own JWT (no token passthrough per MCP spec)
+    const jwt = await new SignJWT({
+      sub: stored.userClaims.sub,
+      email: stored.userClaims.email,
+      preferred_username: stored.userClaims.preferred_username,
+      type: 'mcp',
+    })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime(`${MCP_TOKEN_EXPIRY_SECONDS}s`)
+      .sign(getMcpSigningKey());
+
+    oauthLogger.info(
+      { sub: stored.userClaims.sub },
+      'MCP token issued',
+    );
     res.json({
-      access_token: stored.accessToken,
+      access_token: jwt,
       token_type: 'Bearer',
+      expires_in: MCP_TOKEN_EXPIRY_SECONDS,
     });
   });
 
