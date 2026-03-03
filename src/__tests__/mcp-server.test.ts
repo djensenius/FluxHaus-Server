@@ -451,4 +451,73 @@ describe('MCP Server', () => {
       expect(result.messages[0].content.text).toContain('goodnight');
     });
   });
+
+  describe('External service tools', () => {
+    const externalToolNames = [
+      'plex_get_sessions',
+      'overseerr_search',
+      'tautulli_get_activity',
+      'grafana_list_dashboards',
+      'influxdb_query',
+      'portainer_list_endpoints',
+      'prometheus_query',
+      'komga_list_libraries',
+      'booklore_list_shelves',
+      'audiobookshelf_list_libraries',
+      'romm_list_platforms',
+      'immich_list_albums',
+      'unifi_get_health',
+      'forgejo_list_repos',
+    ];
+
+    it('should register tools for all 14 external services', () => {
+      const server = createMcpServer(mockServices);
+      const tools = getTools(server);
+      externalToolNames.forEach((name) => {
+        expect(tools).toHaveProperty(name);
+      });
+    });
+
+    it.each([
+      ['plex_get_sessions', 'Plex is not configured'],
+      ['grafana_list_dashboards', 'Grafana is not configured'],
+      ['komga_list_libraries', 'Komga is not configured'],
+      ['immich_list_albums', 'Immich is not configured'],
+      ['unifi_get_health', 'UniFi is not configured'],
+    ])('%s returns "not configured" when service is missing', async (toolName, expectedText) => {
+      const server = createMcpServer(mockServices);
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const result = await getTools(server)[toolName].handler({}, {}) as any;
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+      expect(result.content[0].text).toBe(expectedText);
+    });
+
+    it('plex_get_sessions calls through to plex client when configured', async () => {
+      const mockPlex = {
+        configured: true,
+        getSessions: jest.fn().mockResolvedValue({ MediaContainer: { size: 1 } }),
+      };
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const servicesWithPlex = { ...mockServices, plex: mockPlex };
+      const server = createMcpServer(servicesWithPlex as any);
+      const result = await getTools(server).plex_get_sessions.handler({}, {}) as any;
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+      expect(mockPlex.getSessions).toHaveBeenCalled();
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.MediaContainer.size).toBe(1);
+    });
+
+    it('overseerr_search passes query to client', async () => {
+      const mockOverseerr = {
+        configured: true,
+        search: jest.fn().mockResolvedValue({ results: [] }),
+      };
+      /* eslint-disable @typescript-eslint/no-explicit-any */
+      const servicesWithOverseerr = { ...mockServices, overseerr: mockOverseerr };
+      const server = createMcpServer(servicesWithOverseerr as any);
+      /* eslint-enable @typescript-eslint/no-explicit-any */
+      await getTools(server).overseerr_search.handler({ query: 'batman' }, {});
+      expect(mockOverseerr.search).toHaveBeenCalledWith('batman');
+    });
+  });
 });
