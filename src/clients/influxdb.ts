@@ -69,9 +69,10 @@ export class InfluxDBClient {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  async listMeasurements(): Promise<any> {
+  async listMeasurements(bucket?: string): Promise<any> {
+    const targetBucket = bucket || this.config.bucket;
     const flux = 'import "influxdata/influxdb/schema" '
-      + `schema.measurements(bucket: "${this.config.bucket}")`;
+      + `schema.measurements(bucket: "${targetBucket}")`;
     return this.query(flux);
   }
 }

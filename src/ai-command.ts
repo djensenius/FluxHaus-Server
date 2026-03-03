@@ -903,8 +903,13 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'influxdb_list_measurements',
-    description: 'List all InfluxDB measurements',
-    parameters: { type: 'object', properties: {} },
+    description: 'List all InfluxDB measurements in a bucket (HA data is in "home_assistant" bucket)',
+    parameters: {
+      type: 'object',
+      properties: {
+        bucket: { type: 'string', description: 'Bucket name (e.g. "home_assistant"). Defaults to configured bucket.' },
+      },
+    },
   },
 ];
 
@@ -1348,7 +1353,7 @@ export async function executeTool(
     return JSON.stringify(await services.influxdb.listBuckets(), null, 2);
   case 'influxdb_list_measurements':
     if (!services.influxdb?.configured) return 'InfluxDB is not configured';
-    return JSON.stringify(await services.influxdb.listMeasurements(), null, 2);
+    return JSON.stringify(await services.influxdb.listMeasurements(args.bucket), null, 2);
 
   default:
     return `Unknown tool: ${name}`;

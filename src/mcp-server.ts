@@ -761,7 +761,8 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
 
   server.tool(
     'influxdb_query',
-    'Execute a Flux query against InfluxDB',
+    // eslint-disable-next-line max-len
+    'Execute a Flux query against InfluxDB. Home Assistant data is in bucket "home_assistant" with measurements: appliance, vehicle, battery, power, energy, climate, security, media, lighting, shade, motion, occupancy, position, state',
     { flux: z.string().describe('Flux query string') },
     async ({ flux }) => {
       if (!services.influxdb?.configured) {
@@ -786,12 +787,15 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
 
   server.tool(
     'influxdb_list_measurements',
-    'List all InfluxDB measurements',
-    async () => {
+    'List all InfluxDB measurements in a bucket (defaults to configured bucket; HA data is in "home_assistant" bucket)',
+    { // eslint-disable-next-line max-len
+      bucket: z.string().optional().describe('Bucket name to list measurements from (e.g. "home_assistant"). Defaults to configured bucket.'),
+    },
+    async ({ bucket }) => {
       if (!services.influxdb?.configured) {
         return { content: [{ type: 'text' as const, text: 'InfluxDB is not configured' }] };
       }
-      const data = await services.influxdb.listMeasurements();
+      const data = await services.influxdb.listMeasurements(bucket);
       return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
     },
   );
