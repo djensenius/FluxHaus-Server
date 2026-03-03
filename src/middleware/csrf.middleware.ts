@@ -20,9 +20,25 @@ export function generateCsrfToken(): string {
  *   X-CSRF-Token: <token>
  * on every POST / PUT / DELETE / PATCH request.
  */
+/**
+ * Paths exempt from CSRF validation.  These are machine-to-machine API
+ * endpoints that never use cookie-based authentication:
+ *  - /mcp          — MCP Streamable HTTP (Bearer tokens only)
+ *  - /register     — MCP dynamic client registration (unauthenticated OAuth)
+ *  - /token        — MCP OAuth token exchange (unauthenticated OAuth)
+ */
+const CSRF_EXEMPT_PATHS = new Set(['/mcp', '/register', '/token']);
+
 export function csrfMiddleware(req: Request, res: Response, next: NextFunction): void {
   // Safe HTTP methods are not state-mutating and need no CSRF check.
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    next();
+    return;
+  }
+
+  // Machine-to-machine API endpoints that use Bearer tokens or are part of
+  // the OAuth flow — never cookie-authenticated, not susceptible to CSRF.
+  if (CSRF_EXEMPT_PATHS.has(req.path)) {
     next();
     return;
   }

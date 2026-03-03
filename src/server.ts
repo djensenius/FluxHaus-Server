@@ -96,6 +96,7 @@ export async function createServer(): Promise<Express> {
     sessionConfig.store = new PgStore({ pool, createTableIfMissing: true });
   }
   app.use(session(sessionConfig));
+  app.use(csrfMiddleware);
 
   const allowedOrigins = (
     process.env.CORS_ORIGINS || 'http://localhost:8080,https://haus.fluxhaus.io'
@@ -171,10 +172,6 @@ export async function createServer(): Promise<Express> {
 
   // MCP OAuth proxy routes (authorize, token, metadata) — unauthenticated
   app.use(createMcpOAuthRouter());
-
-  // CSRF protection — placed after MCP OAuth routes so that unauthenticated
-  // OAuth endpoints (/register, /token) are not blocked by CSRF checks.
-  app.use(csrfMiddleware);
 
   // Auth middleware
   app.use(authMiddleware);
@@ -995,6 +992,8 @@ export async function createServer(): Promise<Express> {
 
   // MCP HTTP endpoint (Streamable HTTP transport, stateless mode)
   // Uses open CORS so Claude and other remote MCP clients can connect.
+  // CSRF is exempted via CSRF_EXEMPT_PATHS in csrf.middleware.ts since
+  // MCP clients use Bearer tokens, not cookies.
   const mcpCors = cors();
   app.options('/mcp', mcpCors);
   app.post('/mcp', mcpCors, async (req, res) => {
