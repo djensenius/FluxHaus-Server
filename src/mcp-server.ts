@@ -377,6 +377,1271 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     },
   );
 
+  server.tool(
+    'get_entity_history',
+    'Get state history for a Home Assistant entity over a time period (e.g. temperature changes, on/off history)',
+    {
+      entity_id: z.string().describe('Entity ID (e.g. sensor.bedroom_temperature)'), // eslint-disable-line camelcase
+      start: z.string().describe('Start time as ISO 8601 timestamp (e.g. 2025-03-01T00:00:00Z)'),
+      end: z.string().optional().describe('End time as ISO 8601 timestamp. Defaults to now.'),
+    },
+    // eslint-disable-next-line camelcase
+    async ({ entity_id, start, end }) => {
+      // eslint-disable-next-line camelcase
+      const history = await homeAssistantClient.getHistory(entity_id, start, end);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(history, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'get_logbook',
+    'Get the Home Assistant logbook — a human-readable event log (e.g. "Light turned on", "Door opened")',
+    {
+      start: z.string().describe('Start time as ISO 8601 timestamp'),
+      end: z.string().optional().describe('End time as ISO 8601 timestamp. Defaults to now.'),
+      entity_id: z.string().optional().describe('Filter to a specific entity ID'), // eslint-disable-line camelcase
+    },
+    // eslint-disable-next-line camelcase
+    async ({ start, end, entity_id }) => {
+      // eslint-disable-next-line camelcase
+      const logbook = await homeAssistantClient.getLogbook(start, end, entity_id);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(logbook, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'get_calendar_events',
+    'Get events from a Home Assistant calendar for a date range',
+    {
+      calendar_id: z.string().describe('Calendar entity ID (e.g. calendar.family)'), // eslint-disable-line camelcase
+      start: z.string().describe('Start time as ISO 8601 timestamp'),
+      end: z.string().describe('End time as ISO 8601 timestamp'),
+    },
+    // eslint-disable-next-line camelcase
+    async ({ calendar_id, start, end }) => {
+      // eslint-disable-next-line camelcase
+      const events = await homeAssistantClient.getCalendarEvents(calendar_id, start, end);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(events, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'list_calendars',
+    'List all available Home Assistant calendars',
+    async () => {
+      const calendars = await homeAssistantClient.getCalendars();
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(calendars, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'render_template',
+    'Render a Home Assistant Jinja2 template (e.g. count lights on, compute averages, complex queries)',
+    {
+      template: z.string().describe(
+        'Jinja2 template string (e.g. "{{ states.light '
+        + "| selectattr('state', 'eq', 'on') | list | count }} lights on\")",
+      ),
+    },
+    async ({ template }) => {
+      const result = await homeAssistantClient.renderTemplate(template);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: result,
+        }],
+      };
+    },
+  );
+
+  // ── Plex ──────────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'plex_get_sessions',
+    'Get current Plex playback sessions — who is watching what',
+    async () => {
+      if (!services.plex?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Plex is not configured' }] };
+      }
+      const data = await services.plex.getSessions();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plex_get_libraries',
+    'List all Plex media libraries',
+    async () => {
+      if (!services.plex?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Plex is not configured' }] };
+      }
+      const data = await services.plex.getLibraries();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plex_get_recently_added',
+    'Get recently added media from Plex',
+    async () => {
+      if (!services.plex?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Plex is not configured' }] };
+      }
+      const data = await services.plex.getRecentlyAdded();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plex_get_on_deck',
+    'Get Plex on-deck items — media that is in progress',
+    async () => {
+      if (!services.plex?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Plex is not configured' }] };
+      }
+      const data = await services.plex.getOnDeck();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'plex_search',
+    'Search across all Plex media libraries',
+    { query: z.string().describe('Search query') },
+    async ({ query }) => {
+      if (!services.plex?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Plex is not configured' }] };
+      }
+      const data = await services.plex.search(query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Overseerr ────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'overseerr_search',
+    'Search for movies and TV shows in Overseerr',
+    { query: z.string().describe('Search query') },
+    async ({ query }) => {
+      if (!services.overseerr?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Overseerr is not configured' }] };
+      }
+      const data = await services.overseerr.search(query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'overseerr_get_requests',
+    'Get media requests from Overseerr, optionally filtered by status',
+    { status: z.string().optional().describe('Filter by status (e.g. pending, approved)') },
+    async ({ status }) => {
+      if (!services.overseerr?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Overseerr is not configured' }] };
+      }
+      const data = await services.overseerr.getRequests(status);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'overseerr_request_media',
+    'Request a movie or TV show in Overseerr',
+    {
+      mediaType: z.string().describe('Type of media: movie or tv'),
+      mediaId: z.coerce.number().describe('The media ID from search results'),
+      is4k: z.boolean().optional().describe('Request in 4K quality'),
+    },
+    async ({ mediaType, mediaId, is4k }) => {
+      if (!services.overseerr?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Overseerr is not configured' }] };
+      }
+      const data = await services.overseerr.requestMedia(mediaType, mediaId, is4k);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'overseerr_approve_request',
+    'Approve a pending media request in Overseerr',
+    { requestId: z.coerce.number().describe('The request ID to approve') },
+    async ({ requestId }) => {
+      if (!services.overseerr?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Overseerr is not configured' }] };
+      }
+      const data = await services.overseerr.approveRequest(requestId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'overseerr_get_status',
+    'Get the current Overseerr server status',
+    async () => {
+      if (!services.overseerr?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Overseerr is not configured' }] };
+      }
+      const data = await services.overseerr.getStatus();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Tautulli ─────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'tautulli_get_activity',
+    'Get current Plex streaming activity from Tautulli',
+    async () => {
+      if (!services.tautulli?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Tautulli is not configured' }] };
+      }
+      const data = await services.tautulli.getActivity();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'tautulli_get_history',
+    'Get Plex watch history from Tautulli',
+    { length: z.number().optional().describe('Number of history items to return') },
+    async ({ length }) => {
+      if (!services.tautulli?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Tautulli is not configured' }] };
+      }
+      const data = await services.tautulli.getHistory(length);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'tautulli_get_libraries',
+    'Get Plex library statistics from Tautulli',
+    async () => {
+      if (!services.tautulli?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Tautulli is not configured' }] };
+      }
+      const data = await services.tautulli.getLibraries();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'tautulli_get_recently_added',
+    'Get recently added media from Tautulli',
+    { count: z.number().optional().describe('Number of items to return') },
+    async ({ count }) => {
+      if (!services.tautulli?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Tautulli is not configured' }] };
+      }
+      const data = await services.tautulli.getRecentlyAdded(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'tautulli_get_home_stats',
+    'Get Tautulli home page statistics (most watched, popular, etc.)',
+    async () => {
+      if (!services.tautulli?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Tautulli is not configured' }] };
+      }
+      const data = await services.tautulli.getHomeStats();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Grafana ──────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'grafana_list_dashboards',
+    'List all Grafana dashboards',
+    async () => {
+      if (!services.grafana?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Grafana is not configured' }] };
+      }
+      const data = await services.grafana.listDashboards();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'grafana_get_dashboard',
+    'Get a Grafana dashboard by UID',
+    { uid: z.string().describe('Dashboard UID') },
+    async ({ uid }) => {
+      if (!services.grafana?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Grafana is not configured' }] };
+      }
+      const data = await services.grafana.getDashboard(uid);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'grafana_list_datasources',
+    'List all Grafana data sources',
+    async () => {
+      if (!services.grafana?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Grafana is not configured' }] };
+      }
+      const data = await services.grafana.listDatasources();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'grafana_query_datasource',
+    'Query a Grafana data source directly',
+    {
+      datasourceId: z.coerce.number().describe('Data source ID'),
+      query_json: z.string().describe('Query as JSON string'), // eslint-disable-line camelcase
+    },
+    // eslint-disable-next-line camelcase
+    async ({ datasourceId, query_json }) => {
+      if (!services.grafana?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Grafana is not configured' }] };
+      }
+      // eslint-disable-next-line camelcase
+      const query = JSON.parse(query_json);
+      const data = await services.grafana.queryDatasource(datasourceId, query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'grafana_get_annotations',
+    'Get Grafana annotations, optionally filtered by time range',
+    {
+      from: z.string().optional().describe('Start time as ISO 8601 timestamp'),
+      to: z.string().optional().describe('End time as ISO 8601 timestamp'),
+    },
+    async ({ from, to }) => {
+      if (!services.grafana?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Grafana is not configured' }] };
+      }
+      const data = await services.grafana.getAnnotations(from, to);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'grafana_get_alerts',
+    'Get active Grafana alerts',
+    async () => {
+      if (!services.grafana?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Grafana is not configured' }] };
+      }
+      const data = await services.grafana.getAlerts();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── InfluxDB ─────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'influxdb_query',
+    'Execute a Flux query against InfluxDB',
+    { flux: z.string().describe('Flux query string') },
+    async ({ flux }) => {
+      if (!services.influxdb?.configured) {
+        return { content: [{ type: 'text' as const, text: 'InfluxDB is not configured' }] };
+      }
+      const data = await services.influxdb.query(flux);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'influxdb_list_buckets',
+    'List all InfluxDB buckets',
+    async () => {
+      if (!services.influxdb?.configured) {
+        return { content: [{ type: 'text' as const, text: 'InfluxDB is not configured' }] };
+      }
+      const data = await services.influxdb.listBuckets();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'influxdb_list_measurements',
+    'List all InfluxDB measurements',
+    async () => {
+      if (!services.influxdb?.configured) {
+        return { content: [{ type: 'text' as const, text: 'InfluxDB is not configured' }] };
+      }
+      const data = await services.influxdb.listMeasurements();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Portainer ────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'portainer_list_endpoints',
+    'List all Portainer endpoints (Docker environments)',
+    async () => {
+      if (!services.portainer?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Portainer is not configured' }] };
+      }
+      const data = await services.portainer.listEndpoints();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'portainer_list_containers',
+    'List Docker containers on a Portainer endpoint',
+    { endpointId: z.coerce.number().describe('Portainer endpoint ID') },
+    async ({ endpointId }) => {
+      if (!services.portainer?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Portainer is not configured' }] };
+      }
+      const data = await services.portainer.listContainers(endpointId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'portainer_list_stacks',
+    'List all Portainer stacks',
+    async () => {
+      if (!services.portainer?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Portainer is not configured' }] };
+      }
+      const data = await services.portainer.listStacks();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'portainer_get_container',
+    'Get details of a specific Docker container on a Portainer endpoint',
+    {
+      endpointId: z.coerce.number().describe('Portainer endpoint ID'),
+      containerId: z.string().describe('Docker container ID'),
+    },
+    async ({ endpointId, containerId }) => {
+      if (!services.portainer?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Portainer is not configured' }] };
+      }
+      const data = await services.portainer.getContainer(endpointId, containerId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'portainer_container_action',
+    'Perform an action on a Docker container (start, stop, restart, kill)',
+    {
+      endpointId: z.coerce.number().describe('Portainer endpoint ID'),
+      containerId: z.string().describe('Docker container ID'),
+      action: z.string().describe('Action to perform: start, stop, restart, or kill'),
+    },
+    async ({ endpointId, containerId, action }) => {
+      if (!services.portainer?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Portainer is not configured' }] };
+      }
+      const data = await services.portainer.containerAction(endpointId, containerId, action);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Prometheus ───────────────────────────────────────────────────────────────
+
+  server.tool(
+    'prometheus_query',
+    'Execute an instant PromQL query against Prometheus',
+    { promql: z.string().describe('PromQL query expression') },
+    async ({ promql }) => {
+      if (!services.prometheus?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Prometheus is not configured' }] };
+      }
+      const data = await services.prometheus.query(promql);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'prometheus_query_range',
+    'Execute a range PromQL query against Prometheus',
+    {
+      promql: z.string().describe('PromQL query expression'),
+      start: z.string().describe('Start time as ISO 8601 timestamp or Unix epoch'),
+      end: z.string().describe('End time as ISO 8601 timestamp or Unix epoch'),
+      step: z.string().optional().describe('Query step (e.g. 15s, 1m, 5m)'),
+    },
+    async ({
+      promql, start, end, step,
+    }) => {
+      if (!services.prometheus?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Prometheus is not configured' }] };
+      }
+      const data = await services.prometheus.queryRange(promql, start, end, step);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'prometheus_get_targets',
+    'Get all Prometheus scrape targets and their status',
+    async () => {
+      if (!services.prometheus?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Prometheus is not configured' }] };
+      }
+      const data = await services.prometheus.getTargets();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'prometheus_get_alerts',
+    'Get active Prometheus alerts',
+    async () => {
+      if (!services.prometheus?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Prometheus is not configured' }] };
+      }
+      const data = await services.prometheus.getAlerts();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'prometheus_get_rules',
+    'Get all Prometheus alerting and recording rules',
+    async () => {
+      if (!services.prometheus?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Prometheus is not configured' }] };
+      }
+      const data = await services.prometheus.getRules();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Komga ────────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'komga_list_libraries',
+    'List all Komga comic/manga libraries',
+    async () => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.listLibraries();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'komga_list_series',
+    'List series in Komga, optionally filtered by library',
+    { libraryId: z.string().optional().describe('Filter by library ID') },
+    async ({ libraryId }) => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.listSeries(libraryId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'komga_get_series',
+    'Get details of a specific Komga series',
+    { seriesId: z.string().describe('Series ID') },
+    async ({ seriesId }) => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.getSeries(seriesId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'komga_list_books',
+    'List books in a Komga series',
+    { seriesId: z.string().describe('Series ID') },
+    async ({ seriesId }) => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.listBooks(seriesId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'komga_search',
+    'Search across Komga libraries for series and books',
+    { query: z.string().describe('Search query') },
+    async ({ query }) => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.search(query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'komga_get_recently_added',
+    'Get recently added series and books from Komga',
+    async () => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.getRecentlyAdded();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'komga_get_on_deck',
+    'Get on-deck books from Komga — books that are in progress',
+    async () => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.getOnDeck();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'komga_get_read_progress',
+    'Get read progress for a Komga series',
+    { seriesId: z.string().describe('Series ID') },
+    async ({ seriesId }) => {
+      if (!services.komga?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Komga is not configured' }] };
+      }
+      const data = await services.komga.getReadProgress(seriesId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Booklore ─────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'booklore_list_shelves',
+    'List all Booklore shelves',
+    async () => {
+      if (!services.booklore?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Booklore is not configured' }] };
+      }
+      const data = await services.booklore.listShelves();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'booklore_list_books',
+    'List books in Booklore, optionally filtered by shelf',
+    { shelfId: z.string().optional().describe('Filter by shelf ID') },
+    async ({ shelfId }) => {
+      if (!services.booklore?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Booklore is not configured' }] };
+      }
+      const data = await services.booklore.listBooks(shelfId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'booklore_get_book',
+    'Get details of a specific book in Booklore',
+    { bookId: z.string().describe('Book ID') },
+    async ({ bookId }) => {
+      if (!services.booklore?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Booklore is not configured' }] };
+      }
+      const data = await services.booklore.getBook(bookId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'booklore_search',
+    'Search for books in Booklore',
+    { query: z.string().describe('Search query') },
+    async ({ query }) => {
+      if (!services.booklore?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Booklore is not configured' }] };
+      }
+      const data = await services.booklore.search(query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Audiobookshelf ───────────────────────────────────────────────────────────
+
+  server.tool(
+    'audiobookshelf_list_libraries',
+    'List all Audiobookshelf libraries',
+    async () => {
+      if (!services.audiobookshelf?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Audiobookshelf is not configured' }] };
+      }
+      const data = await services.audiobookshelf.listLibraries();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'audiobookshelf_list_items',
+    'List items in an Audiobookshelf library',
+    { libraryId: z.string().describe('Library ID') },
+    async ({ libraryId }) => {
+      if (!services.audiobookshelf?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Audiobookshelf is not configured' }] };
+      }
+      const data = await services.audiobookshelf.listItems(libraryId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'audiobookshelf_get_item',
+    'Get details of a specific Audiobookshelf item',
+    { itemId: z.string().describe('Item ID') },
+    async ({ itemId }) => {
+      if (!services.audiobookshelf?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Audiobookshelf is not configured' }] };
+      }
+      const data = await services.audiobookshelf.getItem(itemId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'audiobookshelf_get_in_progress',
+    'Get audiobooks currently in progress from Audiobookshelf',
+    async () => {
+      if (!services.audiobookshelf?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Audiobookshelf is not configured' }] };
+      }
+      const data = await services.audiobookshelf.getInProgress();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'audiobookshelf_get_listening_stats',
+    'Get listening statistics from Audiobookshelf',
+    async () => {
+      if (!services.audiobookshelf?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Audiobookshelf is not configured' }] };
+      }
+      const data = await services.audiobookshelf.getListeningStats();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'audiobookshelf_search',
+    'Search for audiobooks in an Audiobookshelf library',
+    {
+      libraryId: z.string().describe('Library ID to search in'),
+      query: z.string().describe('Search query'),
+    },
+    async ({ libraryId, query }) => {
+      if (!services.audiobookshelf?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Audiobookshelf is not configured' }] };
+      }
+      const data = await services.audiobookshelf.search(libraryId, query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── ROMm ─────────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'romm_list_platforms',
+    'List all gaming platforms in ROMm',
+    async () => {
+      if (!services.romm?.configured) {
+        return { content: [{ type: 'text' as const, text: 'ROMm is not configured' }] };
+      }
+      const data = await services.romm.listPlatforms();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'romm_list_roms',
+    'List ROMs in ROMm, optionally filtered by platform',
+    { platformId: z.coerce.number().optional().describe('Filter by platform ID') },
+    async ({ platformId }) => {
+      if (!services.romm?.configured) {
+        return { content: [{ type: 'text' as const, text: 'ROMm is not configured' }] };
+      }
+      const data = await services.romm.listRoms(platformId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'romm_get_rom',
+    'Get details of a specific ROM in ROMm',
+    { romId: z.coerce.number().describe('ROM ID') },
+    async ({ romId }) => {
+      if (!services.romm?.configured) {
+        return { content: [{ type: 'text' as const, text: 'ROMm is not configured' }] };
+      }
+      const data = await services.romm.getRom(romId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'romm_search',
+    'Search for ROMs in ROMm',
+    { query: z.string().describe('Search query') },
+    async ({ query }) => {
+      if (!services.romm?.configured) {
+        return { content: [{ type: 'text' as const, text: 'ROMm is not configured' }] };
+      }
+      const data = await services.romm.search(query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'romm_get_recently_added',
+    'Get recently added ROMs from ROMm',
+    async () => {
+      if (!services.romm?.configured) {
+        return { content: [{ type: 'text' as const, text: 'ROMm is not configured' }] };
+      }
+      const data = await services.romm.getRecentlyAdded();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'romm_list_collections',
+    'List all ROM collections in ROMm',
+    async () => {
+      if (!services.romm?.configured) {
+        return { content: [{ type: 'text' as const, text: 'ROMm is not configured' }] };
+      }
+      const data = await services.romm.listCollections();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Immich ───────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'immich_list_albums',
+    'List all Immich photo albums',
+    async () => {
+      if (!services.immich?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Immich is not configured' }] };
+      }
+      const data = await services.immich.listAlbums();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'immich_get_album',
+    'Get details of a specific Immich album',
+    { albumId: z.string().describe('Album ID') },
+    async ({ albumId }) => {
+      if (!services.immich?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Immich is not configured' }] };
+      }
+      const data = await services.immich.getAlbum(albumId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'immich_get_statistics',
+    'Get Immich server statistics (photo/video counts, storage usage)',
+    async () => {
+      if (!services.immich?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Immich is not configured' }] };
+      }
+      const data = await services.immich.getStatistics();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'immich_search',
+    'Search for photos and videos in Immich',
+    { query: z.string().describe('Search query') },
+    async ({ query }) => {
+      if (!services.immich?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Immich is not configured' }] };
+      }
+      const data = await services.immich.search(query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'immich_list_people',
+    'List recognized people in Immich',
+    async () => {
+      if (!services.immich?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Immich is not configured' }] };
+      }
+      const data = await services.immich.listPeople();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'immich_get_person_assets',
+    'Get photos and videos of a specific person in Immich',
+    { personId: z.string().describe('Person ID') },
+    async ({ personId }) => {
+      if (!services.immich?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Immich is not configured' }] };
+      }
+      const data = await services.immich.getPersonAssets(personId);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'immich_get_recent_assets',
+    'Get recently added photos and videos from Immich',
+    { count: z.number().optional().describe('Number of assets to return') },
+    async ({ count }) => {
+      if (!services.immich?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Immich is not configured' }] };
+      }
+      const data = await services.immich.getRecentAssets(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── UniFi ────────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'unifi_get_health',
+    'Get UniFi network health status',
+    async () => {
+      if (!services.unifi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'UniFi is not configured' }] };
+      }
+      const data = await services.unifi.getHealth();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'unifi_list_clients',
+    'List all connected UniFi network clients',
+    async () => {
+      if (!services.unifi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'UniFi is not configured' }] };
+      }
+      const data = await services.unifi.listClients();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'unifi_list_devices',
+    'List all UniFi network devices (APs, switches, gateways)',
+    async () => {
+      if (!services.unifi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'UniFi is not configured' }] };
+      }
+      const data = await services.unifi.listDevices();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'unifi_get_device',
+    'Get details of a specific UniFi device by MAC address',
+    { mac: z.string().describe('Device MAC address') },
+    async ({ mac }) => {
+      if (!services.unifi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'UniFi is not configured' }] };
+      }
+      const data = await services.unifi.getDevice(mac);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'unifi_get_client_stats',
+    'Get UniFi client connection statistics',
+    async () => {
+      if (!services.unifi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'UniFi is not configured' }] };
+      }
+      const data = await services.unifi.getClientStats();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'unifi_get_sysinfo',
+    'Get UniFi controller system information',
+    async () => {
+      if (!services.unifi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'UniFi is not configured' }] };
+      }
+      const data = await services.unifi.getSysinfo();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Forgejo ──────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'forgejo_list_repos',
+    'List Forgejo repositories, optionally filtered by owner',
+    { owner: z.string().optional().describe('Filter by repository owner') },
+    async ({ owner }) => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.listRepos(owner);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'forgejo_get_repo',
+    'Get details of a specific Forgejo repository',
+    {
+      owner: z.string().describe('Repository owner'),
+      repo: z.string().describe('Repository name'),
+    },
+    async ({ owner, repo }) => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.getRepo(owner, repo);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'forgejo_list_issues',
+    'List issues in a Forgejo repository',
+    {
+      owner: z.string().describe('Repository owner'),
+      repo: z.string().describe('Repository name'),
+      state: z.string().optional().describe('Filter by state (open, closed)'),
+    },
+    async ({ owner, repo, state }) => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.listIssues(owner, repo, state);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'forgejo_get_issue',
+    'Get details of a specific issue in a Forgejo repository',
+    {
+      owner: z.string().describe('Repository owner'),
+      repo: z.string().describe('Repository name'),
+      index: z.coerce.number().describe('Issue number'),
+    },
+    async ({ owner, repo, index }) => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.getIssue(owner, repo, index);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'forgejo_list_pull_requests',
+    'List pull requests in a Forgejo repository',
+    {
+      owner: z.string().describe('Repository owner'),
+      repo: z.string().describe('Repository name'),
+      state: z.string().optional().describe('Filter by state (open, closed)'),
+    },
+    async ({ owner, repo, state }) => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.listPullRequests(owner, repo, state);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'forgejo_get_pull_request',
+    'Get details of a specific pull request in a Forgejo repository',
+    {
+      owner: z.string().describe('Repository owner'),
+      repo: z.string().describe('Repository name'),
+      index: z.coerce.number().describe('Pull request number'),
+    },
+    async ({ owner, repo, index }) => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.getPullRequest(owner, repo, index);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'forgejo_list_orgs',
+    'List all Forgejo organizations',
+    async () => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.listOrgs();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'forgejo_search_repos',
+    'Search for repositories in Forgejo',
+    { query: z.string().describe('Search query') },
+    async ({ query }) => {
+      if (!services.forgejo?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Forgejo is not configured' }] };
+      }
+      const data = await services.forgejo.searchRepos(query);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Pi-hole ─────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'pihole_get_summary',
+    'Get Pi-hole DNS statistics summary — queries today, blocked, percentage',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getSummary();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_top_domains',
+    'Get top permitted domains from Pi-hole',
+    { count: z.number().optional().describe('Number of results (default 10)') },
+    async ({ count }) => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getTopDomains(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_top_blocked',
+    'Get top blocked domains from Pi-hole',
+    { count: z.number().optional().describe('Number of results (default 10)') },
+    async ({ count }) => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getTopBlocked(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_top_clients',
+    'Get top DNS client devices from Pi-hole',
+    { count: z.number().optional().describe('Number of results (default 10)') },
+    async ({ count }) => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getTopClients(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_query_types',
+    'Get DNS query type distribution from Pi-hole (A, AAAA, CNAME, etc.)',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getQueryTypes();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_get_history',
+    'Get Pi-hole DNS query history over time',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getHistory();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_client_history',
+    'Get per-client DNS query history from Pi-hole',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getHistoryClients();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_blocking_status',
+    'Check if Pi-hole DNS blocking is currently enabled or disabled',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getBlockingStatus();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
   // ── Prompts ──────────────────────────────────────────────────────────────────
 
   server.prompt(

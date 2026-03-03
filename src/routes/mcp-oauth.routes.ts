@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import crypto from 'crypto';
+import cors from 'cors';
 import { getOidcIssuer } from '../middleware/oidc.middleware';
 import logger from '../logger';
 
@@ -55,8 +56,11 @@ export default function createMcpOAuthRouter(): Router {
   const oidcClientId = process.env.OIDC_CLIENT_ID;
   const oidcClientSecret = process.env.OIDC_CLIENT_SECRET;
 
+  // Allow cross-origin requests from Claude and other MCP clients
+  const openCors = cors();
+
   // RFC 8414 — Authorization Server Metadata
-  router.get('/.well-known/oauth-authorization-server', (req, res) => {
+  router.get('/.well-known/oauth-authorization-server', openCors, (req, res) => {
     const origin = serverOrigin(req);
     res.json({
       issuer: origin,
@@ -185,7 +189,8 @@ export default function createMcpOAuthRouter(): Router {
   });
 
   // Token endpoint — Claude exchanges our code for the Authentik access token
-  router.post('/token', (req, res) => {
+  router.options('/token', openCors);
+  router.post('/token', openCors, (req, res) => {
     const {
       grant_type: grantType,
       code,
