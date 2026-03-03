@@ -1084,7 +1084,8 @@ export async function executeTool(
     if (!services.grafana?.configured) return 'Grafana is not configured';
     return JSON.stringify(
       await services.grafana.queryDatasource(args.datasourceId, JSON.parse(args.query_json)),
-      null, 2,
+      null,
+      2,
     );
   case 'grafana_get_annotations':
     if (!services.grafana?.configured) return 'Grafana is not configured';
@@ -1101,7 +1102,8 @@ export async function executeTool(
     if (!services.portainer?.configured) return 'Portainer is not configured';
     return JSON.stringify(
       await services.portainer.listContainers(args.endpointId),
-      null, 2,
+      null,
+      2,
     );
   case 'portainer_list_stacks':
     if (!services.portainer?.configured) return 'Portainer is not configured';
@@ -1110,13 +1112,15 @@ export async function executeTool(
     if (!services.portainer?.configured) return 'Portainer is not configured';
     return JSON.stringify(
       await services.portainer.getContainer(args.endpointId, args.containerId),
-      null, 2,
+      null,
+      2,
     );
   case 'portainer_container_action':
     if (!services.portainer?.configured) return 'Portainer is not configured';
     return JSON.stringify(
       await services.portainer.containerAction(args.endpointId, args.containerId, args.action),
-      null, 2,
+      null,
+      2,
     );
 
   // ── Prometheus ──
@@ -1127,7 +1131,8 @@ export async function executeTool(
     if (!services.prometheus?.configured) return 'Prometheus is not configured';
     return JSON.stringify(
       await services.prometheus.queryRange(args.promql, args.start, args.end, args.step),
-      null, 2,
+      null,
+      2,
     );
   case 'prometheus_get_targets':
     if (!services.prometheus?.configured) return 'Prometheus is not configured';
@@ -1196,7 +1201,8 @@ export async function executeTool(
     if (!services.audiobookshelf?.configured) return 'Audiobookshelf is not configured';
     return JSON.stringify(
       await services.audiobookshelf.search(args.query, args.libraryId),
-      null, 2,
+      null,
+      2,
     );
   case 'audiobookshelf_get_listening_stats':
     if (!services.audiobookshelf?.configured) return 'Audiobookshelf is not configured';
@@ -1276,25 +1282,29 @@ export async function executeTool(
     if (!services.forgejo?.configured) return 'Forgejo is not configured';
     return JSON.stringify(
       await services.forgejo.listIssues(args.owner, args.repo, args.state),
-      null, 2,
+      null,
+      2,
     );
   case 'forgejo_get_issue':
     if (!services.forgejo?.configured) return 'Forgejo is not configured';
     return JSON.stringify(
       await services.forgejo.getIssue(args.owner, args.repo, args.index),
-      null, 2,
+      null,
+      2,
     );
   case 'forgejo_list_pull_requests':
     if (!services.forgejo?.configured) return 'Forgejo is not configured';
     return JSON.stringify(
       await services.forgejo.listPullRequests(args.owner, args.repo, args.state),
-      null, 2,
+      null,
+      2,
     );
   case 'forgejo_get_pull_request':
     if (!services.forgejo?.configured) return 'Forgejo is not configured';
     return JSON.stringify(
       await services.forgejo.getPullRequest(args.owner, args.repo, args.index),
-      null, 2,
+      null,
+      2,
     );
   case 'forgejo_list_orgs':
     if (!services.forgejo?.configured) return 'Forgejo is not configured';
