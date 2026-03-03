@@ -129,6 +129,7 @@ export async function createServices(): Promise<FluxHausServices> {
       url: (process.env.KOMGA_URL || '').trim(),
       user: (process.env.KOMGA_USER || '').trim(),
       password: (process.env.KOMGA_PASSWORD || '').trim(),
+      apiKey: (process.env.KOMGA_API_KEY || '').trim() || undefined,
     }),
     booklore: new BookloreClient({
       url: (process.env.BOOKLORE_URL || '').trim(),
@@ -153,6 +154,7 @@ export async function createServices(): Promise<FluxHausServices> {
       password: (process.env.UNIFI_PASSWORD || '').trim(),
       site: (process.env.UNIFI_SITE || 'default').trim(),
       isUdm: process.env.UNIFI_IS_UDM === 'true',
+      apiKey: (process.env.UNIFI_API_KEY || '').trim() || undefined,
     }),
     forgejo: new ForgejoClient({
       url: (process.env.FORGEJO_URL || '').trim(),

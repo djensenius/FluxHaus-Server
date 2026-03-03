@@ -43,6 +43,37 @@ describe('UniFiClient', () => {
       const c = new UniFiClient({ ...config, user: '' });
       expect(c.configured).toBe(false);
     });
+
+    it('returns true with apiKey only (no user/pass)', () => {
+      const c = new UniFiClient({
+        url: 'https://unifi:8443', user: '', password: '', site: 'default', apiKey: 'my-api-key',
+      });
+      expect(c.configured).toBe(true);
+    });
+  });
+
+  describe('API key auth', () => {
+    it('uses X-API-Key header without login when apiKey is set', async () => {
+      const apiKeyClient = new UniFiClient({ ...config, apiKey: 'my-api-key' });
+
+      (global.fetch as jest.Mock).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ data: [{ health: 'ok' }] }),
+      });
+
+      const result = await apiKeyClient.getHealth();
+
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      expect(global.fetch).toHaveBeenCalledWith(
+        'https://unifi:8443/api/s/default/stat/health',
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            'X-API-Key': 'my-api-key',
+          }),
+        }),
+      );
+      expect(result).toEqual({ data: [{ health: 'ok' }] });
+    });
   });
 
   describe('login + request flow', () => {

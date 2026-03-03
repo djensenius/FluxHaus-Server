@@ -8,6 +8,7 @@ export interface UniFiConfig {
   password: string;
   site: string;
   isUdm?: boolean;
+  apiKey?: string;
 }
 
 export class UniFiClient {
@@ -22,10 +23,13 @@ export class UniFiClient {
   get configured(): boolean {
     return !!(
       this.config.url
-      && this.config.user
-      && this.config.password
       && this.config.site
+      && (this.config.apiKey || (this.config.user && this.config.password))
     );
+  }
+
+  private get useApiKey(): boolean {
+    return !!this.config.apiKey;
   }
 
   private get pathPrefix(): string {
@@ -67,6 +71,26 @@ export class UniFiClient {
     retry = true,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
+    if (this.useApiKey) {
+      const url = `${this.config.url}${this.pathPrefix}/api/s/${this.config.site}${path}`;
+      unifiLogger.debug({ url }, 'Making UniFi request (API key)');
+
+      const response = await fetch(url, {
+        headers: {
+          'X-API-Key': this.config.apiKey!,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        const msg = `UniFi request failed: ${response.status} ${response.statusText}`;
+        unifiLogger.error({ url, status: response.status }, msg);
+        throw new Error(msg);
+      }
+
+      return response.json();
+    }
+
     if (!this.cookie) await this.login();
 
     const url = `${this.config.url}${this.pathPrefix}/api/s/${this.config.site}${path}`;

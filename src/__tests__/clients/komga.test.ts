@@ -56,6 +56,27 @@ describe('KomgaClient', () => {
     expect(incomplete.configured).toBe(false);
   });
 
+  it('configured returns true with apiKey only (no user/pass)', () => {
+    const tokenClient = new KomgaClient({ url: 'http://komga:25600', user: '', password: '', apiKey: 'my-token' });
+    expect(tokenClient.configured).toBe(true);
+  });
+
+  it('uses Bearer auth when apiKey is set', async () => {
+    const tokenClient = new KomgaClient({ url: 'http://komga:25600', user: '', password: '', apiKey: 'my-token' });
+    mockFetchOk([{ id: '1' }]);
+
+    await tokenClient.listLibraries();
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      'http://komga:25600/api/v1/libraries',
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer my-token',
+        }),
+      }),
+    );
+  });
+
   it('listLibraries calls correct URL with auth header', async () => {
     const data = [{ id: '1', name: 'Comics' }];
     mockFetchOk(data);

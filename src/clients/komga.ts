@@ -6,6 +6,7 @@ export interface KomgaConfig {
   url: string;
   user: string;
   password: string;
+  apiKey?: string;
 }
 
 export class KomgaClient {
@@ -16,7 +17,18 @@ export class KomgaClient {
   }
 
   get configured(): boolean {
-    return !!(this.config.url && this.config.user && this.config.password);
+    return !!(this.config.url
+      && (this.config.apiKey || (this.config.user && this.config.password)));
+  }
+
+  private get authHeader(): string {
+    if (this.config.apiKey) {
+      return `Bearer ${this.config.apiKey}`;
+    }
+    const credentials = Buffer.from(
+      `${this.config.user}:${this.config.password}`,
+    ).toString('base64');
+    return `Basic ${credentials}`;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -26,9 +38,6 @@ export class KomgaClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
-    const credentials = Buffer.from(
-      `${this.config.user}:${this.config.password}`,
-    ).toString('base64');
     komgaLogger.debug(
       { url, method: options.method || 'GET' },
       'Making Komga request',
@@ -38,7 +47,7 @@ export class KomgaClient {
       ...options,
       headers: {
         ...options.headers,
-        Authorization: `Basic ${credentials}`,
+        Authorization: this.authHeader,
         'Content-Type': 'application/json',
       },
     });
