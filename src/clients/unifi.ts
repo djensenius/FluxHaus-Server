@@ -14,10 +14,16 @@ export interface UniFiConfig {
 export class UniFiClient {
   private config: UniFiConfig;
 
+  private baseUrl: string;
+
+  private site: string;
+
   private cookie: string | null = null;
 
   constructor(config: UniFiConfig) {
     this.config = config;
+    this.baseUrl = config.url;
+    this.site = config.site;
   }
 
   get configured(): boolean {
@@ -40,7 +46,7 @@ export class UniFiClient {
     const loginPath = this.config.isUdm
       ? '/api/auth/login'
       : `${this.pathPrefix}/api/login`;
-    const url = `${this.config.url}${loginPath}`;
+    const url = `${this.baseUrl}${loginPath}`;
 
     unifiLogger.debug('Logging in to UniFi controller');
 
@@ -72,10 +78,10 @@ export class UniFiClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     if (this.useApiKey) {
-      const reqPath = `${this.pathPrefix}/api/s/${this.config.site}${path}`;
-      unifiLogger.debug({ path: reqPath }, 'Making UniFi request (API key)');
+      const url = `${this.baseUrl}${this.pathPrefix}/api/s/${this.site}${path}`;
+      unifiLogger.debug({ url }, 'Making UniFi request (API key)');
 
-      const response = await fetch(`${this.config.url}${reqPath}`, {
+      const response = await fetch(url, {
         headers: {
           'X-API-Key': this.config.apiKey!,
           'Content-Type': 'application/json',
@@ -84,7 +90,7 @@ export class UniFiClient {
 
       if (!response.ok) {
         const msg = `UniFi request failed: ${response.status} ${response.statusText}`;
-        unifiLogger.error({ status: response.status }, msg);
+        unifiLogger.error({ url, status: response.status }, msg);
         throw new Error(msg);
       }
 
@@ -93,7 +99,7 @@ export class UniFiClient {
 
     if (!this.cookie) await this.login();
 
-    const url = `${this.config.url}${this.pathPrefix}/api/s/${this.config.site}${path}`;
+    const url = `${this.baseUrl}${this.pathPrefix}/api/s/${this.site}${path}`;
     unifiLogger.debug({ url }, 'Making UniFi request');
 
     const response = await fetch(url, {
