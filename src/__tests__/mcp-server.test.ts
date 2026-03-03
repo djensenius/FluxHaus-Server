@@ -468,6 +468,7 @@ describe('MCP Server', () => {
       'immich_list_albums',
       'unifi_get_health',
       'forgejo_list_repos',
+      'pihole_get_summary',
     ];
 
     it('should register tools for all 14 external services', () => {
@@ -484,6 +485,7 @@ describe('MCP Server', () => {
       ['komga_list_libraries', 'Komga is not configured'],
       ['immich_list_albums', 'Immich is not configured'],
       ['unifi_get_health', 'UniFi is not configured'],
+      ['pihole_get_summary', 'Pi-hole is not configured'],
     ])('%s returns "not configured" when service is missing', async (toolName, expectedText) => {
       const server = createMcpServer(mockServices);
       /* eslint-disable @typescript-eslint/no-explicit-any */

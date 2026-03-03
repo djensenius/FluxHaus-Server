@@ -18,6 +18,7 @@ import { RommClient } from './clients/romm';
 import { ImmichClient } from './clients/immich';
 import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
+import { PiHoleClient } from './clients/pihole';
 import logger from './logger';
 
 const servicesLogger = logger.child({ subsystem: 'services' });
@@ -44,6 +45,7 @@ export interface FluxHausServices {
   immich?: ImmichClient;
   unifi?: UniFiClient;
   forgejo?: ForgejoClient;
+  pihole?: PiHoleClient;
 }
 
 export async function createServices(): Promise<FluxHausServices> {
@@ -155,6 +157,10 @@ export async function createServices(): Promise<FluxHausServices> {
     forgejo: new ForgejoClient({
       url: (process.env.FORGEJO_URL || '').trim(),
       token: (process.env.FORGEJO_TOKEN || '').trim(),
+    }),
+    pihole: new PiHoleClient({
+      url: (process.env.PIHOLE_URL || '').trim(),
+      password: (process.env.PIHOLE_PASSWORD || '').trim(),
     }),
   };
 }

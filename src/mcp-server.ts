@@ -1541,6 +1541,107 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     },
   );
 
+  // ── Pi-hole ─────────────────────────────────────────────────────────────────
+
+  server.tool(
+    'pihole_get_summary',
+    'Get Pi-hole DNS statistics summary — queries today, blocked, percentage',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getSummary();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_top_domains',
+    'Get top permitted domains from Pi-hole',
+    { count: z.number().optional().describe('Number of results (default 10)') },
+    async ({ count }) => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getTopDomains(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_top_blocked',
+    'Get top blocked domains from Pi-hole',
+    { count: z.number().optional().describe('Number of results (default 10)') },
+    async ({ count }) => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getTopBlocked(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_top_clients',
+    'Get top DNS client devices from Pi-hole',
+    { count: z.number().optional().describe('Number of results (default 10)') },
+    async ({ count }) => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getTopClients(count);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_query_types',
+    'Get DNS query type distribution from Pi-hole (A, AAAA, CNAME, etc.)',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getQueryTypes();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_get_history',
+    'Get Pi-hole DNS query history over time',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getHistory();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_client_history',
+    'Get per-client DNS query history from Pi-hole',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getHistoryClients();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'pihole_blocking_status',
+    'Check if Pi-hole DNS blocking is currently enabled or disabled',
+    async () => {
+      if (!services.pihole?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Pi-hole is not configured' }] };
+      }
+      const data = await services.pihole.getBlockingStatus();
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
   // ── Prompts ──────────────────────────────────────────────────────────────────
 
   server.prompt(
