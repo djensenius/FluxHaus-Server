@@ -45,7 +45,9 @@ function s256(verifier: string): string {
 }
 
 function serverOrigin(req: { protocol: string; get(name: string): string | undefined }): string {
-  return `${req.protocol}://${req.get('host')}`;
+  // Force https in production — reverse proxies don't always forward X-Forwarded-Proto
+  const proto = process.env.NODE_ENV === 'production' ? 'https' : req.protocol;
+  return `${proto}://${req.get('host')}`;
 }
 
 export default function createMcpOAuthRouter(): Router {
