@@ -31,6 +31,21 @@ import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
 import { decrypt, encrypt } from './encryption';
 import logger from './logger';
+import { PlexClient } from './clients/plex';
+import { OverseerrClient } from './clients/overseerr';
+import { TautulliClient } from './clients/tautulli';
+import { GrafanaClient } from './clients/grafana';
+import { InfluxDBClient } from './clients/influxdb';
+import { PortainerClient } from './clients/portainer';
+import { PrometheusClient } from './clients/prometheus';
+import { KomgaClient } from './clients/komga';
+import { BookloreClient } from './clients/booklore';
+import { AudiobookshelfClient } from './clients/audiobookshelf';
+import { RommClient } from './clients/romm';
+import { ImmichClient } from './clients/immich';
+import { UniFiClient } from './clients/unifi';
+import { ForgejoClient } from './clients/forgejo';
+import { PiHoleClient } from './clients/pihole';
 
 const serverLogger = logger.child({ subsystem: 'server' });
 
@@ -228,6 +243,103 @@ export async function createServer(): Promise<Express> {
     );
   }, 1000 * 60 * 60);
 
+  // External service clients (optional — tools degrade gracefully when unconfigured)
+  const plex = new PlexClient({
+    url: (process.env.PLEX_URL || '').trim(),
+    token: (process.env.PLEX_TOKEN || '').trim(),
+  });
+  const overseerr = new OverseerrClient({
+    url: (process.env.OVERSEERR_URL || '').trim(),
+    apiKey: (process.env.OVERSEERR_API_KEY || '').trim(),
+  });
+  const tautulli = new TautulliClient({
+    url: (process.env.TAUTULLI_URL || '').trim(),
+    apiKey: (process.env.TAUTULLI_API_KEY || '').trim(),
+  });
+  const grafana = new GrafanaClient({
+    url: (process.env.GRAFANA_URL || '').trim(),
+    user: (process.env.GRAFANA_USER || '').trim(),
+    password: (process.env.GRAFANA_PASSWORD || '').trim(),
+  });
+  const influxdb = new InfluxDBClient({
+    url: (process.env.INFLUXDB_URL || '').trim(),
+    token: (process.env.INFLUXDB_TOKEN || '').trim(),
+    org: (process.env.INFLUXDB_ORG || 'fluxhaus').trim(),
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+  });
+  const portainer = new PortainerClient({
+    url: (process.env.PORTAINER_URL || '').trim(),
+    apiKey: (process.env.PORTAINER_API_KEY || '').trim(),
+  });
+  const prometheus = new PrometheusClient({
+    url: (process.env.PROMETHEUS_URL || '').trim(),
+  });
+  const komga = new KomgaClient({
+    url: (process.env.KOMGA_URL || '').trim(),
+    user: (process.env.KOMGA_USER || '').trim(),
+    password: (process.env.KOMGA_PASSWORD || '').trim(),
+    apiKey: (process.env.KOMGA_API_KEY || '').trim() || undefined,
+  });
+  const booklore = new BookloreClient({
+    url: (process.env.BOOKLORE_URL || '').trim(),
+    user: (process.env.BOOKLORE_USER || '').trim(),
+    password: (process.env.BOOKLORE_PASSWORD || '').trim(),
+  });
+  const audiobookshelf = new AudiobookshelfClient({
+    url: (process.env.AUDIOBOOKSHELF_URL || '').trim(),
+    apiKey: (process.env.AUDIOBOOKSHELF_API_KEY || '').trim(),
+  });
+  const romm = new RommClient({
+    url: (process.env.ROMM_URL || '').trim(),
+    user: (process.env.ROMM_USER || '').trim(),
+    password: (process.env.ROMM_PASSWORD || '').trim(),
+  });
+  const immich = new ImmichClient({
+    url: (process.env.IMMICH_URL || '').trim(),
+    apiKey: (process.env.IMMICH_API_KEY || '').trim(),
+  });
+  const unifi = new UniFiClient({
+    url: (process.env.UNIFI_URL || '').trim(),
+    user: (process.env.UNIFI_USER || '').trim(),
+    password: (process.env.UNIFI_PASSWORD || '').trim(),
+    site: (process.env.UNIFI_SITE || 'default').trim(),
+    isUdm: process.env.UNIFI_IS_UDM === 'true',
+    apiKey: (process.env.UNIFI_API_KEY || '').trim() || undefined,
+  });
+  const forgejo = new ForgejoClient({
+    url: (process.env.FORGEJO_URL || '').trim(),
+    token: (process.env.FORGEJO_TOKEN || '').trim(),
+  });
+  const pihole = new PiHoleClient({
+    url: (process.env.PIHOLE_URL || '').trim(),
+    password: (process.env.PIHOLE_PASSWORD || '').trim(),
+  });
+
+  // Shared services object — used by MCP, /command, and /voice endpoints
+  const allServices = {
+    homeAssistantClient,
+    broombot,
+    mopbot,
+    car,
+    mieleClient,
+    hc,
+    cameraURL,
+    plex,
+    overseerr,
+    tautulli,
+    grafana,
+    influxdb,
+    portainer,
+    prometheus,
+    komga,
+    booklore,
+    audiobookshelf,
+    romm,
+    immich,
+    unifi,
+    forgejo,
+    pihole,
+  };
 
   app.get('/', cors(corsOptions), (req, res) => {
     res.setHeader('Content-Type', 'application/json');
@@ -810,15 +922,7 @@ export async function createServer(): Promise<Express> {
       return;
     }
     try {
-      const services = {
-        homeAssistantClient,
-        broombot,
-        mopbot,
-        car,
-        mieleClient,
-        hc,
-        cameraURL,
-      };
+      const services = allServices;
       let history: ConversationMessage[] = [];
       if (conversationId && req.user?.sub) {
         history = await loadConversationHistory(conversationId, req.user.sub);
@@ -866,15 +970,7 @@ export async function createServer(): Promise<Express> {
       } else {
         command = text as string;
       }
-      const services = {
-        homeAssistantClient,
-        broombot,
-        mopbot,
-        car,
-        mieleClient,
-        hc,
-        cameraURL,
-      };
+      const services = allServices;
       let history: ConversationMessage[] = [];
       if (conversationId && req.user?.sub) {
         history = await loadConversationHistory(conversationId, req.user.sub);
@@ -896,24 +992,17 @@ export async function createServer(): Promise<Express> {
 
   // MCP HTTP endpoint — requires OIDC authentication (req.user.sub is only set for
   // OIDC-authenticated users; Basic-auth users do not have a sub claim).
-  app.post('/mcp', cors(corsOptions), csrfMiddleware, async (req, res) => {
+  // Uses open CORS so Claude and other remote MCP clients can make cross-origin requests.
+  const mcpCors = cors();
+  app.options('/mcp', mcpCors);
+  app.post('/mcp', mcpCors, csrfMiddleware, async (req, res) => {
     if (!req.user?.sub) {
       res.status(403).json({ message: 'OIDC authentication required for MCP access' });
       return;
     }
     try {
-      // sessionIdGenerator: undefined opts into stateless mode — each POST
-      // request is self-contained with no server-side session tracking.
       const mcpTransport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-      const mcpServer = createMcpServer({
-        homeAssistantClient,
-        broombot,
-        mopbot,
-        car,
-        mieleClient,
-        hc,
-        cameraURL,
-      });
+      const mcpServer = createMcpServer(allServices);
       await mcpServer.connect(mcpTransport);
       try {
         await mcpTransport.handleRequest(req, res, req.body);
