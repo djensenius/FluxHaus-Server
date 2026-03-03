@@ -52,6 +52,12 @@ jest.mock('../middleware/oidc.middleware', () => {
   };
 });
 
+jest.mock('../mcp-auth', () => ({
+  verifyMcpToken: jest.fn().mockResolvedValue(null),
+  serverOrigin: jest.fn().mockReturnValue('http://localhost:8888'),
+  getMcpSigningKey: jest.fn().mockReturnValue(new Uint8Array(32)),
+}));
+
 // Mock global fetch
 global.fetch = jest.fn(() => Promise.resolve({
   json: () => Promise.resolve({}),

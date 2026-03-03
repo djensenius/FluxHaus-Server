@@ -7,6 +7,11 @@ jest.mock('../oidc.middleware', () => ({
   isOidcEnabled: jest.fn().mockReturnValue(false),
 }));
 
+jest.mock('../../mcp-auth', () => ({
+  verifyMcpToken: jest.fn().mockResolvedValue(null),
+  serverOrigin: jest.fn().mockReturnValue('http://localhost:8888'),
+}));
+
 function mockReq(headers: Record<string, string> = {}): Partial<Request> {
   return { headers } as Partial<Request>;
 }
