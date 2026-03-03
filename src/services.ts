@@ -109,7 +109,8 @@ export async function createServices(): Promise<FluxHausServices> {
     }),
     grafana: new GrafanaClient({
       url: (process.env.GRAFANA_URL || '').trim(),
-      apiKey: (process.env.GRAFANA_API_KEY || '').trim(),
+      user: (process.env.GRAFANA_USER || '').trim(),
+      password: (process.env.GRAFANA_PASSWORD || '').trim(),
     }),
     influxdb: new InfluxDBClient({
       url: (process.env.INFLUXDB_URL || '').trim(),
@@ -123,7 +124,6 @@ export async function createServices(): Promise<FluxHausServices> {
     }),
     prometheus: new PrometheusClient({
       url: (process.env.PROMETHEUS_URL || '').trim(),
-      token: (process.env.PROMETHEUS_TOKEN || '').trim() || undefined,
     }),
     komga: new KomgaClient({
       url: (process.env.KOMGA_URL || '').trim(),
@@ -133,7 +133,8 @@ export async function createServices(): Promise<FluxHausServices> {
     }),
     booklore: new BookloreClient({
       url: (process.env.BOOKLORE_URL || '').trim(),
-      apiKey: (process.env.BOOKLORE_API_KEY || '').trim(),
+      user: (process.env.BOOKLORE_USER || '').trim(),
+      password: (process.env.BOOKLORE_PASSWORD || '').trim(),
     }),
     audiobookshelf: new AudiobookshelfClient({
       url: (process.env.AUDIOBOOKSHELF_URL || '').trim(),

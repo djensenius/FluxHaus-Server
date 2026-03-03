@@ -15,31 +15,32 @@ jest.mock('../../logger', () => ({
 global.fetch = jest.fn();
 
 describe('GrafanaClient', () => {
-  const mockConfig = { url: 'http://grafana:3000', apiKey: 'test-key' };
+  const mockConfig = { url: 'http://grafana:3000', user: 'admin', password: 'secret' };
+  const credentials = Buffer.from('admin:secret').toString('base64');
 
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
   describe('configured', () => {
-    it('returns true when url and apiKey are provided', () => {
+    it('returns true when url, user, and password are provided', () => {
       const client = new GrafanaClient(mockConfig);
       expect(client.configured).toBe(true);
     });
 
     it('returns false when url is empty', () => {
-      const client = new GrafanaClient({ url: '', apiKey: 'test-key' });
+      const client = new GrafanaClient({ url: '', user: 'admin', password: 'secret' });
       expect(client.configured).toBe(false);
     });
 
-    it('returns false when apiKey is empty', () => {
-      const client = new GrafanaClient({ url: 'http://grafana:3000', apiKey: '' });
+    it('returns false when password is empty', () => {
+      const client = new GrafanaClient({ url: 'http://grafana:3000', user: 'admin', password: '' });
       expect(client.configured).toBe(false);
     });
   });
 
   describe('listDashboards', () => {
-    it('calls correct URL with Bearer auth header', async () => {
+    it('calls correct URL with Basic auth header', async () => {
       const client = new GrafanaClient(mockConfig);
       const mockData = [{ uid: 'abc', title: 'Dashboard 1' }];
 
@@ -55,7 +56,7 @@ describe('GrafanaClient', () => {
         'http://grafana:3000/api/search?type=dash-db',
         expect.objectContaining({
           headers: expect.objectContaining({
-            Authorization: 'Bearer test-key',
+            Authorization: `Basic ${credentials}`,
             'Content-Type': 'application/json',
           }),
         }),
@@ -83,7 +84,7 @@ describe('GrafanaClient', () => {
             queries: [{ refId: 'A', expr: 'up', datasourceId: 1 }],
           }),
           headers: expect.objectContaining({
-            Authorization: 'Bearer test-key',
+            Authorization: `Basic ${credentials}`,
           }),
         }),
       );

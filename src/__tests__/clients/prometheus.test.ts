@@ -14,7 +14,6 @@ global.fetch = jest.fn();
 describe('PrometheusClient', () => {
   const mockConfig = {
     url: 'http://prometheus:9090',
-    token: 'test-token',
   };
 
   beforeEach(() => {
@@ -28,34 +27,13 @@ describe('PrometheusClient', () => {
     });
 
     it('should return false when url is empty', () => {
-      const client = new PrometheusClient({ url: '', token: 'x' });
+      const client = new PrometheusClient({ url: '' });
       expect(client.configured).toBe(false);
     });
   });
 
-  it('should include Authorization header when token is set', async () => {
+  it('should make requests without Authorization header', async () => {
     const client = new PrometheusClient(mockConfig);
-
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ status: 'success', data: { result: [] } }),
-    });
-
-    await client.query('up');
-
-    expect(global.fetch).toHaveBeenCalledWith(
-      'http://prometheus:9090/api/v1/query?query=up',
-      expect.objectContaining({
-        headers: expect.objectContaining({
-          Authorization: 'Bearer test-token',
-          'Content-Type': 'application/json',
-        }),
-      }),
-    );
-  });
-
-  it('should NOT include Authorization header when token is not set', async () => {
-    const client = new PrometheusClient({ url: 'http://prometheus:9090' });
 
     (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
@@ -66,6 +44,7 @@ describe('PrometheusClient', () => {
 
     const headers = (global.fetch as jest.Mock).mock.calls[0][1].headers;
     expect(headers).not.toHaveProperty('Authorization');
+    expect(headers).toHaveProperty('Content-Type', 'application/json');
   });
 
   it('should call query with correct URL and return data', async () => {

@@ -4,7 +4,8 @@ const bookloreLogger = logger.child({ subsystem: 'booklore' });
 
 export interface BookloreConfig {
   url: string;
-  apiKey: string;
+  user: string;
+  password: string;
 }
 
 export class BookloreClient {
@@ -15,7 +16,7 @@ export class BookloreClient {
   }
 
   get configured(): boolean {
-    return !!(this.config.url && this.config.apiKey);
+    return !!(this.config.url && this.config.user && this.config.password);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,11 +31,15 @@ export class BookloreClient {
       'Making Booklore request',
     );
 
+    const credentials = Buffer.from(
+      `${this.config.user}:${this.config.password}`,
+    ).toString('base64');
+
     const response = await fetch(url, {
       ...options,
       headers: {
         ...options.headers,
-        Authorization: `Bearer ${this.config.apiKey}`,
+        Authorization: `Basic ${credentials}`,
         'Content-Type': 'application/json',
       },
     });

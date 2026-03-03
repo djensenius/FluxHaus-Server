@@ -16,8 +16,13 @@ global.fetch = jest.fn();
 
 const mockConfig = {
   url: 'http://booklore:8080',
-  apiKey: 'test-key',
+  user: 'test-user',
+  password: 'test-pass',
 };
+
+const credentials = Buffer.from(
+  `${mockConfig.user}:${mockConfig.password}`,
+).toString('base64');
 
 function mockFetchOk(data: unknown) {
   (global.fetch as jest.Mock).mockResolvedValueOnce({
@@ -47,11 +52,11 @@ describe('BookloreClient', () => {
   });
 
   it('configured returns false with missing field', () => {
-    const incomplete = new BookloreClient({ url: 'http://booklore:8080', apiKey: '' });
+    const incomplete = new BookloreClient({ url: 'http://booklore:8080', user: '', password: 'p' });
     expect(incomplete.configured).toBe(false);
   });
 
-  it('listShelves calls correct URL with bearer auth', async () => {
+  it('listShelves calls correct URL with basic auth', async () => {
     const data = [{ id: '1', name: 'Fiction' }];
     mockFetchOk(data);
 
@@ -62,7 +67,7 @@ describe('BookloreClient', () => {
       'http://booklore:8080/api/shelves',
       expect.objectContaining({
         headers: expect.objectContaining({
-          Authorization: 'Bearer test-key',
+          Authorization: `Basic ${credentials}`,
         }),
       }),
     );

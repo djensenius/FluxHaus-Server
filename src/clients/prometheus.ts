@@ -4,7 +4,6 @@ const prometheusLogger = logger.child({ subsystem: 'prometheus' });
 
 export interface PrometheusConfig {
   url: string;
-  token?: string;
 }
 
 export class PrometheusClient {
@@ -30,18 +29,12 @@ export class PrometheusClient {
       'Making Prometheus request',
     );
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const headers: any = {
-      ...options.headers,
-      'Content-Type': 'application/json',
-    };
-    if (this.config.token) {
-      headers.Authorization = `Bearer ${this.config.token}`;
-    }
-
     const response = await fetch(url, {
       ...options,
-      headers,
+      headers: {
+        ...options.headers,
+        'Content-Type': 'application/json',
+      },
     });
 
     if (!response.ok) {

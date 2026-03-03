@@ -4,7 +4,8 @@ const grafanaLogger = logger.child({ subsystem: 'grafana' });
 
 export interface GrafanaConfig {
   url: string;
-  apiKey: string;
+  user: string;
+  password: string;
 }
 
 export class GrafanaClient {
@@ -15,7 +16,7 @@ export class GrafanaClient {
   }
 
   get configured(): boolean {
-    return !!(this.config.url && this.config.apiKey);
+    return !!(this.config.url && this.config.user && this.config.password);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,11 +31,15 @@ export class GrafanaClient {
       'Making Grafana request',
     );
 
+    const credentials = Buffer.from(
+      `${this.config.user}:${this.config.password}`,
+    ).toString('base64');
+
     const response = await fetch(url, {
       ...options,
       headers: {
         ...options.headers,
-        Authorization: `Bearer ${this.config.apiKey}`,
+        Authorization: `Basic ${credentials}`,
         'Content-Type': 'application/json',
       },
     });
