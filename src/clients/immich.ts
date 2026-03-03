@@ -26,7 +26,7 @@ export class ImmichClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     immichLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Immich request',
     );
 
@@ -41,7 +41,7 @@ export class ImmichClient {
 
     if (!response.ok) {
       const msg = `Immich request failed: ${response.status} ${response.statusText}`;
-      immichLogger.error({ url, status: response.status }, msg);
+      immichLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

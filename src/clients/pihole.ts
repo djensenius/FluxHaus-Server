@@ -51,7 +51,7 @@ export class PiHoleClient {
     if (!this.sid) await this.login();
 
     const url = `${this.config.url}/api${path}`;
-    piholeLogger.debug({ url }, 'Making Pi-hole request');
+    piholeLogger.debug({ path }, 'Making Pi-hole request');
 
     const response = await fetch(url, {
       headers: {
@@ -68,7 +68,7 @@ export class PiHoleClient {
 
     if (!response.ok) {
       const msg = `Pi-hole request failed: ${response.status} ${response.statusText}`;
-      piholeLogger.error({ url, status: response.status }, msg);
+      piholeLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

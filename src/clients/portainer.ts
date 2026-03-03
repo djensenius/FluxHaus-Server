@@ -26,7 +26,7 @@ export class PortainerClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     portainerLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Portainer request',
     );
 
@@ -42,7 +42,7 @@ export class PortainerClient {
     if (!response.ok) {
       const msg = 'Portainer request failed: '
         + `${response.status} ${response.statusText}`;
-      portainerLogger.error({ url, status: response.status }, msg);
+      portainerLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

@@ -26,7 +26,7 @@ export class ForgejoClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     forgejoLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Forgejo request',
     );
 
@@ -41,7 +41,7 @@ export class ForgejoClient {
 
     if (!response.ok) {
       const msg = `Forgejo request failed: ${response.status} ${response.statusText}`;
-      forgejoLogger.error({ url, status: response.status }, msg);
+      forgejoLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

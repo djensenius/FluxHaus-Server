@@ -29,7 +29,7 @@ export class InfluxDBClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     influxdbLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making InfluxDB request',
     );
 
@@ -45,7 +45,7 @@ export class InfluxDBClient {
     if (!response.ok) {
       const msg = 'InfluxDB request failed: '
         + `${response.status} ${response.statusText}`;
-      influxdbLogger.error({ url, status: response.status }, msg);
+      influxdbLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

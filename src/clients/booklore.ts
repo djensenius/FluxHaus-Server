@@ -27,7 +27,7 @@ export class BookloreClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     bookloreLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Booklore request',
     );
 
@@ -46,7 +46,7 @@ export class BookloreClient {
 
     if (!response.ok) {
       const msg = `Booklore request failed: ${response.status} ${response.statusText}`;
-      bookloreLogger.error({ url, status: response.status }, msg);
+      bookloreLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

@@ -30,7 +30,7 @@ export class TautulliClient {
       ...params,
     });
     const url = `${this.config.url}/api/v2?${searchParams}`;
-    tautulliLogger.debug({ cmd, params }, 'Tautulli request');
+    tautulliLogger.debug({ cmd }, 'Tautulli request');
     const response = await fetch(url);
     if (!response.ok) {
       throw new Error(

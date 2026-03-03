@@ -26,7 +26,7 @@ export class OverseerrClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     overseerrLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Overseerr request',
     );
 
@@ -41,7 +41,7 @@ export class OverseerrClient {
 
     if (!response.ok) {
       const msg = `Overseerr request failed: ${response.status} ${response.statusText}`;
-      overseerrLogger.error({ url, status: response.status }, msg);
+      overseerrLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

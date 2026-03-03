@@ -27,7 +27,7 @@ export class GrafanaClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     grafanaLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Grafana request',
     );
 
@@ -47,7 +47,7 @@ export class GrafanaClient {
     if (!response.ok) {
       const msg = 'Grafana request failed: '
         + `${response.status} ${response.statusText}`;
-      grafanaLogger.error({ url, status: response.status }, msg);
+      grafanaLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

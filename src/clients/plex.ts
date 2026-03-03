@@ -22,7 +22,7 @@ export class PlexClient {
   private async request(path: string): Promise<any> {
     const sep = path.includes('?') ? '&' : '?';
     const url = `${this.config.url}${path}${sep}X-Plex-Token=${this.config.token}`;
-    plexLogger.debug({ url }, 'Plex request');
+    plexLogger.debug({ path }, 'Plex request');
 
     const response = await fetch(url, {
       headers: { Accept: 'application/json' },
@@ -30,7 +30,7 @@ export class PlexClient {
 
     if (!response.ok) {
       const msg = `Plex request failed: ${response.status} ${response.statusText}`;
-      plexLogger.error({ url, status: response.status }, msg);
+      plexLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

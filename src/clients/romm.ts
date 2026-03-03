@@ -27,7 +27,7 @@ export class RommClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     rommLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making ROMm request',
     );
 
@@ -46,7 +46,7 @@ export class RommClient {
 
     if (!response.ok) {
       const msg = `ROMm request failed: ${response.status} ${response.statusText}`;
-      rommLogger.error({ url, status: response.status }, msg);
+      rommLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

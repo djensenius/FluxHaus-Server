@@ -26,7 +26,7 @@ export class AudiobookshelfClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     absLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Audiobookshelf request',
     );
 
@@ -42,7 +42,7 @@ export class AudiobookshelfClient {
     if (!response.ok) {
       const msg = 'Audiobookshelf request failed: '
         + `${response.status} ${response.statusText}`;
-      absLogger.error({ url, status: response.status }, msg);
+      absLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 

@@ -39,7 +39,7 @@ export class KomgaClient {
   ): Promise<any> {
     const url = `${this.config.url}${path}`;
     komgaLogger.debug(
-      { url, method: options.method || 'GET' },
+      { path, method: options.method || 'GET' },
       'Making Komga request',
     );
 
@@ -54,7 +54,7 @@ export class KomgaClient {
 
     if (!response.ok) {
       const msg = `Komga request failed: ${response.status} ${response.statusText}`;
-      komgaLogger.error({ url, status: response.status }, msg);
+      komgaLogger.error({ path, status: response.status }, msg);
       throw new Error(msg);
     }
 
