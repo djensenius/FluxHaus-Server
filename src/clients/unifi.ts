@@ -1,6 +1,10 @@
+import { Agent } from 'undici';
 import logger from '../logger';
 
 const unifiLogger = logger.child({ subsystem: 'unifi' });
+
+// UniFi controllers use self-signed certificates by default
+const tlsAgent = new Agent({ connect: { rejectUnauthorized: false } });
 
 export interface UniFiConfig {
   url: string;
@@ -50,7 +54,8 @@ export class UniFiClient {
         username: this.config.user,
         password: this.config.password,
       }),
-    });
+      dispatcher: tlsAgent,
+    } as RequestInit);
 
     if (!response.ok) {
       const msg = `UniFi login failed: ${response.status} ${response.statusText}`;
@@ -80,7 +85,8 @@ export class UniFiClient {
             'X-API-Key': this.config.apiKey!,
             'Content-Type': 'application/json',
           },
-        },
+          dispatcher: tlsAgent,
+        } as RequestInit,
       );
 
       if (!response.ok) {
@@ -103,7 +109,8 @@ export class UniFiClient {
           Cookie: this.cookie || '',
           'Content-Type': 'application/json',
         },
-      },
+        dispatcher: tlsAgent,
+      } as RequestInit,
     );
 
     if (response.status === 401 && retry) {
