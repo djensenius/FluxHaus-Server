@@ -1896,5 +1896,96 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     },
   );
 
+  server.prompt(
+    'data_research',
+    'Research home data: query InfluxDB, Prometheus, Grafana, or HA history to answer analytical questions',
+    {
+      question: z.string().describe(
+        'The research question (e.g. "average time living room lights were on last month")',
+      ),
+    },
+    async ({ question }) => {
+      const availableSources: string[] = [];
+      if (services.influxdb?.configured) {
+        availableSources.push(
+          '## InfluxDB (primary time-series store)\n'
+          + '- Bucket: "home_assistant" — contains all HA entity state changes\n'
+          + '- Use influxdb_list_measurements to discover available measurements\n'
+          + '- Use influxdb_list_buckets to see all buckets\n'
+          + '- Use influxdb_query with Flux language to query data\n'
+          + '- HA stores data with tags: entity_id, domain, friendly_name\n'
+          + '- Fields typically include: value (numeric) or state (string)\n'
+          + '### Example Flux queries:\n'
+          + '```\n'
+          + '// Count hours a light was "on" in the past 30 days\n'
+          + 'from(bucket: "home_assistant")\n'
+          + '  |> range(start: -30d)\n'
+          + '  |> filter(fn: (r) => r.entity_id == "light.living_room")\n'
+          + '  |> filter(fn: (r) => r._field == "state")\n'
+          + '  |> filter(fn: (r) => r._value == "on")\n'
+          + '  |> elapsed(unit: 1h)\n'
+          + '  |> sum(column: "elapsed")\n'
+          + '```\n'
+          + '```\n'
+          + '// Average temperature over the past week\n'
+          + 'from(bucket: "home_assistant")\n'
+          + '  |> range(start: -7d)\n'
+          + '  |> filter(fn: (r) => r.entity_id == "sensor.bedroom_temperature")\n'
+          + '  |> filter(fn: (r) => r._field == "value")\n'
+          + '  |> mean()\n'
+          + '```',
+        );
+      }
+      if (services.prometheus?.configured) {
+        availableSources.push(
+          '## Prometheus (metrics & alerts)\n'
+          + '- Use prometheus_get_targets to see what is being monitored\n'
+          + '- Use prometheus_query for instant queries (PromQL)\n'
+          + '- Use prometheus_query_range for time-range queries\n'
+          + '- Use prometheus_get_rules and prometheus_get_alerts for alert status',
+        );
+      }
+      if (services.grafana?.configured) {
+        availableSources.push(
+          '## Grafana (dashboards & visualization)\n'
+          + '- Use grafana_list_dashboards to discover pre-built dashboards\n'
+          + '- Use grafana_get_dashboard to see panel queries (reuse them!)\n'
+          + '- Use grafana_query_datasource to run queries against any datasource',
+        );
+      }
+      availableSources.push(
+        '## Home Assistant History (direct entity history)\n'
+        + '- Use get_entity_history for state history of specific entities\n'
+        + '- Use list_entities to discover entity IDs (filter by domain)\n'
+        + '- Use get_logbook for human-readable event logs\n'
+        + '- Use render_template for complex HA Jinja2 calculations',
+      );
+
+      const promptText = 'Research the following question using the available data sources:\n\n'
+        + `**Question:** ${question}\n\n`
+        + '## Approach\n'
+        + '1. First, discover what data is available (list measurements, entities, dashboards)\n'
+        + '2. Then, formulate and run queries to gather the data\n'
+        + '3. Finally, analyze the results and provide a clear answer with numbers\n\n'
+        + '## Available Data Sources\n\n'
+        + `${availableSources.join('\n\n')}\n\n`
+        + '## Guidelines\n'
+        + '- Start with discovery tools before writing queries\n'
+        + '- If a Flux/PromQL query fails, try adjusting field names or filters\n'
+        + '- Show your work: include the queries you ran and key data points\n'
+        + '- Provide a clear, specific answer with units and time ranges';
+
+      return {
+        messages: [{
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: promptText,
+          },
+        }],
+      };
+    },
+  );
+
   return server;
 }
