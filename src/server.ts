@@ -26,7 +26,7 @@ import Miele from './miele';
 import HomeConnect from './homeconnect';
 import adminRouter from './routes/admin.routes';
 import createMcpServer from './mcp-server';
-import { ConversationMessage, executeAICommand } from './ai-command';
+import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
 import { decrypt, encrypt } from './encryption';
@@ -936,6 +936,50 @@ export async function createServer(): Promise<Express> {
       const message = err instanceof Error ? err.message : 'Unknown error';
       res.status(500).json({ error: message });
     }
+  });
+
+  // POST /command/stream — SSE streaming variant of /command
+  // Sends progress events as the AI works through tool calls, then a final response.
+  // Events: { type: "progress", text: "..." }, { type: "tool_call", tool: "..." },
+  //         { type: "done", text: "..." }, { type: "error", text: "..." }
+  app.post('/command/stream', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const { command, conversationId } = req.body as {
+      command?: string;
+      conversationId?: string;
+    };
+    if (!command || typeof command !== 'string') {
+      res.status(400).json({ error: 'command is required' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const onProgress: ProgressCallback = (event) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    try {
+      const services = allServices;
+      let history: ConversationMessage[] = [];
+      if (conversationId && req.user?.sub) {
+        history = await loadConversationHistory(conversationId, req.user.sub);
+      }
+      const response = await executeAICommand(command, services, history, onProgress);
+      if (conversationId && req.user?.sub) {
+        await storeMessages(conversationId, req.user.sub, command, response, false);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.write(`data: ${JSON.stringify({ type: 'error', text: message })}\n\n`);
+    }
+    res.end();
   });
 
   // POST /voice — voice-in/voice-out or text-in/voice-out

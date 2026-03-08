@@ -1367,10 +1367,17 @@ export interface ConversationMessage {
   content: string;
 }
 
+export type ProgressCallback = (event: {
+  type: 'progress' | 'tool_call' | 'done';
+  text?: string;
+  tool?: string;
+}) => void;
+
 async function executeWithAnthropic(
   command: string,
   services: FluxHausServices,
-  conversationHistory: ConversationMessage[] = [],
+  conversationHistory: ConversationMessage[],
+  onProgress?: ProgressCallback,
 ): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
@@ -1404,10 +1411,18 @@ async function executeWithAnthropic(
 
     if (response.stop_reason === 'end_turn') {
       const textBlock = response.content.find((b) => b.type === 'text');
-      return textBlock ? textBlock.text : 'Done.';
+      const text = textBlock ? textBlock.text : 'Done.';
+      if (onProgress) onProgress({ type: 'done', text });
+      return text;
     }
 
     if (response.stop_reason === 'tool_use') {
+      // Emit any intermediate text the model produced alongside tool calls
+      const intermediateText = response.content.find((b) => b.type === 'text');
+      if (intermediateText && intermediateText.type === 'text' && onProgress) {
+        onProgress({ type: 'progress', text: intermediateText.text });
+      }
+
       messages.push({ role: 'assistant', content: response.content });
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
 
@@ -1415,6 +1430,7 @@ async function executeWithAnthropic(
       for (let j = 0; j < toolUseBlocks.length; j += 1) {
         const block = toolUseBlocks[j];
         if (block.type === 'tool_use') {
+          if (onProgress) onProgress({ type: 'tool_call', tool: block.name });
           // eslint-disable-next-line no-await-in-loop
           const result = await executeTool(
             block.name,
@@ -1433,7 +1449,9 @@ async function executeWithAnthropic(
       messages.push({ role: 'user', content: toolResults });
     } else {
       const textBlock = response.content.find((b) => b.type === 'text');
-      return textBlock ? textBlock.text : 'Done.';
+      const text = textBlock ? textBlock.text : 'Done.';
+      if (onProgress) onProgress({ type: 'done', text });
+      return text;
     }
   }
 
@@ -1447,7 +1465,8 @@ async function executeWithOpenAICompatible(
   services: FluxHausServices,
   client: OpenAI,
   defaultModel: string,
-  conversationHistory: ConversationMessage[] = [],
+  conversationHistory: ConversationMessage[],
+  onProgress?: ProgressCallback,
 ): Promise<string> {
   const model = process.env.AI_MODEL || defaultModel;
 
@@ -1480,10 +1499,17 @@ async function executeWithOpenAICompatible(
     const choice = response.choices[0];
 
     if (choice.finish_reason === 'stop') {
-      return choice.message.content ?? 'Done.';
+      const text = choice.message.content ?? 'Done.';
+      if (onProgress) onProgress({ type: 'done', text });
+      return text;
     }
 
     if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls) {
+      // Emit intermediate text if the model produced any alongside tool calls
+      if (choice.message.content && onProgress) {
+        onProgress({ type: 'progress', text: choice.message.content });
+      }
+
       messages.push(choice.message);
       const fnCalls = choice.message.tool_calls.filter((tc) => tc.type === 'function');
       for (let j = 0; j < fnCalls.length; j += 1) {
@@ -1492,6 +1518,7 @@ async function executeWithOpenAICompatible(
           // eslint-disable-next-line no-continue
           continue;
         }
+        if (onProgress) onProgress({ type: 'tool_call', tool: toolCall.function.name });
         // eslint-disable-next-line no-await-in-loop
         const result = await executeTool(
           toolCall.function.name,
@@ -1505,7 +1532,9 @@ async function executeWithOpenAICompatible(
         });
       }
     } else {
-      return choice.message.content ?? 'Done.';
+      const text = choice.message.content ?? 'Done.';
+      if (onProgress) onProgress({ type: 'done', text });
+      return text;
     }
   }
 
@@ -1514,16 +1543,19 @@ async function executeWithOpenAICompatible(
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+/* eslint-disable default-param-last */
 export async function executeAICommand(
   command: string,
   services: FluxHausServices,
   conversationHistory: ConversationMessage[] = [],
+  onProgress?: ProgressCallback,
 ): Promise<string> {
+/* eslint-enable default-param-last */
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
 
   switch (provider) {
   case 'anthropic':
-    return executeWithAnthropic(command, services, conversationHistory);
+    return executeWithAnthropic(command, services, conversationHistory, onProgress);
 
   case 'copilot':
   case 'github-copilot': {
@@ -1539,6 +1571,7 @@ export async function executeAICommand(
       }),
       'gpt-4o',
       conversationHistory,
+      onProgress,
     );
   }
 
@@ -1553,6 +1586,7 @@ export async function executeAICommand(
       new OpenAI({ baseURL, apiKey }),
       'glm-4-flash',
       conversationHistory,
+      onProgress,
     );
   }
 
@@ -1565,6 +1599,7 @@ export async function executeAICommand(
       new OpenAI({ apiKey }),
       'gpt-4o',
       conversationHistory,
+      onProgress,
     );
   }
 
@@ -1583,6 +1618,7 @@ export async function executeAICommand(
       }),
       deployment,
       conversationHistory,
+      onProgress,
     );
   }
 
