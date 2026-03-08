@@ -1034,6 +1034,73 @@ export async function createServer(): Promise<Express> {
     }
   });
 
+  // POST /voice/stream — SSE streaming variant of /voice
+  // Sends progress events during AI processing, then a final event with audio.
+  // Events: { type: "transcript", text }, { type: "progress", text },
+  //         { type: "tool_call", tool }, { type: "done", text, audio },
+  //         { type: "error", text }
+  app.post('/voice/stream', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    const {
+      audio, filename, text, conversationId,
+    } = req.body as {
+      audio?: string;
+      filename?: string;
+      text?: string;
+      conversationId?: string;
+    };
+    if (!audio && !text) {
+      res.status(400).json({ error: 'Either audio (base64) or text is required' });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    try {
+      let command: string;
+      if (audio) {
+        const audioBuffer = Buffer.from(audio, 'base64');
+        command = await transcribeAudio(audioBuffer, filename || 'audio.webm');
+      } else {
+        command = text as string;
+      }
+      res.write(`data: ${JSON.stringify({ type: 'transcript', text: command })}\n\n`);
+
+      const services = allServices;
+      let history: ConversationMessage[] = [];
+      if (conversationId && req.user?.sub) {
+        history = await loadConversationHistory(conversationId, req.user.sub);
+      }
+
+      const onProgress: ProgressCallback = (event) => {
+        if (event.type !== 'done') {
+          res.write(`data: ${JSON.stringify(event)}\n\n`);
+        }
+      };
+
+      const response = await executeAICommand(command, services, history, onProgress);
+      if (conversationId && req.user?.sub) {
+        await storeMessages(conversationId, req.user.sub, command, response, true);
+      }
+
+      const audioResponse = await synthesizeSpeech(response);
+      const audioBase64 = audioResponse.toString('base64');
+      res.write(`data: ${JSON.stringify({
+        type: 'done', text: response, audio: audioBase64,
+      })}\n\n`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.write(`data: ${JSON.stringify({ type: 'error', text: message })}\n\n`);
+    }
+    res.end();
+  });
+
   // MCP HTTP endpoint (Streamable HTTP transport, stateless mode)
   // Uses open CORS so Claude and other remote MCP clients can connect.
   // CSRF is exempted via CSRF_EXEMPT_PATHS in csrf.middleware.ts since
