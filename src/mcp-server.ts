@@ -7,6 +7,61 @@ import { FluxHausServices } from './services';
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
 
+// Wraps server.tool so every handler gets try/catch, logging, and timing.
+function wrapToolHandlers(server: McpServer): McpServer['tool'] {
+  const originalTool = server.tool.bind(server);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wrapped = (...rawArgs: any[]) => {
+    const wrappedArgs = [...rawArgs];
+    const name = wrappedArgs[0] as string;
+    const handlerIndex = wrappedArgs.length - 1;
+    const originalHandler = wrappedArgs[handlerIndex];
+    if (typeof originalHandler !== 'function') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (originalTool as any)(...rawArgs);
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    wrappedArgs[handlerIndex] = async (...handlerArgs: any[]) => {
+      const start = Date.now();
+      try {
+        const result = await originalHandler(...handlerArgs);
+        const elapsed = Date.now() - start;
+        if (elapsed > 5000) {
+          console.warn(`[MCP] ${name} completed in ${elapsed}ms (slow)`);
+        }
+        return result;
+      } catch (err) {
+        const elapsed = Date.now() - start;
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[MCP] ${name} failed after ${elapsed}ms: ${message}`);
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: `Error in ${name}: ${message}` }],
+        };
+      }
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (originalTool as any)(...wrappedArgs);
+  };
+  return wrapped as McpServer['tool'];
+}
+
+// Dangerous Jinja2 patterns that could access the HA host system.
+const DANGEROUS_TEMPLATE_PATTERNS = [
+  /\{%\s*import\b/i,
+  /\{%\s*include\b/i,
+  /\{%\s*from\b.*import\b/i,
+  /__class__/,
+  /__subclasses__/,
+  /__globals__/,
+  /__builtins__/,
+  /\bos\.\b/,
+  /\bsubprocess\b/,
+  /\beval\s*\(/,
+  /\bexec\s*\(/,
+];
+const MAX_TEMPLATE_LENGTH = 4000;
+
 export default function createMcpServer(services: FluxHausServices): McpServer {
   const {
     homeAssistantClient,
@@ -26,6 +81,9 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
       },
     },
   );
+
+  // Wrap all tool handlers with error handling and logging
+  server.tool = wrapToolHandlers(server);
 
   // ── Resources ────────────────────────────────────────────────────────────────
 
@@ -464,11 +522,72 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
       ),
     },
     async ({ template }) => {
+      if (template.length > MAX_TEMPLATE_LENGTH) {
+        const msg = `Template too long (${template.length} chars, max ${MAX_TEMPLATE_LENGTH})`;
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: msg }],
+        };
+      }
+      const blocked = DANGEROUS_TEMPLATE_PATTERNS.some((p) => p.test(template));
+      if (blocked) {
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: 'Template contains a disallowed pattern' }],
+        };
+      }
       const result = await homeAssistantClient.renderTemplate(template);
       return {
         content: [{
           type: 'text' as const,
           text: result,
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'activate_scene',
+    'Activate a Home Assistant scene (e.g. "Movie Time", "Goodnight")',
+    {
+      entity_id: z.string().describe( // eslint-disable-line camelcase
+        'Scene entity ID (e.g. scene.movie_time). '
+        + 'Use list_entities with domain "scene" to discover scenes.',
+      ),
+    },
+    async ({ entity_id: entityId }) => {
+      await homeAssistantClient.callService('scene', 'turn_on', { entity_id: entityId });
+      return { content: [{ type: 'text' as const, text: `Activated scene: ${entityId}` }] };
+    },
+  );
+
+  server.tool(
+    'get_home_summary',
+    'Get a full summary of the home: car, robots, appliances, and active HA entities — useful for a quick overview',
+    async () => {
+      const { mieleClient, hc } = services;
+      let miele = null;
+      if (fs.existsSync('cache/miele.json')) {
+        miele = JSON.parse(fs.readFileSync('cache/miele.json', 'utf8'));
+      }
+      let homeconnect = null;
+      if (fs.existsSync('cache/homeconnect.json')) {
+        homeconnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
+      }
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            car: { status: car.status, odometer: car.odometer },
+            robots: { broombot: broombot.cachedStatus, mopbot: mopbot.cachedStatus },
+            appliances: {
+              washer: mieleClient.washer,
+              dryer: mieleClient.dryer,
+              dishwasher: hc.dishwasher,
+            },
+            miele,
+            homeconnect,
+          }, null, 2),
         }],
       };
     },
@@ -1736,6 +1855,132 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
           content: {
             type: 'text' as const,
             text: goodnightText,
+          },
+        }],
+      };
+    },
+  );
+
+  server.prompt(
+    'system_health',
+    'Diagnose the health of home infrastructure: network, containers, DNS, monitoring',
+    async () => {
+      const sections: string[] = ['Check the following FluxHaus infrastructure and report any issues:\n'];
+      if (services.unifi?.configured) {
+        sections.push('- Use unifi_get_health and unifi_list_devices to check network status');
+      }
+      if (services.portainer?.configured) {
+        sections.push('- Use portainer_list_containers to check for stopped/unhealthy containers');
+      }
+      if (services.pihole?.configured) {
+        sections.push('- Use pihole_get_summary to check DNS blocking stats');
+      }
+      if (services.prometheus?.configured) {
+        sections.push('- Use prometheus_get_alerts to check for firing alerts');
+      }
+      if (services.grafana?.configured) {
+        sections.push('- Use grafana_get_alerts to check dashboard alerts');
+      }
+      sections.push(
+        '\nFor each service, report: OK / Warning / Critical with a brief explanation.',
+      );
+      return {
+        messages: [{
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: sections.join('\n'),
+          },
+        }],
+      };
+    },
+  );
+
+  server.prompt(
+    'data_research',
+    'Research home data: query InfluxDB, Prometheus, Grafana, or HA history to answer analytical questions',
+    {
+      question: z.string().describe(
+        'The research question (e.g. "average time living room lights were on last month")',
+      ),
+    },
+    async ({ question }) => {
+      const availableSources: string[] = [];
+      if (services.influxdb?.configured) {
+        availableSources.push(
+          '## InfluxDB (primary time-series store)\n'
+          + '- Bucket: "home_assistant" — contains all HA entity state changes\n'
+          + '- Use influxdb_list_measurements to discover available measurements\n'
+          + '- Use influxdb_list_buckets to see all buckets\n'
+          + '- Use influxdb_query with Flux language to query data\n'
+          + '- HA stores data with tags: entity_id, domain, friendly_name\n'
+          + '- Fields typically include: value (numeric) or state (string)\n'
+          + '### Example Flux queries:\n'
+          + '```\n'
+          + '// Count hours a light was "on" in the past 30 days\n'
+          + 'from(bucket: "home_assistant")\n'
+          + '  |> range(start: -30d)\n'
+          + '  |> filter(fn: (r) => r.entity_id == "light.living_room")\n'
+          + '  |> filter(fn: (r) => r._field == "state")\n'
+          + '  |> filter(fn: (r) => r._value == "on")\n'
+          + '  |> elapsed(unit: 1h)\n'
+          + '  |> sum(column: "elapsed")\n'
+          + '```\n'
+          + '```\n'
+          + '// Average temperature over the past week\n'
+          + 'from(bucket: "home_assistant")\n'
+          + '  |> range(start: -7d)\n'
+          + '  |> filter(fn: (r) => r.entity_id == "sensor.bedroom_temperature")\n'
+          + '  |> filter(fn: (r) => r._field == "value")\n'
+          + '  |> mean()\n'
+          + '```',
+        );
+      }
+      if (services.prometheus?.configured) {
+        availableSources.push(
+          '## Prometheus (metrics & alerts)\n'
+          + '- Use prometheus_get_targets to see what is being monitored\n'
+          + '- Use prometheus_query for instant queries (PromQL)\n'
+          + '- Use prometheus_query_range for time-range queries\n'
+          + '- Use prometheus_get_rules and prometheus_get_alerts for alert status',
+        );
+      }
+      if (services.grafana?.configured) {
+        availableSources.push(
+          '## Grafana (dashboards & visualization)\n'
+          + '- Use grafana_list_dashboards to discover pre-built dashboards\n'
+          + '- Use grafana_get_dashboard to see panel queries (reuse them!)\n'
+          + '- Use grafana_query_datasource to run queries against any datasource',
+        );
+      }
+      availableSources.push(
+        '## Home Assistant History (direct entity history)\n'
+        + '- Use get_entity_history for state history of specific entities\n'
+        + '- Use list_entities to discover entity IDs (filter by domain)\n'
+        + '- Use get_logbook for human-readable event logs\n'
+        + '- Use render_template for complex HA Jinja2 calculations',
+      );
+
+      const promptText = 'Research the following question using the available data sources:\n\n'
+        + `**Question:** ${question}\n\n`
+        + '## Approach\n'
+        + '1. First, discover what data is available (list measurements, entities, dashboards)\n'
+        + '2. Then, formulate and run queries to gather the data\n'
+        + '3. Finally, analyze the results and provide a clear answer with numbers\n\n'
+        + '## Available Data Sources\n\n'
+        + `${availableSources.join('\n\n')}\n\n`
+        + '## Guidelines\n'
+        + '- Start with discovery tools before writing queries\n'
+        + '- If a Flux/PromQL query fails, try adjusting field names or filters\n'
+        + '- Show your work: include the queries you ran and key data points\n'
+        + '- Provide a clear, specific answer with units and time ranges';
+
+      return {
+        messages: [{
+          role: 'user' as const,
+          content: {
+            type: 'text' as const,
+            text: promptText,
           },
         }],
       };
