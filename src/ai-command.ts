@@ -1585,28 +1585,33 @@ async function executeWithOpenAICompatible(
     } else if (choice.finish_reason === 'tool_calls') {
       // Copilot API bug: finish_reason=tool_calls but tool_calls missing
       // (happens when model produces text alongside tool calls via Claude proxy)
-      // Re-prompt once; if it happens again, discard the intermediate text
-      const alreadyRetried = messages.some(
+      // Retry up to 3 times — each retry doesn't count against the main loop
+      const retryCount = messages.filter(
         (m) => m.role === 'user' && typeof m.content === 'string'
           && m.content.includes('only make tool calls'),
-      );
-      if (alreadyRetried) {
-        aiLogger.info('[AI] Workaround already retried, giving up on tool calls');
-        const fallback = 'Sorry, I wasn\'t able to complete that request. Please try again.';
-        if (onProgress) onProgress({ type: 'done', text: fallback });
-        return fallback;
+      ).length;
+      if (retryCount >= 3) {
+        aiLogger.warn(`[AI] Dropped tool_calls bug persisted after ${retryCount} retries`);
+        // Don't give up — just continue the loop so the AI can try a different approach
+        messages.push({ role: 'assistant', content: choice.message.content ?? '' });
+        messages.push({
+          role: 'user',
+          content: 'Tool calls failed. Please answer the question directly using '
+            + 'any information you already have, or explain what you need.',
+        });
+      } else {
+        aiLogger.info(`[AI] Workaround: finish_reason=tool_calls but no tool_calls, retry ${retryCount + 1}/3`);
+        if (choice.message.content && onProgress) {
+          onProgress({ type: 'progress', text: choice.message.content });
+        }
+        messages.push({ role: 'assistant', content: choice.message.content ?? '' });
+        messages.push({
+          role: 'user',
+          content: 'You indicated you would use tools but none were called. '
+            + 'Please call the appropriate tools now to fulfill the request. '
+            + 'Do not respond with text — only make tool calls.',
+        });
       }
-      aiLogger.info('[AI] Workaround: finish_reason=tool_calls but no tool_calls, re-prompting');
-      if (choice.message.content && onProgress) {
-        onProgress({ type: 'progress', text: choice.message.content });
-      }
-      messages.push({ role: 'assistant', content: choice.message.content ?? '' });
-      messages.push({
-        role: 'user',
-        content: 'You indicated you would use tools but none were called. '
-          + 'Please call the appropriate tools now to fulfill the request. '
-          + 'Do not respond with text — only make tool calls.',
-      });
     } else {
       const text = choice.message.content ?? 'Done.';
       if (onProgress) onProgress({ type: 'done', text });
