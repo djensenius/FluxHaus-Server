@@ -5,8 +5,11 @@ import { FluxHausServices } from './services';
 // ── Shared system prompt ──────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = 'You are FluxHaus, an AI assistant for a smart home. '
-  + 'You have tools to control the home. Execute the user\'s command using the '
-  + 'available tools and reply with a concise, friendly confirmation.';
+  + 'You MUST use your tools to fulfill every request — never guess or respond '
+  + 'without calling at least one tool first. For status queries, call the '
+  + 'relevant get_ tools (e.g. get_car_status, get_robot_status, '
+  + 'get_appliance_status, get_entity_state). After gathering real data from '
+  + 'tools, reply with a concise, friendly summary of what you found or did.';
 
 // ── Provider-agnostic tool definitions ───────────────────────────────────────
 
@@ -1399,15 +1402,21 @@ async function executeWithAnthropic(
     { role: 'user', content: command },
   ];
 
+  console.log(`[AI] Anthropic model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
+
   for (let i = 0; i < 10; i += 1) {
     // eslint-disable-next-line no-await-in-loop
     const response = await client.messages.create({
       model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: SYSTEM_PROMPT,
       tools,
       messages,
     });
+
+    console.log(`[AI] Loop ${i}: stop_reason=${response.stop_reason}, `
+      + `content_types=[${response.content.map((b) => b.type).join(',')}], `
+      + `usage=${JSON.stringify(response.usage)}`);
 
     if (response.stop_reason === 'end_turn') {
       const textBlock = response.content.find((b) => b.type === 'text');
@@ -1430,6 +1439,7 @@ async function executeWithAnthropic(
       for (let j = 0; j < toolUseBlocks.length; j += 1) {
         const block = toolUseBlocks[j];
         if (block.type === 'tool_use') {
+          console.log(`[AI] Tool call: ${block.name}(${JSON.stringify(block.input).substring(0, 200)})`);
           if (onProgress) onProgress({ type: 'tool_call', tool: block.name });
           // eslint-disable-next-line no-await-in-loop
           const result = await executeTool(
@@ -1488,15 +1498,21 @@ async function executeWithOpenAICompatible(
     { role: 'user', content: command },
   ];
 
+  console.log(`[AI] OpenAI-compat model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
+
   for (let i = 0; i < 10; i += 1) {
     // eslint-disable-next-line no-await-in-loop
     const response = await client.chat.completions.create({
       model,
+      max_tokens: 4096,
       tools,
       messages,
     });
 
     const choice = response.choices[0];
+    console.log(`[AI] Loop ${i}: finish_reason=${choice.finish_reason}, `
+      + `tool_calls=${choice.message.tool_calls?.length ?? 0}, `
+      + `content=${(choice.message.content ?? '').substring(0, 200)}`);
 
     if (choice.finish_reason === 'stop') {
       const text = choice.message.content ?? 'Done.';
@@ -1552,6 +1568,7 @@ export async function executeAICommand(
 ): Promise<string> {
 /* eslint-enable default-param-last */
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
+  console.log(`[AI] Provider: ${provider}, AI_MODEL=${process.env.AI_MODEL || '(default)'}`);
 
   switch (provider) {
   case 'anthropic':
