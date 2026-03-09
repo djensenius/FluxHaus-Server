@@ -26,6 +26,7 @@ import Miele from './miele';
 import HomeConnect from './homeconnect';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
+import liveActivityTestRouter from './routes/live-activity-test.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import transcribeAudio from './stt';
@@ -1177,6 +1178,7 @@ export async function createServer(): Promise<Express> {
 
   app.use(adminRouter);
   app.use(pushRouter);
+  app.use(liveActivityTestRouter);
   app.use(notFoundHandler);
 
   return app;
