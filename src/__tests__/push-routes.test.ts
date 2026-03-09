@@ -86,4 +86,56 @@ describe('push routes', () => {
       expect(res.status).toBe(500);
     });
   });
+
+  describe('POST /push-tokens/device', () => {
+    it('registers a device push-to-start token', async () => {
+      (pushStore.saveDeviceToken as jest.Mock).mockResolvedValue(undefined);
+      const res = await request(app)
+        .post('/push-tokens/device')
+        .send({
+          pushToStartToken: 'device-token-abc',
+          deviceName: 'iPhone 15',
+        });
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(pushStore.saveDeviceToken).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userSub: 'test-user',
+          pushToStartToken: 'device-token-abc',
+          deviceName: 'iPhone 15',
+        }),
+      );
+    });
+
+    it('returns 400 when pushToStartToken is missing', async () => {
+      const res = await request(app)
+        .post('/push-tokens/device')
+        .send({ deviceName: 'iPhone 15' });
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 500 on save failure', async () => {
+      (pushStore.saveDeviceToken as jest.Mock).mockRejectedValue(new Error('DB error'));
+      const res = await request(app)
+        .post('/push-tokens/device')
+        .send({ pushToStartToken: 'abc' });
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe('DELETE /push-tokens/device/:token', () => {
+    it('deletes a device push-to-start token', async () => {
+      (pushStore.deleteDeviceToken as jest.Mock).mockResolvedValue(undefined);
+      const res = await request(app).delete('/push-tokens/device/device-token-abc');
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(pushStore.deleteDeviceToken).toHaveBeenCalledWith('device-token-abc');
+    });
+
+    it('returns 500 on delete failure', async () => {
+      (pushStore.deleteDeviceToken as jest.Mock).mockRejectedValue(new Error('DB error'));
+      const res = await request(app).delete('/push-tokens/device/abc');
+      expect(res.status).toBe(500);
+    });
+  });
 });

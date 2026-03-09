@@ -85,6 +85,18 @@ export async function initDatabase(): Promise<void> {
         ON push_tokens (user_sub);
       CREATE INDEX IF NOT EXISTS idx_push_tokens_activity_type
         ON push_tokens (activity_type);
+
+      CREATE TABLE IF NOT EXISTS device_tokens (
+        id SERIAL PRIMARY KEY,
+        user_sub TEXT NOT NULL,
+        device_name TEXT,
+        push_to_start_token TEXT NOT NULL UNIQUE,
+        bundle_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_device_tokens_user
+        ON device_tokens (user_sub);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

@@ -84,3 +84,68 @@ export async function deletePushToken(pushToken: string): Promise<void> {
     pushLogger.error({ err, pushToken: pushToken.substring(0, 8) }, 'Failed to delete push token');
   }
 }
+
+// --- Device-level push-to-start tokens ---
+
+export interface DeviceTokenData {
+  userSub: string;
+  deviceName?: string;
+  pushToStartToken: string;
+  bundleId?: string;
+}
+
+export async function saveDeviceToken(data: DeviceTokenData): Promise<void> {
+  const pool = getPool();
+  if (!pool) {
+    pushLogger.warn('PostgreSQL not available — cannot save device token');
+    return;
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO device_tokens (user_sub, device_name, push_to_start_token, bundle_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (push_to_start_token) DO UPDATE SET
+         user_sub = EXCLUDED.user_sub,
+         device_name = EXCLUDED.device_name,
+         bundle_id = EXCLUDED.bundle_id,
+         updated_at = NOW()`,
+      [data.userSub, data.deviceName, data.pushToStartToken, data.bundleId],
+    );
+  } catch (err) {
+    pushLogger.error({ err, userSub: data.userSub }, 'Failed to save device token');
+    throw err;
+  }
+}
+
+export async function getAllDeviceTokens(): Promise<DeviceTokenData[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT user_sub AS "userSub", device_name AS "deviceName",
+              push_to_start_token AS "pushToStartToken",
+              bundle_id AS "bundleId"
+       FROM device_tokens`,
+    );
+    return result.rows;
+  } catch (err) {
+    pushLogger.error({ err }, 'Failed to get device tokens');
+    return [];
+  }
+}
+
+export async function deleteDeviceToken(pushToStartToken: string): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  try {
+    await pool.query('DELETE FROM device_tokens WHERE push_to_start_token = $1', [pushToStartToken]);
+  } catch (err) {
+    pushLogger.error(
+      { err, token: pushToStartToken.substring(0, 8) },
+      'Failed to delete device token',
+    );
+  }
+}
