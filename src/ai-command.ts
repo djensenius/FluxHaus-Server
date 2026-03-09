@@ -1500,7 +1500,8 @@ async function executeWithAnthropic(
     }
   }
 
-  return 'Command processed.';
+  aiLogger.warn('[AI] Anthropic: exhausted tool loop (10 iterations)');
+  return 'Sorry, I wasn\'t able to complete that request — too many steps. Please try a simpler question.';
 }
 
 // ── OpenAI-compatible provider ────────────────────────────────────────────────
@@ -1584,16 +1585,16 @@ async function executeWithOpenAICompatible(
     } else if (choice.finish_reason === 'tool_calls') {
       // Copilot API bug: finish_reason=tool_calls but tool_calls missing
       // (happens when model produces text alongside tool calls via Claude proxy)
-      // Re-prompt once; if it happens again, return the text we have
+      // Re-prompt once; if it happens again, discard the intermediate text
       const alreadyRetried = messages.some(
         (m) => m.role === 'user' && typeof m.content === 'string'
           && m.content.includes('only make tool calls'),
       );
       if (alreadyRetried) {
-        aiLogger.info('[AI] Workaround already retried, returning text');
-        const text = choice.message.content ?? 'Done.';
-        if (onProgress) onProgress({ type: 'done', text });
-        return text;
+        aiLogger.info('[AI] Workaround already retried, giving up on tool calls');
+        const fallback = 'Sorry, I wasn\'t able to complete that request. Please try again.';
+        if (onProgress) onProgress({ type: 'done', text: fallback });
+        return fallback;
       }
       aiLogger.info('[AI] Workaround: finish_reason=tool_calls but no tool_calls, re-prompting');
       if (choice.message.content && onProgress) {
@@ -1613,7 +1614,8 @@ async function executeWithOpenAICompatible(
     }
   }
 
-  return 'Command processed.';
+  aiLogger.warn('[AI] OpenAI: exhausted tool loop (10 iterations)');
+  return 'Sorry, I wasn\'t able to complete that request — too many steps. Please try a simpler question.';
 }
 
 // ── Public entry point ────────────────────────────────────────────────────────
