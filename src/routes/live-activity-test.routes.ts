@@ -1,5 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { requireRole } from '../middleware/auth.middleware';
+import { generateCsrfToken } from '../middleware/csrf.middleware';
 import {
   LiveActivityContentState,
   pushLiveActivityToAll,
@@ -101,6 +102,21 @@ async function tickSimulation(activityType: string): Promise<void> {
 }
 
 // --- API endpoints ---
+
+// Temporary debug endpoint — remove after 403 investigation
+router.post('/admin/live-activity-test/debug', (req: Request, res: Response) => {
+  res.json({
+    user: req.user ? { role: req.user.role, username: req.user.username } : null,
+    hasSession: !!req.session,
+    hasCsrf: !!req.session?.csrfToken,
+    signedCookies: Object.keys(req.signedCookies || {}),
+    headers: {
+      'x-csrf-token': req.headers['x-csrf-token'] ? 'present' : 'missing',
+      'content-type': req.headers['content-type'],
+      cookie: req.headers.cookie ? 'present' : 'missing',
+    },
+  });
+});
 
 router.post('/admin/live-activity-test/simulate', requireRole('admin'), async (req: Request, res: Response) => {
   const { activityType, durationMinutes = 5, program } = req.body;
@@ -389,7 +405,7 @@ var ICONS = {
   dishwasher:'\\u{1F37D}\\u{FE0F}', washer:'\\u{1F455}',
   dryer:'\\u{1F300}', broombot:'\\u{1F916}', mopbot:'\\u{1F9F9}'
 };
-var csrfToken = null;
+var csrfToken = '%%CSRF_TOKEN%%';
 var statusData = null;
 
 function log(msg, type) {
@@ -401,10 +417,7 @@ function log(msg, type) {
 }
 
 function getCsrf() {
-  if (csrfToken) return Promise.resolve(csrfToken);
-  return fetch('/auth/csrf-token', {credentials:'include'})
-    .then(function(r){return r.json()})
-    .then(function(d){csrfToken=d.csrfToken; return csrfToken});
+  return Promise.resolve(csrfToken);
 }
 
 function api(method, path, body) {
@@ -580,8 +593,17 @@ setInterval(refreshStatus, 10000);
 router.get(
   '/admin/live-activity-test',
   requireRole('admin'),
-  (_req: Request, res: Response) => {
-    res.type('html').send(TEST_PAGE_HTML);
+  (req: Request, res: Response) => {
+    // Ensure session has a CSRF token and embed it in the page
+    // so the browser doesn't need a separate fetch.
+    if (!req.session.csrfToken) {
+      req.session.csrfToken = generateCsrfToken();
+    }
+    const html = TEST_PAGE_HTML.replace(
+      '%%CSRF_TOKEN%%',
+      req.session.csrfToken,
+    );
+    res.type('html').send(html);
   },
 );
 
