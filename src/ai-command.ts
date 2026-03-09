@@ -1,12 +1,19 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { FluxHausServices } from './services';
+import logger from './logger';
+
+const aiLogger = logger.child({ subsystem: 'ai' });
 
 // ── Shared system prompt ──────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = 'You are FluxHaus, an AI assistant for a smart home. '
-  + 'You have tools to control the home. Execute the user\'s command using the '
-  + 'available tools and reply with a concise, friendly confirmation.';
+  + 'Always use your tools to fulfill requests about the home — never guess '
+  + 'device states or act without calling a tool first. For status queries, '
+  + 'call the relevant get_ tools (e.g. get_car_status, get_robot_status, '
+  + 'get_appliance_status, get_entity_state). For general conversation that '
+  + 'doesn\'t involve devices or home data, you may respond directly. '
+  + 'After gathering real data from tools, reply with a concise, friendly summary.';
 
 // ── Provider-agnostic tool definitions ───────────────────────────────────────
 
@@ -1399,15 +1406,20 @@ async function executeWithAnthropic(
     { role: 'user', content: command },
   ];
 
+  aiLogger.info(`[AI] Anthropic model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
+
   for (let i = 0; i < 10; i += 1) {
     // eslint-disable-next-line no-await-in-loop
     const response = await client.messages.create({
       model,
-      max_tokens: 1024,
+      max_tokens: 4096,
       system: SYSTEM_PROMPT,
       tools,
       messages,
     });
+
+    aiLogger.info(`[AI] Loop ${i}: stop_reason=${response.stop_reason}, `
+      + `content_types=[${response.content.map((b) => b.type).join(',')}]`);
 
     if (response.stop_reason === 'end_turn') {
       const textBlock = response.content.find((b) => b.type === 'text');
@@ -1430,6 +1442,7 @@ async function executeWithAnthropic(
       for (let j = 0; j < toolUseBlocks.length; j += 1) {
         const block = toolUseBlocks[j];
         if (block.type === 'tool_use') {
+          aiLogger.info(`[AI] Tool call: ${block.name}(${JSON.stringify(block.input).substring(0, 200)})`);
           if (onProgress) onProgress({ type: 'tool_call', tool: block.name });
           // eslint-disable-next-line no-await-in-loop
           const result = await executeTool(
@@ -1488,15 +1501,20 @@ async function executeWithOpenAICompatible(
     { role: 'user', content: command },
   ];
 
+  aiLogger.info(`[AI] OpenAI-compat model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
+
   for (let i = 0; i < 10; i += 1) {
     // eslint-disable-next-line no-await-in-loop
     const response = await client.chat.completions.create({
       model,
+      max_tokens: 4096,
       tools,
       messages,
     });
 
     const choice = response.choices[0];
+    aiLogger.info(`[AI] Loop ${i}: finish_reason=${choice.finish_reason}, `
+      + `tool_calls=${choice.message.tool_calls?.length ?? 0}`);
 
     if (choice.finish_reason === 'stop') {
       const text = choice.message.content ?? 'Done.';
@@ -1504,7 +1522,7 @@ async function executeWithOpenAICompatible(
       return text;
     }
 
-    if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls) {
+    if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls && choice.message.tool_calls.length > 0) {
       // Emit intermediate text if the model produced any alongside tool calls
       if (choice.message.content && onProgress) {
         onProgress({ type: 'progress', text: choice.message.content });
@@ -1531,6 +1549,31 @@ async function executeWithOpenAICompatible(
           content: result,
         });
       }
+    } else if (choice.finish_reason === 'tool_calls') {
+      // Copilot API bug: finish_reason=tool_calls but tool_calls missing
+      // (happens when model produces text alongside tool calls via Claude proxy)
+      // Re-prompt once; if it happens again, return the text we have
+      const alreadyRetried = messages.some(
+        (m) => m.role === 'user' && typeof m.content === 'string'
+          && m.content.includes('only make tool calls'),
+      );
+      if (alreadyRetried) {
+        aiLogger.info('[AI] Workaround already retried, returning text');
+        const text = choice.message.content ?? 'Done.';
+        if (onProgress) onProgress({ type: 'done', text });
+        return text;
+      }
+      aiLogger.info('[AI] Workaround: finish_reason=tool_calls but no tool_calls, re-prompting');
+      if (choice.message.content && onProgress) {
+        onProgress({ type: 'progress', text: choice.message.content });
+      }
+      messages.push({ role: 'assistant', content: choice.message.content ?? '' });
+      messages.push({
+        role: 'user',
+        content: 'You indicated you would use tools but none were called. '
+          + 'Please call the appropriate tools now to fulfill the request. '
+          + 'Do not respond with text — only make tool calls.',
+      });
     } else {
       const text = choice.message.content ?? 'Done.';
       if (onProgress) onProgress({ type: 'done', text });
@@ -1552,6 +1595,7 @@ export async function executeAICommand(
 ): Promise<string> {
 /* eslint-enable default-param-last */
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
+  aiLogger.info(`[AI] Provider: ${provider}, AI_MODEL=${process.env.AI_MODEL || '(default)'}`);
 
   switch (provider) {
   case 'anthropic':
