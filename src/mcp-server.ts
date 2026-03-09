@@ -394,7 +394,9 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
 
   server.tool(
     'get_car_status',
-    'Get the car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer',
+    'Get the current car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer.'
+    + ' For historical driving stats (distance driven over time), use influxdb_query on the "car" measurement'
+    + ' (fields: odometer, battery_level, ev_range, total_range, charging; tag: vehicle).',
     async () => ({
       content: [{
         type: 'text' as const,
