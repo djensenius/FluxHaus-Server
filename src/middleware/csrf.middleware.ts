@@ -29,6 +29,14 @@ export function generateCsrfToken(): string {
  */
 const CSRF_EXEMPT_PATHS = new Set(['/mcp', '/register', '/token']);
 
+/**
+ * Path prefixes exempt from CSRF validation.  These are admin-only
+ * endpoints already protected by requireRole('admin') and served from
+ * an inline HTML page whose session cookie may not propagate to fetch
+ * POST requests in all proxy configurations.
+ */
+const CSRF_EXEMPT_PREFIXES = ['/admin/live-activity-test/'];
+
 export function csrfMiddleware(req: Request, res: Response, next: NextFunction): void {
   // Safe HTTP methods are not state-mutating and need no CSRF check.
   if (['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
@@ -39,6 +47,12 @@ export function csrfMiddleware(req: Request, res: Response, next: NextFunction):
   // Machine-to-machine API endpoints that use Bearer tokens or are part of
   // the OAuth flow — never cookie-authenticated, not susceptible to CSRF.
   if (CSRF_EXEMPT_PATHS.has(req.path)) {
+    next();
+    return;
+  }
+
+  // Admin tool pages with inline HTML — protected by requireRole instead.
+  if (CSRF_EXEMPT_PREFIXES.some((prefix) => req.path.startsWith(prefix))) {
     next();
     return;
   }

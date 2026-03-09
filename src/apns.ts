@@ -139,11 +139,24 @@ export async function sendPushToStart(
       attributes: {
         name: contentState.device.name,
       },
+      alert: {
+        title: `${contentState.device.name}`,
+        body: `${contentState.device.trailingText}`,
+      },
     },
   };
 
   try {
     const result = await provider.send(notification, deviceToken);
+    apnsLogger.info(
+      {
+        device: contentState.device.name,
+        sent: result.sent?.length || 0,
+        failed: result.failed?.length || 0,
+        failureReasons: result.failed?.map((f: { response?: { reason?: string } }) => f.response?.reason),
+      },
+      'Push-to-start result',
+    );
     if (result.failed.length > 0) {
       const failure = result.failed[0];
       const status = failure.status || 'unknown';
