@@ -1615,28 +1615,27 @@ async function executeWithOpenAICompatible(
         });
       }
     } else if (finishReason === 'tool_calls') {
-      // Copilot API bug: finish_reason=tool_calls but tool_calls missing
-      // (happens when model produces text alongside tool calls via Claude proxy)
-      // Retry up to 3 times — each retry doesn't count against the main loop
-      const retryCount = messages.filter(
+      // Safety net: finish_reason=tool_calls but no tool_calls found across any choice.
+      // This should be rare now that we merge all choices. Retry once, then ask AI to
+      // answer directly.
+      const alreadyRetried = messages.some(
         (m) => m.role === 'user' && typeof m.content === 'string'
           && m.content.includes('only make tool calls'),
-      ).length;
-      if (retryCount >= 3) {
-        aiLogger.warn(`[AI] Dropped tool_calls bug persisted after ${retryCount} retries`);
-        // Don't give up — just continue the loop so the AI can try a different approach
-        messages.push({ role: 'assistant', content: choice.message.content ?? '' });
+      );
+      if (alreadyRetried) {
+        aiLogger.warn('[AI] Dropped tool_calls persisted after retry — asking for direct answer');
+        messages.push({ role: 'assistant', content: allContent ?? '' });
         messages.push({
           role: 'user',
-          content: 'Tool calls failed. Please answer the question directly using '
-            + 'any information you already have, or explain what you need.',
+          content: 'Tool calls are unavailable. Please answer the question directly using '
+            + 'any information you already have.',
         });
       } else {
-        aiLogger.info(`[AI] Workaround: finish_reason=tool_calls but no tool_calls, retry ${retryCount + 1}/3`);
-        if (choice.message.content && onProgress) {
-          onProgress({ type: 'progress', text: choice.message.content });
+        aiLogger.info('[AI] finish_reason=tool_calls but none found, retrying');
+        if (allContent && onProgress) {
+          onProgress({ type: 'progress', text: allContent });
         }
-        messages.push({ role: 'assistant', content: choice.message.content ?? '' });
+        messages.push({ role: 'assistant', content: allContent ?? '' });
         messages.push({
           role: 'user',
           content: 'You indicated you would use tools but none were called. '
