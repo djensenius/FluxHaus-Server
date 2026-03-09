@@ -27,6 +27,8 @@ const EMPTY_STATUS: Status = {
 export default class HomeAssistantRobot {
   public cachedStatus: Status = EMPTY_STATUS;
 
+  public onStatusChange?: (name: string, status: Status) => void;
+
   private config: HomeAssistantRobotConfig;
 
   private pollInterval: NodeJS.Timeout | null = null;
@@ -119,6 +121,7 @@ export default class HomeAssistantRobot {
       binFull,
       timeStarted,
     };
+    this.onStatusChange?.(this.config.name, this.cachedStatus);
   }
 
   public async turnOn() {
