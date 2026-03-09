@@ -925,8 +925,37 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
+const TOOL_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Tool "${label}" timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function executeTool(
+  name: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>,
+  services: FluxHausServices,
+): Promise<string> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    return await withTimeout(executeToolInner(name, args, services), TOOL_TIMEOUT_MS, name);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    aiLogger.error({ tool: name, err: msg }, 'Tool execution failed');
+    return `Error: ${msg}`;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeToolInner(
   name: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   args: Record<string, any>,

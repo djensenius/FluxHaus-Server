@@ -47,29 +47,29 @@ describe('InfluxDBClient', () => {
 
   it('should make query requests with correct URL, headers, and body', async () => {
     const client = new InfluxDBClient(mockConfig);
-    const mockData = { results: [{ value: 42 }] };
+    const csvResponse = '#group,false\n,result,table,_time,_value\n,,0,2024-01-01T00:00:00Z,42\n';
 
     (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
-      json: async () => mockData,
+      text: async () => csvResponse,
     });
 
     const result = await client.query('from(bucket: "test")');
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     expect(global.fetch).toHaveBeenCalledWith(
-      'http://influx:8086/api/v2/query',
+      'http://influx:8086/api/v2/query?org=test-org',
       expect.objectContaining({
         method: 'POST',
-        body: JSON.stringify({ query: 'from(bucket: "test")', type: 'flux' }),
+        body: 'from(bucket: "test")',
         headers: expect.objectContaining({
           Authorization: 'Token test-token',
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/vnd.flux',
+          Accept: 'application/csv',
         }),
       }),
     );
-    expect(result).toEqual(mockData);
+    expect(result).toEqual([{ _time: '2024-01-01T00:00:00Z', _value: '42' }]);
   });
 
   it('should throw on error response', async () => {
@@ -79,10 +79,11 @@ describe('InfluxDBClient', () => {
       ok: false,
       status: 401,
       statusText: 'Unauthorized',
+      text: async () => 'unauthorized',
     });
 
     await expect(client.query('from(bucket: "test")')).rejects.toThrow(
-      'InfluxDB request failed: 401 Unauthorized',
+      'InfluxDB query failed: 401 Unauthorized',
     );
   });
 
@@ -113,16 +114,13 @@ describe('InfluxDBClient', () => {
 
     (global.fetch as jest.Mock).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ results: [] }),
+      text: async () => '',
     });
 
     await client.listMeasurements();
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    const callBody = JSON.parse(
-      (global.fetch as jest.Mock).mock.calls[0][1].body,
-    );
-    expect(callBody.query).toContain('test-bucket');
-    expect(callBody.type).toBe('flux');
+    const callBody = (global.fetch as jest.Mock).mock.calls[0][1].body;
+    expect(callBody).toContain('test-bucket');
   });
 });

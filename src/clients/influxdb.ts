@@ -35,6 +35,7 @@ export class InfluxDBClient {
 
     const response = await fetch(url, {
       ...options,
+      signal: AbortSignal.timeout(15_000),
       headers: {
         ...options.headers,
         Authorization: `Token ${this.config.token}`,
@@ -54,13 +55,51 @@ export class InfluxDBClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async query(flux: string): Promise<any> {
-    return this.request('/api/v2/query', {
+    const url = `${this.config.url}/api/v2/query?org=${encodeURIComponent(this.config.org)}`;
+    influxdbLogger.debug({ method: 'POST' }, 'Querying InfluxDB');
+
+    const response = await fetch(url, {
       method: 'POST',
+      signal: AbortSignal.timeout(15_000),
       headers: {
-        Accept: 'application/json',
+        Authorization: `Token ${this.config.token}`,
+        'Content-Type': 'application/vnd.flux',
+        Accept: 'application/csv',
       },
-      body: JSON.stringify({ query: flux, type: 'flux' }),
+      body: flux,
     });
+
+    if (!response.ok) {
+      const body = await response.text();
+      const msg = `InfluxDB query failed: ${response.status} ${response.statusText} — ${body.substring(0, 200)}`;
+      influxdbLogger.error({ status: response.status }, msg);
+      throw new Error(msg);
+    }
+
+    const csv = await response.text();
+    return this.parseCSV(csv);
+  }
+
+  // eslint-disable-next-line class-methods-use-this, @typescript-eslint/no-explicit-any
+  private parseCSV(csv: string): any[] {
+    const results: Record<string, string>[] = [];
+    const tables = csv.split(/\r?\n\r?\n/);
+    tables.forEach((table) => {
+      const lines = table.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith('#'));
+      if (lines.length < 2) return;
+      const headers = lines[0].split(',');
+      lines.slice(1).forEach((line) => {
+        const values = line.split(',');
+        const row: Record<string, string> = {};
+        headers.forEach((h, idx) => {
+          if (h && h !== '' && h !== 'result' && h !== 'table') {
+            row[h] = values[idx] ?? '';
+          }
+        });
+        if (Object.keys(row).length > 0) results.push(row);
+      });
+    });
+    return results;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
