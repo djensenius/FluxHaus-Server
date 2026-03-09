@@ -157,7 +157,10 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'get_car_status',
-    description: 'Get the car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer',
+    description: 'Get the current car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer.'
+      + ' For historical driving stats (distance over time), query InfluxDB. Home Assistant logs odometer in the'
+      + ' "home_assistant" bucket (entity_id "sensor.*_odometer"). Also available in the default bucket as "car"'
+      + ' measurement (fields: odometer, battery_level, ev_range, total_range, charging; tag: vehicle).',
     parameters: { type: 'object', properties: {} },
   },
   {
@@ -922,8 +925,37 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
+const TOOL_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Tool "${label}" timed out after ${ms / 1000}s`)), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); },
+    );
+  });
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function executeTool(
+  name: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>,
+  services: FluxHausServices,
+): Promise<string> {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    return await withTimeout(executeToolInner(name, args, services), TOOL_TIMEOUT_MS, name);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    aiLogger.error({ tool: name, err: msg }, 'Tool execution failed');
+    return `Error: ${msg}`;
+  }
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeToolInner(
   name: string,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   args: Record<string, any>,

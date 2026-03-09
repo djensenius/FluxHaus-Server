@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { HomeAssistantClient } from './homeassistant-client';
+import { writePoint } from './influx';
 import logger from './logger';
 
 const carLogger = logger.child({ subsystem: 'car' });
@@ -233,10 +234,30 @@ export default class Car {
       }
 
       this.saveStatusToCache();
+      this.writeToInflux(batteryLevel, evModeRange, totalAvailableRange, charging);
     } catch (error) {
       carLogger.error({ error }, 'Failed to fetch car status from Home Assistant');
     }
   };
+
+  private writeToInflux(
+    batteryLevel: string,
+    evRange: number,
+    totalRange: number,
+    charging: string,
+  ) {
+    writePoint(
+      'car',
+      {
+        odometer: this.odometer,
+        battery_level: parseInt(batteryLevel, 10) || 0,
+        ev_range: evRange,
+        total_range: totalRange,
+        charging: charging === 'on',
+      },
+      { vehicle: this.entityPrefix },
+    );
+  }
 
   lock = async (): Promise<string> => {
     await this.client.callService('lock', 'lock', {
