@@ -1,6 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { FluxHausServices } from './services';
+import logger from './logger';
+
+const aiLogger = logger.child({ subsystem: 'ai' });
 
 // ── Shared system prompt ──────────────────────────────────────────────────────
 
@@ -1403,7 +1406,7 @@ async function executeWithAnthropic(
     { role: 'user', content: command },
   ];
 
-  console.log(`[AI] Anthropic model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
+  aiLogger.info(`[AI] Anthropic model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
 
   for (let i = 0; i < 10; i += 1) {
     // eslint-disable-next-line no-await-in-loop
@@ -1415,7 +1418,7 @@ async function executeWithAnthropic(
       messages,
     });
 
-    console.log(`[AI] Loop ${i}: stop_reason=${response.stop_reason}, `
+    aiLogger.info(`[AI] Loop ${i}: stop_reason=${response.stop_reason}, `
       + `content_types=[${response.content.map((b) => b.type).join(',')}]`);
 
     if (response.stop_reason === 'end_turn') {
@@ -1439,7 +1442,7 @@ async function executeWithAnthropic(
       for (let j = 0; j < toolUseBlocks.length; j += 1) {
         const block = toolUseBlocks[j];
         if (block.type === 'tool_use') {
-          console.log(`[AI] Tool call: ${block.name}(${JSON.stringify(block.input).substring(0, 200)})`);
+          aiLogger.info(`[AI] Tool call: ${block.name}(${JSON.stringify(block.input).substring(0, 200)})`);
           if (onProgress) onProgress({ type: 'tool_call', tool: block.name });
           // eslint-disable-next-line no-await-in-loop
           const result = await executeTool(
@@ -1498,7 +1501,7 @@ async function executeWithOpenAICompatible(
     { role: 'user', content: command },
   ];
 
-  console.log(`[AI] OpenAI-compat model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
+  aiLogger.info(`[AI] OpenAI-compat model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
 
   for (let i = 0; i < 10; i += 1) {
     // eslint-disable-next-line no-await-in-loop
@@ -1510,7 +1513,7 @@ async function executeWithOpenAICompatible(
     });
 
     const choice = response.choices[0];
-    console.log(`[AI] Loop ${i}: finish_reason=${choice.finish_reason}, `
+    aiLogger.info(`[AI] Loop ${i}: finish_reason=${choice.finish_reason}, `
       + `tool_calls=${choice.message.tool_calls?.length ?? 0}`);
 
     if (choice.finish_reason === 'stop') {
@@ -1555,12 +1558,12 @@ async function executeWithOpenAICompatible(
           && m.content.includes('only make tool calls'),
       );
       if (alreadyRetried) {
-        console.log('[AI] Workaround already retried, returning text');
+        aiLogger.info('[AI] Workaround already retried, returning text');
         const text = choice.message.content ?? 'Done.';
         if (onProgress) onProgress({ type: 'done', text });
         return text;
       }
-      console.log('[AI] Workaround: finish_reason=tool_calls but no tool_calls, re-prompting');
+      aiLogger.info('[AI] Workaround: finish_reason=tool_calls but no tool_calls, re-prompting');
       if (choice.message.content && onProgress) {
         onProgress({ type: 'progress', text: choice.message.content });
       }
@@ -1592,7 +1595,7 @@ export async function executeAICommand(
 ): Promise<string> {
 /* eslint-enable default-param-last */
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
-  console.log(`[AI] Provider: ${provider}, AI_MODEL=${process.env.AI_MODEL || '(default)'}`);
+  aiLogger.info(`[AI] Provider: ${provider}, AI_MODEL=${process.env.AI_MODEL || '(default)'}`);
 
   switch (provider) {
   case 'anthropic':
