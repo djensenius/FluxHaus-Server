@@ -20,6 +20,8 @@ const TEST_QUERIES = [
   'What are the robots doing?',
   "What's the home status?",
   'Turn on the living room lights',
+  'How much energy have my lights used in the last 24 hours?',
+  'Show me the car battery trend over the past week from Grafana',
 ];
 
 // Minimal services stub — tools will fail but we verify the AI attempts calls
