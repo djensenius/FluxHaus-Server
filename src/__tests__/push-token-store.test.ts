@@ -1,10 +1,10 @@
 import {
-  savePushToken,
-  getPushTokensByActivityType,
-  getAllActivePushTokens,
   deletePushToken,
-  PushTokenData,
+  getAllActivePushTokens,
+  getPushTokensByActivityType,
+  savePushToken,
 } from '../push-token-store';
+import type { PushTokenData } from '../push-token-store';
 import { getPool } from '../db';
 
 jest.mock('../db');

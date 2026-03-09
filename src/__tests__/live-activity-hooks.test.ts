@@ -1,4 +1,4 @@
-import { onMieleStatusChange, onDishwasherStatusChange, onRobotStatusChange } from '../live-activity-hooks';
+import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from '../live-activity-hooks';
 import * as apns from '../apns';
 import * as pushStore from '../push-token-store';
 
