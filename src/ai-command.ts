@@ -1546,23 +1546,49 @@ async function executeWithOpenAICompatible(
     });
 
     const choice = response.choices[0];
-    aiLogger.info(`[AI] Loop ${i}: finish_reason=${choice.finish_reason}, `
-      + `tool_calls=${choice.message.tool_calls?.length ?? 0}`);
 
-    if (choice.finish_reason === 'stop') {
-      const text = choice.message.content ?? 'Done.';
+    // Copilot API splits Claude responses into multiple choices:
+    // Choices[0] may have content, Choices[1] may have tool_calls.
+    // Merge them into a single view.
+    const allToolCalls = response.choices
+      .flatMap((c) => c.message.tool_calls ?? []);
+    const allContent = response.choices
+      .map((c) => c.message.content)
+      .filter(Boolean)
+      .join('\n') || null;
+    const finishReason = choice.finish_reason;
+
+    aiLogger.info(`[AI] Loop ${i}: finish_reason=${finishReason}, `
+      + `tool_calls=${allToolCalls.length}, choices=${response.choices.length}`);
+
+    if (finishReason === 'stop') {
+      const text = allContent ?? 'Done.';
       if (onProgress) onProgress({ type: 'done', text });
       return text;
     }
 
-    if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls && choice.message.tool_calls.length > 0) {
+    if (finishReason === 'length') {
+      const suffix = '\n\n_(Response was truncated due to length. Try a more specific question.)_';
+      const truncated = `${(allContent ?? '').trim()}${suffix}`.trim();
+      if (onProgress) onProgress({ type: 'done', text: truncated });
+      return truncated;
+    }
+
+    if (finishReason === 'tool_calls' && allToolCalls.length > 0) {
       // Emit intermediate text if the model produced any alongside tool calls
-      if (choice.message.content && onProgress) {
-        onProgress({ type: 'progress', text: choice.message.content });
+      if (allContent && onProgress) {
+        onProgress({ type: 'progress', text: allContent });
       }
 
-      messages.push(choice.message);
-      const fnCalls = choice.message.tool_calls.filter((tc) => tc.type === 'function');
+      // Build a merged message for the conversation history
+      const mergedMessage: OpenAI.Chat.ChatCompletionMessage = {
+        role: 'assistant',
+        content: allContent,
+        tool_calls: allToolCalls,
+        refusal: null,
+      };
+      messages.push(mergedMessage);
+      const fnCalls = allToolCalls.filter((tc) => tc.type === 'function');
       for (let j = 0; j < fnCalls.length; j += 1) {
         const toolCall = fnCalls[j];
         if (toolCall.type !== 'function') {
@@ -1570,10 +1596,16 @@ async function executeWithOpenAICompatible(
           continue;
         }
         if (onProgress) onProgress({ type: 'tool_call', tool: toolCall.function.name });
+        let toolArgs: Record<string, unknown> = {};
+        try {
+          toolArgs = JSON.parse(toolCall.function.arguments || '{}');
+        } catch {
+          aiLogger.warn({ tool: toolCall.function.name }, 'Malformed tool arguments, using empty');
+        }
         // eslint-disable-next-line no-await-in-loop
         const result = await executeTool(
           toolCall.function.name,
-          JSON.parse(toolCall.function.arguments || '{}'),
+          toolArgs,
           services,
         );
         messages.push({
@@ -1582,7 +1614,7 @@ async function executeWithOpenAICompatible(
           content: result,
         });
       }
-    } else if (choice.finish_reason === 'tool_calls') {
+    } else if (finishReason === 'tool_calls') {
       // Copilot API bug: finish_reason=tool_calls but tool_calls missing
       // (happens when model produces text alongside tool calls via Claude proxy)
       // Retry up to 3 times — each retry doesn't count against the main loop
