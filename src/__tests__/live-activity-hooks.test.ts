@@ -14,12 +14,18 @@ jest.mock('../logger', () => ({
 }));
 
 const mockGetTokens = pushStore.getPushTokensByActivityType as jest.Mock;
+const mockGetDeviceTokens = pushStore.getAllDeviceTokens as jest.Mock;
 const mockPushAll = apns.pushLiveActivityToAll as jest.Mock;
+const mockPushToStartAll = apns.pushToStartAll as jest.Mock;
 
 beforeEach(() => {
   mockGetTokens.mockReset();
+  mockGetDeviceTokens.mockReset();
   mockPushAll.mockReset();
+  mockPushToStartAll.mockReset();
   mockPushAll.mockResolvedValue(undefined);
+  mockPushToStartAll.mockResolvedValue(undefined);
+  mockGetDeviceTokens.mockResolvedValue([]);
 });
 
 describe('live-activity-hooks', () => {
@@ -119,6 +125,72 @@ describe('live-activity-hooks', () => {
         batteryLevel: 90,
       });
       expect(mockPushAll.mock.calls[0][2]).toBe('end');
+    });
+  });
+
+  describe('push-to-start', () => {
+    it('sends push-to-start when device starts and no activity tokens exist', async () => {
+      // First call: device is not running (establishes baseline)
+      mockGetTokens.mockResolvedValue([]);
+      mockGetDeviceTokens.mockResolvedValue([]);
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine',
+        timeRunning: 0,
+        timeRemaining: 0,
+        inUse: false,
+      });
+
+      // Second call: device starts running, no activity tokens, has device tokens
+      mockGetTokens.mockResolvedValue([]);
+      mockGetDeviceTokens.mockResolvedValue([{ pushToStartToken: 'device-tok' }]);
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine',
+        timeRunning: 1,
+        timeRemaining: 60,
+        programName: 'Cottons',
+        status: 'In use',
+        inUse: true,
+      });
+      expect(mockPushToStartAll).toHaveBeenCalledWith(
+        [{ pushToStartToken: 'device-tok' }],
+        expect.objectContaining({ device: expect.objectContaining({ name: 'Washer' }) }),
+      );
+    });
+
+    it('skips push-to-start when activity tokens already exist', async () => {
+      // Establish not-running state
+      mockGetTokens.mockResolvedValue([]);
+      mockGetDeviceTokens.mockResolvedValue([]);
+      await onDishwasherStatusChange({
+        operationState: 'Inactive',
+        doorState: 'Closed',
+        programProgress: 0,
+      });
+
+      // Now starts running WITH activity tokens already registered
+      mockGetTokens.mockResolvedValue([{ pushToken: 'existing-tok' }]);
+      mockGetDeviceTokens.mockResolvedValue([{ pushToStartToken: 'device-tok' }]);
+      await onDishwasherStatusChange({
+        operationState: 'Run',
+        doorState: 'Closed',
+        programProgress: 10,
+        remainingTime: 3600,
+        activeProgram: 'Auto2',
+      });
+      expect(mockPushToStartAll).not.toHaveBeenCalled();
+    });
+
+    it('skips push-to-start when no device tokens exist', async () => {
+      // Establish not-running state
+      mockGetTokens.mockResolvedValue([]);
+      mockGetDeviceTokens.mockResolvedValue([]);
+      await onRobotStatusChange('Broombot', { running: false, batteryLevel: 100 });
+
+      // Now starts running, but no device tokens
+      mockGetTokens.mockResolvedValue([]);
+      mockGetDeviceTokens.mockResolvedValue([]);
+      await onRobotStatusChange('Broombot', { running: true, batteryLevel: 95 });
+      expect(mockPushToStartAll).not.toHaveBeenCalled();
     });
   });
 });

@@ -1,6 +1,6 @@
 import apn from '@parse/node-apn';
 import logger from './logger';
-import { deletePushToken } from './push-token-store';
+import { deleteDeviceToken, deletePushToken } from './push-token-store';
 
 const apnsLogger = logger.child({ subsystem: 'apns' });
 
@@ -109,6 +109,67 @@ export async function pushLiveActivityToAll(
 
   await Promise.allSettled(
     tokens.map((t) => sendLiveActivityUpdate(t.pushToken, contentState, event, activityType)),
+  );
+}
+
+export async function sendPushToStart(
+  deviceToken: string,
+  contentState: LiveActivityContentState,
+): Promise<boolean> {
+  if (!provider) {
+    apnsLogger.debug('APNs not initialized — skipping push-to-start');
+    return false;
+  }
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+
+  const notification = new apn.Notification();
+  notification.topic = `${bundleId}.push-type.liveactivity`;
+  notification.pushType = 'liveactivity';
+  notification.priority = 10;
+  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+
+  notification.rawPayload = {
+    aps: {
+      timestamp: Math.floor(Date.now() / 1000),
+      event: 'start',
+      'content-state': contentState,
+      'stale-date': Math.floor(Date.now() / 1000) + 900,
+      'attributes-type': 'FluxWidgetAttributes',
+      attributes: {
+        name: contentState.device.name,
+      },
+    },
+  };
+
+  try {
+    const result = await provider.send(notification, deviceToken);
+    if (result.failed.length > 0) {
+      const failure = result.failed[0];
+      const status = failure.status || 'unknown';
+      const reason = failure.response?.reason || 'unknown';
+      apnsLogger.warn({ status, reason }, 'Push-to-start failed');
+
+      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+        await deleteDeviceToken(deviceToken);
+        apnsLogger.info('Removed invalid push-to-start token');
+      }
+      return false;
+    }
+    apnsLogger.info({ device: contentState.device.name }, 'Push-to-start sent');
+    return true;
+  } catch (err) {
+    apnsLogger.error({ err }, 'Push-to-start send error');
+    return false;
+  }
+}
+
+export async function pushToStartAll(
+  deviceTokens: Array<{ pushToStartToken: string }>,
+  contentState: LiveActivityContentState,
+): Promise<void> {
+  await Promise.allSettled(
+    deviceTokens.map((t) => sendPushToStart(t.pushToStartToken, contentState)),
   );
 }
 

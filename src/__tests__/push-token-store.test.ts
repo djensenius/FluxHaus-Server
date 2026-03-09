@@ -1,10 +1,13 @@
 import {
+  deleteDeviceToken,
   deletePushToken,
   getAllActivePushTokens,
+  getAllDeviceTokens,
   getPushTokensByActivityType,
+  saveDeviceToken,
   savePushToken,
 } from '../push-token-store';
-import type { PushTokenData } from '../push-token-store';
+import type { DeviceTokenData, PushTokenData } from '../push-token-store';
 import { getPool } from '../db';
 
 jest.mock('../db');
@@ -99,6 +102,71 @@ describe('push-token-store', () => {
     it('skips when pool is null', async () => {
       (getPool as jest.Mock).mockReturnValueOnce(null);
       await deletePushToken('abc-token-xyz');
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('saveDeviceToken', () => {
+    const sampleDeviceToken: DeviceTokenData = {
+      userSub: 'user-123',
+      pushToStartToken: 'device-tok-xyz',
+      deviceName: 'iPhone 15',
+      bundleId: 'org.davidjensenius.FluxHaus',
+    };
+
+    it('upserts token into device_tokens table', async () => {
+      mockQuery.mockResolvedValue({ rows: [] });
+      await saveDeviceToken(sampleDeviceToken);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockQuery.mock.calls[0];
+      expect(sql).toContain('INSERT INTO device_tokens');
+      expect(sql).toContain('ON CONFLICT');
+      expect(params).toEqual([
+        'user-123', 'iPhone 15', 'device-tok-xyz', 'org.davidjensenius.FluxHaus',
+      ]);
+    });
+
+    it('skips when pool is null', async () => {
+      (getPool as jest.Mock).mockReturnValueOnce(null);
+      await saveDeviceToken(sampleDeviceToken);
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
+    it('throws on query error', async () => {
+      mockQuery.mockRejectedValue(new Error('DB error'));
+      await expect(saveDeviceToken(sampleDeviceToken)).rejects.toThrow('DB error');
+    });
+  });
+
+  describe('getAllDeviceTokens', () => {
+    it('returns all device tokens', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [
+          { userSub: 'user-123', pushToStartToken: 'dev-tok-1', deviceName: 'iPhone 15' },
+        ],
+      });
+      const result = await getAllDeviceTokens();
+      expect(result).toHaveLength(1);
+      expect(result[0].pushToStartToken).toBe('dev-tok-1');
+    });
+
+    it('returns empty array when pool is null', async () => {
+      (getPool as jest.Mock).mockReturnValueOnce(null);
+      const result = await getAllDeviceTokens();
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('deleteDeviceToken', () => {
+    it('deletes by push-to-start token', async () => {
+      mockQuery.mockResolvedValue({ rows: [] });
+      await deleteDeviceToken('device-tok-xyz');
+      expect(mockQuery.mock.calls[0][1]).toEqual(['device-tok-xyz']);
+    });
+
+    it('skips when pool is null', async () => {
+      (getPool as jest.Mock).mockReturnValueOnce(null);
+      await deleteDeviceToken('device-tok-xyz');
       expect(mockQuery).not.toHaveBeenCalled();
     });
   });
