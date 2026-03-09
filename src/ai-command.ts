@@ -158,8 +158,9 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: 'get_car_status',
     description: 'Get the current car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer.'
-      + ' For historical driving stats (distance driven over time), use influxdb_query on the "car" measurement'
-      + ' (fields: odometer, battery_level, ev_range, total_range, charging; tag: vehicle).',
+      + ' For historical driving stats (distance over time), query InfluxDB. Home Assistant logs odometer in the'
+      + ' "home_assistant" bucket (entity_id "sensor.*_odometer"). Also available in the default bucket as "car"'
+      + ' measurement (fields: odometer, battery_level, ev_range, total_range, charging; tag: vehicle).',
     parameters: { type: 'object', properties: {} },
   },
   {
