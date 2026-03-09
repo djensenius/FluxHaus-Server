@@ -25,6 +25,7 @@ import Car, { CarConfig, CarStartOptions } from './car';
 import Miele from './miele';
 import HomeConnect from './homeconnect';
 import adminRouter from './routes/admin.routes';
+import pushRouter from './routes/push.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import transcribeAudio from './stt';
@@ -46,6 +47,8 @@ import { ImmichClient } from './clients/immich';
 import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
+import { closeApns, initApns } from './apns';
+import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from './live-activity-hooks';
 
 const serverLogger = logger.child({ subsystem: 'server' });
 
@@ -199,6 +202,9 @@ export async function createServer(): Promise<Express> {
     batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
     client: homeAssistantClient,
   });
+  broombot.onStatusChange = (name, status) => {
+    onRobotStatusChange(name, status).catch(() => {});
+  };
 
   const mopbot = new HomeAssistantRobot({
     name: 'Mopbot',
@@ -206,6 +212,9 @@ export async function createServer(): Promise<Express> {
     batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
     client: homeAssistantClient,
   });
+  mopbot.onStatusChange = (name, status) => {
+    onRobotStatusChange(name, status).catch(() => {});
+  };
 
   let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -220,6 +229,9 @@ export async function createServer(): Promise<Express> {
   const clientId = process.env.mieleClientId || '';
   const secretId = process.env.mieleSecretId || '';
   const mieleClient = new Miele(clientId, secretId);
+  mieleClient.onStatusChange = (deviceType, device) => {
+    onMieleStatusChange(deviceType, device).catch(() => {});
+  };
   mieleClient.getActivePrograms();
   mieleClient.listenEvents();
   setInterval(() => {
@@ -230,6 +242,9 @@ export async function createServer(): Promise<Express> {
   const homeConnectClientId = process.env.boschClientId || '';
   const homeConnectSecretId = process.env.boschSecretId || '';
   const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
+  hc.onStatusChange = (dishwasher) => {
+    onDishwasherStatusChange(dishwasher).catch(() => {});
+  };
   hc.getActiveProgram();
   hc.listenEvents();
   setInterval(() => {
@@ -1161,6 +1176,7 @@ export async function createServer(): Promise<Express> {
   });
 
   app.use(adminRouter);
+  app.use(pushRouter);
   app.use(notFoundHandler);
 
   return app;
@@ -1230,6 +1246,7 @@ if (process.env.NODE_ENV !== 'test') {
     initPool();
     await initDatabase();
     initInflux();
+    initApns();
     await initOidc();
 
     const app = await createServer();
@@ -1248,6 +1265,7 @@ if (process.env.NODE_ENV !== 'test') {
       server.close(async () => {
         await flushWrites();
         await closeInflux();
+        closeApns();
         await closePool();
         serverLogger.info('Shutdown complete');
         process.exit(0);

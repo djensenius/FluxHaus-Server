@@ -70,6 +70,21 @@ export async function initDatabase(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_messages_conversation
         ON conversation_messages (conversation_id, created_at);
+
+      CREATE TABLE IF NOT EXISTS push_tokens (
+        id SERIAL PRIMARY KEY,
+        user_sub TEXT NOT NULL,
+        device_name TEXT,
+        push_token TEXT NOT NULL UNIQUE,
+        activity_type TEXT NOT NULL,
+        bundle_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_push_tokens_user
+        ON push_tokens (user_sub);
+      CREATE INDEX IF NOT EXISTS idx_push_tokens_activity_type
+        ON push_tokens (activity_type);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

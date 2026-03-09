@@ -14,6 +14,8 @@ export default class Miele {
 
   public dryer: MieleDevice;
 
+  public onStatusChange?: (deviceType: 'washer' | 'dryer', device: MieleDevice) => void;
+
   private clientId: string;
 
   private clientSecret: string;
@@ -121,8 +123,10 @@ export default class Miele {
 
       if (device.ident.type.value_localized === 'Washing machine') {
         this.washer = myDevice;
+        this.onStatusChange?.('washer', myDevice);
       } else if (device.ident.type.value_localized === 'Tumble dryer') {
         this.dryer = myDevice;
+        this.onStatusChange?.('dryer', myDevice);
       }
     });
   }

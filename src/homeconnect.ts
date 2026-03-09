@@ -12,6 +12,8 @@ const hcLogger = logger.child({ subsystem: 'homeconnect' });
 export default class HomeConnect {
   public dishwasher: DishWasher;
 
+  public onStatusChange?: (dishwasher: DishWasher) => void;
+
   private clientId: string;
 
   private clientSecret: string;
@@ -233,6 +235,7 @@ export default class HomeConnect {
     } catch {
       // console.warn('HomeConnect: Could not parse body');
     }
+    this.onStatusChange?.(this.dishwasher);
   }
 
   public async getActiveProgram(): Promise<void> {
