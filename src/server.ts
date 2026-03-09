@@ -962,7 +962,9 @@ export async function createServer(): Promise<Express> {
     res.flushHeaders();
 
     const onProgress: ProgressCallback = (event) => {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
+      if (event.type !== 'done') {
+        res.write(`data: ${JSON.stringify(event)}\n\n`);
+      }
     };
 
     try {
@@ -975,6 +977,7 @@ export async function createServer(): Promise<Express> {
       if (conversationId && req.user?.sub) {
         await storeMessages(conversationId, req.user.sub, command, response, false);
       }
+      res.write(`data: ${JSON.stringify({ type: 'done', text: response })}\n\n`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Unknown error';
       res.write(`data: ${JSON.stringify({ type: 'error', text: message })}\n\n`);
