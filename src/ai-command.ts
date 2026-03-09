@@ -1513,6 +1513,8 @@ async function executeWithOpenAICompatible(
     console.log(`[AI] Loop ${i}: finish_reason=${choice.finish_reason}, `
       + `tool_calls=${choice.message.tool_calls?.length ?? 0}, `
       + `content=${(choice.message.content ?? '').substring(0, 200)}`);
+    console.log(`[AI] Full message keys: ${Object.keys(choice.message)}`);
+    console.log(`[AI] tool_calls raw: ${JSON.stringify(choice.message.tool_calls)?.substring(0, 500)}`);
 
     if (choice.finish_reason === 'stop') {
       const text = choice.message.content ?? 'Done.';
@@ -1520,7 +1522,7 @@ async function executeWithOpenAICompatible(
       return text;
     }
 
-    if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls) {
+    if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls && choice.message.tool_calls.length > 0) {
       // Emit intermediate text if the model produced any alongside tool calls
       if (choice.message.content && onProgress) {
         onProgress({ type: 'progress', text: choice.message.content });
@@ -1547,6 +1549,21 @@ async function executeWithOpenAICompatible(
           content: result,
         });
       }
+    } else if (choice.finish_reason === 'tool_calls') {
+      // Copilot API bug: finish_reason=tool_calls but tool_calls missing
+      // (happens when model produces text alongside tool calls via Claude proxy)
+      // Re-prompt the model to actually execute tools
+      console.log('[AI] Workaround: finish_reason=tool_calls but no tool_calls in response, re-prompting');
+      if (choice.message.content && onProgress) {
+        onProgress({ type: 'progress', text: choice.message.content });
+      }
+      messages.push({ role: 'assistant', content: choice.message.content ?? '' });
+      messages.push({
+        role: 'user',
+        content: 'You indicated you would use tools but none were called. '
+          + 'Please call the appropriate tools now to fulfill the request. '
+          + 'Do not respond with text — only make tool calls.',
+      });
     } else {
       const text = choice.message.content ?? 'Done.';
       if (onProgress) onProgress({ type: 'done', text });
