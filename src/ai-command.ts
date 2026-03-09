@@ -5,11 +5,12 @@ import { FluxHausServices } from './services';
 // ── Shared system prompt ──────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = 'You are FluxHaus, an AI assistant for a smart home. '
-  + 'You MUST use your tools to fulfill every request — never guess or respond '
-  + 'without calling at least one tool first. For status queries, call the '
-  + 'relevant get_ tools (e.g. get_car_status, get_robot_status, '
-  + 'get_appliance_status, get_entity_state). After gathering real data from '
-  + 'tools, reply with a concise, friendly summary of what you found or did.';
+  + 'Always use your tools to fulfill requests about the home — never guess '
+  + 'device states or act without calling a tool first. For status queries, '
+  + 'call the relevant get_ tools (e.g. get_car_status, get_robot_status, '
+  + 'get_appliance_status, get_entity_state). For general conversation that '
+  + 'doesn\'t involve devices or home data, you may respond directly. '
+  + 'After gathering real data from tools, reply with a concise, friendly summary.';
 
 // ── Provider-agnostic tool definitions ───────────────────────────────────────
 
@@ -1552,8 +1553,18 @@ async function executeWithOpenAICompatible(
     } else if (choice.finish_reason === 'tool_calls') {
       // Copilot API bug: finish_reason=tool_calls but tool_calls missing
       // (happens when model produces text alongside tool calls via Claude proxy)
-      // Re-prompt the model to actually execute tools
-      console.log('[AI] Workaround: finish_reason=tool_calls but no tool_calls in response, re-prompting');
+      // Re-prompt once; if it happens again, return the text we have
+      const alreadyRetried = messages.some(
+        (m) => m.role === 'user' && typeof m.content === 'string'
+          && m.content.includes('only make tool calls'),
+      );
+      if (alreadyRetried) {
+        console.log('[AI] Workaround already retried, returning text');
+        const text = choice.message.content ?? 'Done.';
+        if (onProgress) onProgress({ type: 'done', text });
+        return text;
+      }
+      console.log('[AI] Workaround: finish_reason=tool_calls but no tool_calls, re-prompting');
       if (choice.message.content && onProgress) {
         onProgress({ type: 'progress', text: choice.message.content });
       }
