@@ -1416,8 +1416,7 @@ async function executeWithAnthropic(
     });
 
     console.log(`[AI] Loop ${i}: stop_reason=${response.stop_reason}, `
-      + `content_types=[${response.content.map((b) => b.type).join(',')}], `
-      + `usage=${JSON.stringify(response.usage)}`);
+      + `content_types=[${response.content.map((b) => b.type).join(',')}]`);
 
     if (response.stop_reason === 'end_turn') {
       const textBlock = response.content.find((b) => b.type === 'text');
@@ -1512,10 +1511,7 @@ async function executeWithOpenAICompatible(
 
     const choice = response.choices[0];
     console.log(`[AI] Loop ${i}: finish_reason=${choice.finish_reason}, `
-      + `tool_calls=${choice.message.tool_calls?.length ?? 0}, `
-      + `content=${(choice.message.content ?? '').substring(0, 200)}`);
-    console.log(`[AI] Full message keys: ${Object.keys(choice.message)}`);
-    console.log(`[AI] tool_calls raw: ${JSON.stringify(choice.message.tool_calls)?.substring(0, 500)}`);
+      + `tool_calls=${choice.message.tool_calls?.length ?? 0}`);
 
     if (choice.finish_reason === 'stop') {
       const text = choice.message.content ?? 'Done.';
