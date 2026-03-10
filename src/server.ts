@@ -49,6 +49,7 @@ import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
 import { closeApns, initApns } from './apns';
+import { ensureAllChannels } from './apns-channels';
 import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from './live-activity-hooks';
 
 const serverLogger = logger.child({ subsystem: 'server' });
@@ -1249,6 +1250,7 @@ if (process.env.NODE_ENV !== 'test') {
     await initDatabase();
     initInflux();
     initApns();
+    await ensureAllChannels();
     await initOidc();
 
     const app = await createServer();

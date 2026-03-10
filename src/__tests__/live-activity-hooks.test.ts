@@ -1,8 +1,10 @@
 import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from '../live-activity-hooks';
 import * as apns from '../apns';
+import * as apnsChannels from '../apns-channels';
 import * as pushStore from '../push-token-store';
 
 jest.mock('../apns');
+jest.mock('../apns-channels');
 jest.mock('../push-token-store');
 jest.mock('../logger', () => ({
   child: () => ({
@@ -13,25 +15,25 @@ jest.mock('../logger', () => ({
   }),
 }));
 
-const mockGetTokens = pushStore.getPushTokensByActivityType as jest.Mock;
-const mockGetDeviceTokens = pushStore.getAllDeviceTokens as jest.Mock;
-const mockPushAll = apns.pushLiveActivityToAll as jest.Mock;
+const mockGetChannelId = apnsChannels.getChannelId as jest.Mock;
+const mockBroadcast = apns.sendBroadcastUpdate as jest.Mock;
 const mockPushToStartAll = apns.pushToStartAll as jest.Mock;
+const mockGetDeviceTokens = pushStore.getAllDeviceTokens as jest.Mock;
 
 beforeEach(() => {
-  mockGetTokens.mockReset();
-  mockGetDeviceTokens.mockReset();
-  mockPushAll.mockReset();
+  mockGetChannelId.mockReset();
+  mockBroadcast.mockReset();
   mockPushToStartAll.mockReset();
-  mockPushAll.mockResolvedValue(undefined);
+  mockGetDeviceTokens.mockReset();
+  mockBroadcast.mockResolvedValue(true);
   mockPushToStartAll.mockResolvedValue(undefined);
   mockGetDeviceTokens.mockResolvedValue([]);
 });
 
-describe('live-activity-hooks', () => {
+describe('live-activity-hooks (broadcast)', () => {
   describe('onMieleStatusChange', () => {
-    it('pushes update when washer is running', async () => {
-      mockGetTokens.mockResolvedValue([{ pushToken: 'tok1' }]);
+    it('broadcasts update when washer is running', async () => {
+      mockGetChannelId.mockResolvedValue('ch-washer');
       await onMieleStatusChange('washer', {
         name: 'Washing machine',
         timeRunning: 30,
@@ -40,17 +42,17 @@ describe('live-activity-hooks', () => {
         status: 'In use',
         inUse: true,
       });
-      expect(mockGetTokens).toHaveBeenCalledWith('washer');
-      expect(mockPushAll).toHaveBeenCalledTimes(1);
-      const [tokens, contentState, event] = mockPushAll.mock.calls[0];
-      expect(tokens).toEqual([{ pushToken: 'tok1' }]);
+      expect(mockGetChannelId).toHaveBeenCalledWith('washer');
+      expect(mockBroadcast).toHaveBeenCalledTimes(1);
+      const [channelId, contentState, event] = mockBroadcast.mock.calls[0];
+      expect(channelId).toBe('ch-washer');
       expect(event).toBe('update');
       expect(contentState.device.name).toBe('Washer');
       expect(contentState.device.running).toBe(true);
     });
 
     it('sends end event when dryer finishes', async () => {
-      mockGetTokens.mockResolvedValue([{ pushToken: 'tok1' }]);
+      mockGetChannelId.mockResolvedValue('ch-dryer');
       await onMieleStatusChange('dryer', {
         name: 'Tumble dryer',
         timeRunning: 0,
@@ -59,24 +61,24 @@ describe('live-activity-hooks', () => {
         status: 'Off',
         inUse: false,
       });
-      expect(mockPushAll.mock.calls[0][2]).toBe('end');
+      expect(mockBroadcast.mock.calls[0][2]).toBe('end');
     });
 
-    it('skips when no tokens registered', async () => {
-      mockGetTokens.mockResolvedValue([]);
+    it('skips when no channel exists', async () => {
+      mockGetChannelId.mockResolvedValue(null);
       await onMieleStatusChange('washer', {
         name: 'Washing machine',
         timeRunning: 30,
         timeRemaining: 60,
         inUse: true,
       });
-      expect(mockPushAll).not.toHaveBeenCalled();
+      expect(mockBroadcast).not.toHaveBeenCalled();
     });
   });
 
   describe('onDishwasherStatusChange', () => {
-    it('pushes update when dishwasher is running', async () => {
-      mockGetTokens.mockResolvedValue([{ pushToken: 'tok1' }]);
+    it('broadcasts update when dishwasher is running', async () => {
+      mockGetChannelId.mockResolvedValue('ch-dishwasher');
       await onDishwasherStatusChange({
         operationState: 'Run',
         doorState: 'Closed',
@@ -84,34 +86,34 @@ describe('live-activity-hooks', () => {
         remainingTime: 1800,
         activeProgram: 'Auto2',
       });
-      expect(mockGetTokens).toHaveBeenCalledWith('dishwasher');
-      const [, contentState, event] = mockPushAll.mock.calls[0];
+      expect(mockGetChannelId).toHaveBeenCalledWith('dishwasher');
+      const [, contentState, event] = mockBroadcast.mock.calls[0];
       expect(event).toBe('update');
       expect(contentState.device.name).toBe('Dishwasher');
       expect(contentState.device.progress).toBe(45);
     });
 
     it('sends end event when dishwasher finishes', async () => {
-      mockGetTokens.mockResolvedValue([{ pushToken: 'tok1' }]);
+      mockGetChannelId.mockResolvedValue('ch-dishwasher');
       await onDishwasherStatusChange({
         operationState: 'Finished',
         doorState: 'Closed',
         programProgress: 0,
       });
-      expect(mockPushAll.mock.calls[0][2]).toBe('end');
+      expect(mockBroadcast.mock.calls[0][2]).toBe('end');
     });
   });
 
   describe('onRobotStatusChange', () => {
-    it('pushes update when robot is cleaning', async () => {
-      mockGetTokens.mockResolvedValue([{ pushToken: 'tok1' }]);
+    it('broadcasts update when robot is cleaning', async () => {
+      mockGetChannelId.mockResolvedValue('ch-broombot');
       await onRobotStatusChange('Broombot', {
         running: true,
         batteryLevel: 75,
         timeStarted: new Date(),
       });
-      expect(mockGetTokens).toHaveBeenCalledWith('broombot');
-      const [, contentState, event] = mockPushAll.mock.calls[0];
+      expect(mockGetChannelId).toHaveBeenCalledWith('broombot');
+      const [, contentState, event] = mockBroadcast.mock.calls[0];
       expect(event).toBe('update');
       expect(contentState.device.name).toBe('Broombot');
       expect(contentState.device.running).toBe(true);
@@ -119,78 +121,12 @@ describe('live-activity-hooks', () => {
     });
 
     it('sends end event when robot stops', async () => {
-      mockGetTokens.mockResolvedValue([{ pushToken: 'tok1' }]);
+      mockGetChannelId.mockResolvedValue('ch-mopbot');
       await onRobotStatusChange('Mopbot', {
         running: false,
         batteryLevel: 90,
       });
-      expect(mockPushAll.mock.calls[0][2]).toBe('end');
-    });
-  });
-
-  describe('push-to-start', () => {
-    it('sends push-to-start when device starts and no activity tokens exist', async () => {
-      // First call: device is not running (establishes baseline)
-      mockGetTokens.mockResolvedValue([]);
-      mockGetDeviceTokens.mockResolvedValue([]);
-      await onMieleStatusChange('washer', {
-        name: 'Washing machine',
-        timeRunning: 0,
-        timeRemaining: 0,
-        inUse: false,
-      });
-
-      // Second call: device starts running, no activity tokens, has device tokens
-      mockGetTokens.mockResolvedValue([]);
-      mockGetDeviceTokens.mockResolvedValue([{ pushToStartToken: 'device-tok' }]);
-      await onMieleStatusChange('washer', {
-        name: 'Washing machine',
-        timeRunning: 1,
-        timeRemaining: 60,
-        programName: 'Cottons',
-        status: 'In use',
-        inUse: true,
-      });
-      expect(mockPushToStartAll).toHaveBeenCalledWith(
-        [{ pushToStartToken: 'device-tok' }],
-        expect.objectContaining({ device: expect.objectContaining({ name: 'Washer' }) }),
-      );
-    });
-
-    it('skips push-to-start when activity tokens already exist', async () => {
-      // Establish not-running state
-      mockGetTokens.mockResolvedValue([]);
-      mockGetDeviceTokens.mockResolvedValue([]);
-      await onDishwasherStatusChange({
-        operationState: 'Inactive',
-        doorState: 'Closed',
-        programProgress: 0,
-      });
-
-      // Now starts running WITH activity tokens already registered
-      mockGetTokens.mockResolvedValue([{ pushToken: 'existing-tok' }]);
-      mockGetDeviceTokens.mockResolvedValue([{ pushToStartToken: 'device-tok' }]);
-      await onDishwasherStatusChange({
-        operationState: 'Run',
-        doorState: 'Closed',
-        programProgress: 10,
-        remainingTime: 3600,
-        activeProgram: 'Auto2',
-      });
-      expect(mockPushToStartAll).not.toHaveBeenCalled();
-    });
-
-    it('skips push-to-start when no device tokens exist', async () => {
-      // Establish not-running state
-      mockGetTokens.mockResolvedValue([]);
-      mockGetDeviceTokens.mockResolvedValue([]);
-      await onRobotStatusChange('Broombot', { running: false, batteryLevel: 100 });
-
-      // Now starts running, but no device tokens
-      mockGetTokens.mockResolvedValue([]);
-      mockGetDeviceTokens.mockResolvedValue([]);
-      await onRobotStatusChange('Broombot', { running: true, batteryLevel: 95 });
-      expect(mockPushToStartAll).not.toHaveBeenCalled();
+      expect(mockBroadcast.mock.calls[0][2]).toBe('end');
     });
   });
 });

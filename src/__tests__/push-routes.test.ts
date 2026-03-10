@@ -2,8 +2,10 @@ import request from 'supertest';
 import express from 'express';
 import pushRouter from '../routes/push.routes';
 import * as pushStore from '../push-token-store';
+import * as apnsChannels from '../apns-channels';
 
 jest.mock('../push-token-store');
+jest.mock('../apns-channels');
 jest.mock('../logger', () => ({
   child: () => ({
     info: jest.fn(),
@@ -27,63 +29,29 @@ beforeEach(() => {
 });
 
 describe('push routes', () => {
-  describe('POST /push-tokens', () => {
-    it('registers a push token', async () => {
-      (pushStore.savePushToken as jest.Mock).mockResolvedValue(undefined);
-      const res = await request(app)
-        .post('/push-tokens')
-        .send({
-          pushToken: 'abc-token',
-          activityType: 'dishwasher',
-          deviceName: 'iPhone 15',
-        });
+  describe('GET /channels/:activityType', () => {
+    it('returns channel ID for a valid activity type', async () => {
+      (apnsChannels.getChannelId as jest.Mock).mockResolvedValue('ch-abc-123');
+      const res = await request(app).get('/channels/dishwasher');
       expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(pushStore.savePushToken).toHaveBeenCalledWith(
-        expect.objectContaining({
-          userSub: 'test-user',
-          pushToken: 'abc-token',
-          activityType: 'dishwasher',
-        }),
-      );
+      expect(res.body).toEqual({ activityType: 'dishwasher', channelId: 'ch-abc-123' });
     });
 
-    it('returns 400 when pushToken is missing', async () => {
-      const res = await request(app)
-        .post('/push-tokens')
-        .send({ activityType: 'dishwasher' });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 400 when activityType is missing', async () => {
-      const res = await request(app)
-        .post('/push-tokens')
-        .send({ pushToken: 'abc-token' });
-      expect(res.status).toBe(400);
-    });
-
-    it('returns 500 on save failure', async () => {
-      (pushStore.savePushToken as jest.Mock).mockRejectedValue(new Error('DB error'));
-      const res = await request(app)
-        .post('/push-tokens')
-        .send({ pushToken: 'abc', activityType: 'dishwasher' });
-      expect(res.status).toBe(500);
+    it('returns 404 when no channel exists', async () => {
+      (apnsChannels.getChannelId as jest.Mock).mockResolvedValue(null);
+      const res = await request(app).get('/channels/unknown');
+      expect(res.status).toBe(404);
     });
   });
 
-  describe('DELETE /push-tokens/:token', () => {
-    it('deletes a push token', async () => {
-      (pushStore.deletePushToken as jest.Mock).mockResolvedValue(undefined);
-      const res = await request(app).delete('/push-tokens/abc-token');
+  describe('GET /channels', () => {
+    it('returns all channels', async () => {
+      (apnsChannels.getAllChannels as jest.Mock).mockResolvedValue({
+        dishwasher: 'ch-1', washer: 'ch-2',
+      });
+      const res = await request(app).get('/channels');
       expect(res.status).toBe(200);
-      expect(res.body.success).toBe(true);
-      expect(pushStore.deletePushToken).toHaveBeenCalledWith('abc-token');
-    });
-
-    it('returns 500 on delete failure', async () => {
-      (pushStore.deletePushToken as jest.Mock).mockRejectedValue(new Error('DB error'));
-      const res = await request(app).delete('/push-tokens/abc-token');
-      expect(res.status).toBe(500);
+      expect(res.body.channels).toEqual({ dishwasher: 'ch-1', washer: 'ch-2' });
     });
   });
 
