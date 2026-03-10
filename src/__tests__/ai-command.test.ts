@@ -56,7 +56,7 @@ describe('executeTool', () => {
       mopbot: mockMopbot,
       car: mockCar,
       mieleClient: { washer: { status: 'Idle' }, dryer: { status: 'Running' } } as any,
-      hc: { dishwasher: { operationState: 'Run', programProgress: 50 } } as any,
+      dishwasher: { dishwasher: { operationState: 'Run', programProgress: 50 } } as any,
       cameraURL: '',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -227,7 +227,7 @@ describe('executeAICommand', () => {
       mopbot: { turnOn: jest.fn(), turnOff: jest.fn(), cachedStatus: {} } as any,
       car: mockCar,
       mieleClient: {} as any,
-      hc: {} as any,
+      dishwasher: {} as any,
       cameraURL: '',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */

@@ -962,7 +962,7 @@ async function executeToolInner(
   services: FluxHausServices,
 ): Promise<string> {
   const {
-    car, broombot, mopbot, homeAssistantClient, mieleClient, hc,
+    car, broombot, mopbot, homeAssistantClient, mieleClient, dishwasher,
   } = services;
 
   switch (name) {
@@ -1070,7 +1070,7 @@ async function executeToolInner(
     return JSON.stringify({
       washer: mieleClient.washer,
       dryer: mieleClient.dryer,
-      dishwasher: hc.dishwasher,
+      dishwasher: dishwasher.dishwasher,
     }, null, 2);
 
   // ── Plex ──

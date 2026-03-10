@@ -23,7 +23,7 @@ import HomeAssistantRobot from './homeassistant-robot';
 import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
 import Miele from './miele';
-import HomeConnect from './homeconnect';
+import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
@@ -241,22 +241,18 @@ export async function createServer(): Promise<Express> {
   }, 600000);
   mieleClient.listenEvents();
 
-  const homeConnectClientId = process.env.boschClientId || '';
-  const homeConnectSecretId = process.env.boschSecretId || '';
-  const hc = new HomeConnect(homeConnectClientId, homeConnectSecretId);
-  hc.onStatusChange = (dishwasher) => {
-    onDishwasherStatusChange(dishwasher).catch(() => {});
+  const dishwasher = new HomeAssistantDishwasher({
+    client: homeAssistantClient,
+    pollInterval: 10_000,
+  });
+  dishwasher.onStatusChange = (dw) => {
+    onDishwasherStatusChange(dw).catch(() => {});
   };
-  hc.getActiveProgram();
-  hc.listenEvents();
-  setInterval(() => {
-    hc.getActiveProgram();
-  }, 600000);
 
   setInterval(() => {
     fs.writeFileSync(
       'cache/dishwasher.json',
-      JSON.stringify(hc.dishwasher),
+      JSON.stringify(dishwasher.dishwasher),
     );
   }, 1000 * 60 * 60);
 
@@ -339,7 +335,7 @@ export async function createServer(): Promise<Express> {
     mopbot,
     car,
     mieleClient,
-    hc,
+    dishwasher,
     cameraURL,
     plex,
     overseerr,
@@ -380,7 +376,9 @@ export async function createServer(): Promise<Express> {
 
     let homeConnect = null;
     if (fs.existsSync('cache/homeconnect.json')) {
-      homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
+      try {
+        homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
+      } catch { /* ignore */ }
     }
 
     let data = {};
@@ -438,7 +436,7 @@ export async function createServer(): Promise<Express> {
         rhizomeData,
         miele,
         homeConnect,
-        dishwasher: hc.dishwasher,
+        dishwasher: dishwasher.dishwasher,
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
       };
@@ -493,7 +491,7 @@ export async function createServer(): Promise<Express> {
         carOdometer: car.odometer,
         miele,
         homeConnect,
-        dishwasher: hc.dishwasher,
+        dishwasher: dishwasher.dishwasher,
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
       };

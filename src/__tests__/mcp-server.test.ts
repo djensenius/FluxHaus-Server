@@ -79,8 +79,8 @@ describe('MCP Server', () => {
       mieleClient: {
         washer: {}, dryer: {}, getActivePrograms: jest.fn(), listenEvents: jest.fn(),
       } as any,
-      hc: {
-        dishwasher: {}, getActiveProgram: jest.fn(), listenEvents: jest.fn(),
+      dishwasher: {
+        dishwasher: {},
       } as any,
       cameraURL: 'http://camera.local/stream',
     };

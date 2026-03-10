@@ -424,14 +424,14 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     'get_appliance_status',
     'Get the status of home appliances: washer, dryer (Miele), and dishwasher (HomeConnect)',
     async () => {
-      const { mieleClient, hc } = services;
+      const { mieleClient, dishwasher } = services;
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify({
             washer: mieleClient.washer,
             dryer: mieleClient.dryer,
-            dishwasher: hc.dishwasher,
+            dishwasher: dishwasher.dishwasher,
           }, null, 2),
         }],
       };
@@ -568,7 +568,7 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     'get_home_summary',
     'Get a full summary of the home: car, robots, appliances, and active HA entities — useful for a quick overview',
     async () => {
-      const { mieleClient, hc } = services;
+      const { mieleClient, dishwasher } = services;
       let miele = null;
       if (fs.existsSync('cache/miele.json')) {
         miele = JSON.parse(fs.readFileSync('cache/miele.json', 'utf8'));
@@ -586,7 +586,7 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
             appliances: {
               washer: mieleClient.washer,
               dryer: mieleClient.dryer,
-              dishwasher: hc.dishwasher,
+              dishwasher: dishwasher.dishwasher,
             },
             miele,
             homeconnect,

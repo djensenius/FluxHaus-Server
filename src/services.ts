@@ -1,9 +1,9 @@
 import 'dotenv/config';
 import { HomeAssistantClient } from './homeassistant-client';
 import HomeAssistantRobot from './homeassistant-robot';
+import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import Car, { CarConfig } from './car';
 import Miele from './miele';
-import HomeConnect from './homeconnect';
 import { PlexClient } from './clients/plex';
 import { OverseerrClient } from './clients/overseerr';
 import { TautulliClient } from './clients/tautulli';
@@ -29,7 +29,7 @@ export interface FluxHausServices {
   mopbot: HomeAssistantRobot;
   car: Car;
   mieleClient: Miele;
-  hc: HomeConnect;
+  dishwasher: HomeAssistantDishwasher;
   cameraURL: string;
   plex?: PlexClient;
   overseerr?: OverseerrClient;
@@ -82,10 +82,10 @@ export async function createServices(): Promise<FluxHausServices> {
     process.env.mieleSecretId || '',
   );
 
-  const hc = new HomeConnect(
-    process.env.boschClientId || '',
-    process.env.boschSecretId || '',
-  );
+  const dishwasher = new HomeAssistantDishwasher({
+    client: homeAssistantClient,
+    pollInterval: 10_000,
+  });
 
   return {
     homeAssistantClient,
@@ -93,7 +93,7 @@ export async function createServices(): Promise<FluxHausServices> {
     mopbot,
     car,
     mieleClient,
-    hc,
+    dishwasher,
     cameraURL: process.env.CAMERA_URL || '',
     plex: new PlexClient({
       url: (process.env.PLEX_URL || '').trim(),
