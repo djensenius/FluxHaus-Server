@@ -115,6 +115,7 @@ export async function pushLiveActivityToAll(
 export async function sendPushToStart(
   deviceToken: string,
   contentState: LiveActivityContentState,
+  channelId?: string,
 ): Promise<boolean> {
   if (!provider) {
     apnsLogger.debug('APNs not initialized — skipping push-to-start');
@@ -128,6 +129,9 @@ export async function sendPushToStart(
   notification.pushType = 'liveactivity';
   notification.priority = 10;
   notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+  if (channelId) {
+    notification.channelId = channelId;
+  }
 
   notification.rawPayload = {
     aps: {
@@ -180,10 +184,62 @@ export async function sendPushToStart(
 export async function pushToStartAll(
   deviceTokens: Array<{ pushToStartToken: string }>,
   contentState: LiveActivityContentState,
+  channelId?: string,
 ): Promise<void> {
   await Promise.allSettled(
-    deviceTokens.map((t) => sendPushToStart(t.pushToStartToken, contentState)),
+    deviceTokens.map((t) => sendPushToStart(t.pushToStartToken, contentState, channelId)),
   );
+}
+
+export async function sendBroadcastUpdate(
+  channelId: string,
+  contentState: LiveActivityContentState,
+  event: 'update' | 'end',
+  activityType: string,
+): Promise<boolean> {
+  if (!provider) {
+    apnsLogger.debug('APNs not initialized — skipping broadcast');
+    return false;
+  }
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+
+  const notification = new apn.Notification();
+  notification.topic = `${bundleId}.push-type.liveactivity`;
+  notification.pushType = 'liveactivity';
+  notification.priority = 10;
+  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+  notification.channelId = channelId;
+
+  notification.rawPayload = {
+    aps: {
+      timestamp: Math.floor(Date.now() / 1000),
+      event,
+      'content-state': contentState,
+      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) + 300 } : {}),
+      'stale-date': Math.floor(Date.now() / 1000) + 900,
+    },
+  };
+
+  try {
+    const result = await (provider as unknown as {
+      broadcast: (n: apn.Notification, b: string) => Promise<{
+        sent: unknown[]; failed: Array<{ response?: { reason?: string } }>;
+      }>;
+    }).broadcast(notification, bundleId);
+
+    if (result.failed.length > 0) {
+      const failure = result.failed[0];
+      const reason = failure.response?.reason || 'unknown';
+      apnsLogger.warn({ reason, activityType }, 'Broadcast update failed');
+      return false;
+    }
+    apnsLogger.debug({ activityType, event }, 'Broadcast update sent');
+    return true;
+  } catch (err) {
+    apnsLogger.error({ err, activityType }, 'Broadcast send error');
+    return false;
+  }
 }
 
 export function closeApns(): void {

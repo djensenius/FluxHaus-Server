@@ -1,11 +1,12 @@
 import { DishWasher, MieleDevice } from './types/types';
-import { LiveActivityContentState, pushLiveActivityToAll, pushToStartAll } from './apns';
-import { getAllDeviceTokens, getPushTokensByActivityType } from './push-token-store';
+import { LiveActivityContentState, pushToStartAll, sendBroadcastUpdate } from './apns';
+import { getChannelId } from './apns-channels';
+import { getAllDeviceTokens } from './push-token-store';
 import logger from './logger';
 
 const laLogger = logger.child({ subsystem: 'live-activity-hooks' });
 
-// Track previous running state to detect start transitions
+// Track previous running state to detect start transitions for push-to-start
 const previousRunningState = new Map<string, boolean>();
 
 function formatTimeRemaining(seconds: number): string {
@@ -92,9 +93,25 @@ function buildRobotContentState(
 }
 
 /**
- * If the device just started running and no per-activity push tokens exist yet,
- * send a push-to-start notification to all registered device tokens so iOS can
- * create the Live Activity even when the app is not running.
+ * Send a broadcast update for the given activity type via its channel.
+ */
+async function broadcastUpdate(
+  activityType: string,
+  contentState: LiveActivityContentState,
+  event: 'update' | 'end',
+): Promise<void> {
+  const channelId = await getChannelId(activityType);
+  if (!channelId) {
+    laLogger.warn({ activityType }, 'No channel ID — skipping broadcast');
+    return;
+  }
+  await sendBroadcastUpdate(channelId, contentState, event, activityType);
+}
+
+/**
+ * When a device first starts running, send push-to-start so iOS creates
+ * the Live Activity (and subscribes to the broadcast channel) even if
+ * the app hasn't been opened recently.
  */
 async function maybePushToStart(
   activityType: string,
@@ -106,15 +123,14 @@ async function maybePushToStart(
 
   if (!running || wasRunning) return;
 
-  // Device just started — check if per-activity tokens already exist
-  const activityTokens = await getPushTokensByActivityType(activityType);
-  if (activityTokens.length > 0) return;
-
   const deviceTokens = await getAllDeviceTokens();
   if (deviceTokens.length === 0) return;
 
-  laLogger.info({ activityType }, 'Sending push-to-start for new activity');
-  await pushToStartAll(deviceTokens, contentState);
+  // Include channel ID so the activity is created already subscribed
+  const channelId = await getChannelId(activityType);
+
+  laLogger.info({ activityType, hasChannel: !!channelId }, 'Sending push-to-start');
+  await pushToStartAll(deviceTokens, contentState, channelId ?? undefined);
 }
 
 export async function onMieleStatusChange(
@@ -126,32 +142,22 @@ export async function onMieleStatusChange(
   const icon = deviceType === 'washer' ? 'washer' : 'dryer';
   const contentState = buildMieleContentState(name, icon, device);
   const running = (device.timeRemaining ?? 0) > 0;
-
-  await maybePushToStart(activityType, running, contentState);
-
-  const tokens = await getPushTokensByActivityType(activityType);
-  if (tokens.length === 0) return;
-
   const event = running ? 'update' : 'end';
 
-  laLogger.debug({ activityType, event }, 'Pushing Miele Live Activity update');
-  await pushLiveActivityToAll(tokens, contentState, event, activityType);
+  await maybePushToStart(activityType, running, contentState);
+  laLogger.debug({ activityType, event }, 'Broadcasting Miele Live Activity update');
+  await broadcastUpdate(activityType, contentState, event);
 }
 
 export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<void> {
   const activityType = 'dishwasher';
   const contentState = buildDishwasherContentState(dishwasher);
   const running = (dishwasher.programProgress ?? 0) > 0;
-
-  await maybePushToStart(activityType, running, contentState);
-
-  const tokens = await getPushTokensByActivityType(activityType);
-  if (tokens.length === 0) return;
-
   const event = running ? 'update' : 'end';
 
-  laLogger.debug({ activityType, event }, 'Pushing dishwasher Live Activity update');
-  await pushLiveActivityToAll(tokens, contentState, event, activityType);
+  await maybePushToStart(activityType, running, contentState);
+  laLogger.debug({ activityType, event }, 'Broadcasting dishwasher Live Activity update');
+  await broadcastUpdate(activityType, contentState, event);
 }
 
 export async function onRobotStatusChange(
@@ -161,14 +167,9 @@ export async function onRobotStatusChange(
   const activityType = name.toLowerCase().replace(/\s+/g, '');
   const contentState = buildRobotContentState(name, status);
   const running = status.running ?? false;
-
-  await maybePushToStart(activityType, running, contentState);
-
-  const tokens = await getPushTokensByActivityType(activityType);
-  if (tokens.length === 0) return;
-
   const event = running ? 'update' : 'end';
 
-  laLogger.debug({ activityType, event }, 'Pushing robot Live Activity update');
-  await pushLiveActivityToAll(tokens, contentState, event, activityType);
+  await maybePushToStart(activityType, running, contentState);
+  laLogger.debug({ activityType, event }, 'Broadcasting robot Live Activity update');
+  await broadcastUpdate(activityType, contentState, event);
 }

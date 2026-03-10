@@ -97,6 +97,13 @@ export async function initDatabase(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_device_tokens_user
         ON device_tokens (user_sub);
+
+      CREATE TABLE IF NOT EXISTS live_activity_channels (
+        activity_type TEXT PRIMARY KEY,
+        channel_id TEXT NOT NULL,
+        display_name TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

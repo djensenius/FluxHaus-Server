@@ -1,56 +1,43 @@
 import { Router } from 'express';
 import {
-  deleteDeviceToken, deletePushToken, saveDeviceToken, savePushToken,
+  deleteDeviceToken, saveDeviceToken,
 } from '../push-token-store';
+import { getAllChannels, getChannelId } from '../apns-channels';
 import logger from '../logger';
 
 const pushLogger = logger.child({ subsystem: 'push-routes' });
 
 const router = Router();
 
-router.post('/push-tokens', async (req, res) => {
-  const userSub = req.user?.sub;
-  if (!userSub) {
+// --- Broadcast channel endpoints ---
+
+router.get('/channels/:activityType', async (req, res) => {
+  if (!req.user) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
 
-  const { pushToken, activityType, deviceName } = req.body;
-  if (!pushToken || !activityType) {
-    res.status(400).json({ error: 'pushToken and activityType are required' });
-    return;
-  }
-
+  const { activityType } = req.params;
   try {
-    await savePushToken({
-      userSub,
-      pushToken,
-      activityType,
-      deviceName,
-      bundleId: process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus',
-    });
-    pushLogger.info({ userSub, activityType }, 'Push token registered');
-    res.json({ success: true });
+    const channelId = await getChannelId(activityType);
+    if (!channelId) {
+      res.status(404).json({ error: 'Channel not found' });
+      return;
+    }
+    res.json({ activityType, channelId });
   } catch (err) {
-    pushLogger.error({ err, userSub }, 'Failed to register push token');
-    res.status(500).json({ error: 'Failed to register push token' });
+    pushLogger.error({ err, activityType }, 'Failed to get channel');
+    res.status(500).json({ error: 'Failed to get channel' });
   }
 });
 
-router.delete('/push-tokens/:token', async (req, res) => {
-  const userSub = req.user?.sub;
-  if (!userSub) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return;
-  }
-
+router.get('/channels', async (_req, res) => {
   try {
-    await deletePushToken(req.params.token);
-    pushLogger.info({ userSub }, 'Push token unregistered');
-    res.json({ success: true });
+    const channels = await getAllChannels();
+    res.json({ channels });
   } catch (err) {
-    pushLogger.error({ err, userSub }, 'Failed to unregister push token');
-    res.status(500).json({ error: 'Failed to unregister push token' });
+    pushLogger.error({ err }, 'Failed to get channels');
+    res.status(500).json({ error: 'Failed to get channels' });
   }
 });
 

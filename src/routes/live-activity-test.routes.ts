@@ -3,14 +3,11 @@ import { requireRole } from '../middleware/auth.middleware';
 import { generateCsrfToken } from '../middleware/csrf.middleware';
 import {
   LiveActivityContentState,
-  pushLiveActivityToAll,
   pushToStartAll,
+  sendBroadcastUpdate,
 } from '../apns';
-import {
-  getAllActivePushTokens,
-  getAllDeviceTokens,
-  getPushTokensByActivityType,
-} from '../push-token-store';
+import { getAllDeviceTokens } from '../push-token-store';
+import { getAllChannels, getChannelId } from '../apns-channels';
 import logger from '../logger';
 
 const testLogger = logger.child({ subsystem: 'live-activity-test' });
@@ -71,10 +68,9 @@ async function tickSimulation(activityType: string): Promise<void> {
   sim.elapsedSeconds += 15;
   sim.progress = Math.min(100, Math.floor((sim.elapsedSeconds / sim.totalSeconds) * 100));
 
-  const tokens = await getPushTokensByActivityType(activityType);
+  const channelId = await getChannelId(activityType);
 
   if (sim.elapsedSeconds >= sim.totalSeconds) {
-    // Send end event
     const endState: LiveActivityContentState = {
       device: {
         name: sim.deviceName,
@@ -85,8 +81,8 @@ async function tickSimulation(activityType: string): Promise<void> {
         running: false,
       },
     };
-    if (tokens.length > 0) {
-      await pushLiveActivityToAll(tokens, endState, 'end', activityType);
+    if (channelId) {
+      await sendBroadcastUpdate(channelId, endState, 'end', activityType);
     }
     if (sim.timer) clearInterval(sim.timer);
     activeSimulations.delete(activityType);
@@ -94,29 +90,15 @@ async function tickSimulation(activityType: string): Promise<void> {
     return;
   }
 
-  // Send update
   const contentState = buildContentState(sim);
-  if (tokens.length > 0) {
-    await pushLiveActivityToAll(tokens, contentState, 'update', activityType);
+  if (channelId) {
+    await sendBroadcastUpdate(channelId, contentState, 'update', activityType);
+  } else {
+    testLogger.debug({ activityType, progress: sim.progress }, 'No channel — skipping tick');
   }
 }
 
 // --- API endpoints ---
-
-// Temporary debug endpoint — remove after 403 investigation
-router.post('/admin/live-activity-test/debug', (req: Request, res: Response) => {
-  res.json({
-    user: req.user ? { role: req.user.role, username: req.user.username } : null,
-    hasSession: !!req.session,
-    hasCsrf: !!req.session?.csrfToken,
-    signedCookies: Object.keys(req.signedCookies || {}),
-    headers: {
-      'x-csrf-token': req.headers['x-csrf-token'] ? 'present' : 'missing',
-      'content-type': req.headers['content-type'],
-      cookie: req.headers.cookie ? 'present' : 'missing',
-    },
-  });
-});
 
 router.post('/admin/live-activity-test/simulate', requireRole('admin'), async (req: Request, res: Response) => {
   const { activityType, durationMinutes = 5, program } = req.body;
@@ -146,12 +128,13 @@ router.post('/admin/live-activity-test/simulate', requireRole('admin'), async (r
 
   activeSimulations.set(activityType, sim);
 
-  // Send push-to-start first
+  // Send push-to-start with channel ID so activity is channel-subscribed
   const deviceTokens = await getAllDeviceTokens();
   if (deviceTokens.length > 0) {
     const contentState = buildContentState(sim);
-    await pushToStartAll(deviceTokens, contentState);
-    testLogger.info({ activityType }, 'Push-to-start sent');
+    const channelId = await getChannelId(activityType);
+    await pushToStartAll(deviceTokens, contentState, channelId ?? undefined);
+    testLogger.info({ activityType, hasChannel: !!channelId }, 'Push-to-start sent');
   }
 
   // Start ticking every 15 seconds
@@ -176,8 +159,8 @@ router.post('/admin/live-activity-test/stop', requireRole('admin'), async (req: 
     return;
   }
 
-  // Send end event
-  const tokens = await getPushTokensByActivityType(activityType);
+  // Send end event via broadcast
+  const channelId = await getChannelId(activityType);
   const endState: LiveActivityContentState = {
     device: {
       name: sim.deviceName,
@@ -188,8 +171,8 @@ router.post('/admin/live-activity-test/stop', requireRole('admin'), async (req: 
       running: false,
     },
   };
-  if (tokens.length > 0) {
-    await pushLiveActivityToAll(tokens, endState, 'end', activityType);
+  if (channelId) {
+    await sendBroadcastUpdate(channelId, endState, 'end', activityType);
   }
 
   if (sim.timer) clearInterval(sim.timer);
@@ -198,53 +181,8 @@ router.post('/admin/live-activity-test/stop', requireRole('admin'), async (req: 
   res.json({ success: true });
 });
 
-router.post('/admin/live-activity-test/send', requireRole('admin'), async (req: Request, res: Response) => {
-  const {
-    activityType, event = 'update', progress = 50, trailingText, shortText, running = true,
-  } = req.body;
-
-  if (!activityType || !DEVICE_CONFIGS[activityType]) {
-    res.status(400).json({ error: 'Invalid activityType', valid: Object.keys(DEVICE_CONFIGS) });
-    return;
-  }
-
-  const config = DEVICE_CONFIGS[activityType];
-  const isRobot = activityType === 'broombot' || activityType === 'mopbot';
-
-  const contentState: LiveActivityContentState = {
-    device: {
-      name: config.name,
-      progress,
-      icon: config.icon,
-      trailingText: trailingText || (isRobot ? 'Cleaning' : `${config.programs[0]} · 30m`),
-      shortText: shortText || (isRobot ? 'Cleaning' : '30m'),
-      running,
-    },
-  };
-
-  if (event === 'start') {
-    const deviceTokens = await getAllDeviceTokens();
-    if (deviceTokens.length === 0) {
-      res.status(404).json({ error: 'No device tokens registered for push-to-start' });
-      return;
-    }
-    await pushToStartAll(deviceTokens, contentState);
-    res.json({ success: true, sentTo: deviceTokens.length, event: 'start' });
-    return;
-  }
-
-  const tokens = await getPushTokensByActivityType(activityType);
-  if (tokens.length === 0) {
-    res.status(404).json({ error: 'No activity tokens registered for this type' });
-    return;
-  }
-
-  await pushLiveActivityToAll(tokens, contentState, event as 'update' | 'end', activityType);
-  res.json({ success: true, sentTo: tokens.length, event });
-});
-
 router.get('/admin/live-activity-test/status', requireRole('admin'), async (_req: Request, res: Response) => {
-  const tokens = await getAllActivePushTokens();
+  const channels = await getAllChannels();
   const deviceTokens = await getAllDeviceTokens();
 
   const simulations: Record<string, {
@@ -261,10 +199,9 @@ router.get('/admin/live-activity-test/status', requireRole('admin'), async (_req
   });
 
   res.json({
-    activityTokens: tokens.map((t) => ({
-      activityType: t.activityType,
-      deviceName: t.deviceName,
-      token: `${t.pushToken.substring(0, 8)}...`,
+    channels: Object.entries(channels).map(([type, id]) => ({
+      activityType: type,
+      channelId: String(id).substring(0, 16),
     })),
     deviceTokens: deviceTokens.map((t) => ({
       deviceName: t.deviceName,
@@ -352,8 +289,6 @@ const TEST_PAGE_HTML = /* html */ `<!DOCTYPE html>
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-start { background: #30d158; color: #000; }
     .btn-stop { background: #ff453a; color: #fff; }
-    .btn-send { background: #0a84ff; color: #fff; }
-    .btn-push-start { background: #bf5af2; color: #fff; }
     .sim-status {
       background: #0a84ff22; border: 1px solid #0a84ff44;
       border-radius: 8px; padding: 10px 14px;
@@ -461,11 +396,10 @@ function renderTokens() {
       + '<span class="device">' + t.deviceName
       + '</span></span>');
   });
-  statusData.activityTokens.forEach(function(t) {
+  statusData.channels.forEach(function(c) {
     items.push('<span class="token-badge">'
-      + '<span class="type">' + t.activityType + '</span> '
-      + '<span class="device">' + t.deviceName
-      + '</span></span>');
+      + '<span class="type">' + c.activityType + '</span> '
+      + '<span class="device">channel</span></span>');
   });
   el.innerHTML = items.length ? items.join('')
     : '<span class="empty">'
@@ -520,12 +454,7 @@ function renderCards() {
       + type + '\\')"'
       + (isActive ? '' : ' disabled')
       + '>\\u{23F9} Stop</button>'
-      + '<button class="btn-push-start" onclick="pushStart(\\''
-      + type + '\\')">'
-      + '\\u{1F4F2} Push to Start</button>'
-      + '<button class="btn-send" onclick="sendOne(\\''
-      + type + '\\')">'
-      + '\\u{1F4E4} Send Update</button>'
+      
       + '</div></div>';
     el.innerHTML += card;
   });
@@ -556,32 +485,6 @@ function stopSim(type) {
     }).catch(function(e) {
       log('\\u{274C} ' + e.message, 'error');
     });
-}
-
-function pushStart(type) {
-  var program = document.getElementById('program-' + type).value;
-  api('POST', '/send', {
-    activityType: type, event: 'start', progress: 0,
-    trailingText: program + ' · starting…',
-    shortText: '0m', running: true
-  }).then(function(d) {
-    log('\\u{1F4F2} Push-to-start sent to '
-      + d.sentTo + ' device(s)', 'success');
-  }).catch(function(e) {
-    log('\\u{274C} ' + e.message, 'error');
-  });
-}
-
-function sendOne(type) {
-  api('POST', '/send', {
-    activityType: type, event: 'update',
-    progress: 50, running: true
-  }).then(function(d) {
-    log('\\u{1F4E4} Update sent to '
-      + d.sentTo + ' token(s)', 'success');
-  }).catch(function(e) {
-    log('\\u{274C} ' + e.message, 'error');
-  });
 }
 
 refreshStatus();
