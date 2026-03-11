@@ -27,11 +27,15 @@ import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
+import preferencesRouter from './routes/preferences.routes';
+import memoryRouter from './routes/memory.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
 import { decrypt, encrypt } from './encryption';
+import { getUserPreferences } from './user-preferences';
+import { buildMemoryPrompt } from './memory';
 import logger from './logger';
 import { PlexClient } from './clients/plex';
 import { OverseerrClient } from './clients/overseerr';
@@ -923,6 +927,23 @@ export async function createServer(): Promise<Express> {
     }
   }
 
+  /**
+   * If memory is enabled and memories exist, return a system prompt fragment
+   * to append to the base system prompt. The ai-command module will append it.
+   * Returns undefined if no memories or memory disabled.
+   */
+  async function getMemoryContext(userSub?: string): Promise<string | undefined> {
+    if (!userSub) return undefined;
+    try {
+      const prefs = await getUserPreferences(userSub);
+      if (!prefs.memoryEnabled) return undefined;
+      const fragment = await buildMemoryPrompt(userSub);
+      return fragment || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   app.post('/command', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role !== 'admin') {
       res.status(403).json({ error: 'Forbidden' });
@@ -938,13 +959,17 @@ export async function createServer(): Promise<Express> {
     }
     try {
       const services = allServices;
+      const userSub = req.user?.sub;
       let history: ConversationMessage[] = [];
-      if (conversationId && req.user?.sub) {
-        history = await loadConversationHistory(conversationId, req.user.sub);
+      if (conversationId && userSub) {
+        history = await loadConversationHistory(conversationId, userSub);
       }
-      const response = await executeAICommand(command, services, history);
-      if (conversationId && req.user?.sub) {
-        await storeMessages(conversationId, req.user.sub, command, response, false);
+      const memoryFragment = await getMemoryContext(userSub);
+      const response = await executeAICommand(
+        command, services, history, undefined, memoryFragment, userSub,
+      );
+      if (conversationId && userSub) {
+        await storeMessages(conversationId, userSub, command, response, false);
       }
       res.json({ response });
     } catch (err) {
@@ -984,13 +1009,17 @@ export async function createServer(): Promise<Express> {
 
     try {
       const services = allServices;
+      const userSub = req.user?.sub;
       let history: ConversationMessage[] = [];
-      if (conversationId && req.user?.sub) {
-        history = await loadConversationHistory(conversationId, req.user.sub);
+      if (conversationId && userSub) {
+        history = await loadConversationHistory(conversationId, userSub);
       }
-      const response = await executeAICommand(command, services, history, onProgress);
-      if (conversationId && req.user?.sub) {
-        await storeMessages(conversationId, req.user.sub, command, response, false);
+      const memoryFragment = await getMemoryContext(userSub);
+      const response = await executeAICommand(
+        command, services, history, onProgress, memoryFragment, userSub,
+      );
+      if (conversationId && userSub) {
+        await storeMessages(conversationId, userSub, command, response, false);
       }
       res.write(`data: ${JSON.stringify({ type: 'done', text: response })}\n\n`);
     } catch (err) {
@@ -1033,13 +1062,17 @@ export async function createServer(): Promise<Express> {
         command = text as string;
       }
       const services = allServices;
+      const userSub = req.user?.sub;
       let history: ConversationMessage[] = [];
-      if (conversationId && req.user?.sub) {
-        history = await loadConversationHistory(conversationId, req.user.sub);
+      if (conversationId && userSub) {
+        history = await loadConversationHistory(conversationId, userSub);
       }
-      const response = await executeAICommand(command, services, history);
-      if (conversationId && req.user?.sub) {
-        await storeMessages(conversationId, req.user.sub, command, response, true);
+      const memoryFragment = await getMemoryContext(userSub);
+      const response = await executeAICommand(
+        command, services, history, undefined, memoryFragment, userSub,
+      );
+      if (conversationId && userSub) {
+        await storeMessages(conversationId, userSub, command, response, true);
       }
       const audioResponse = await synthesizeSpeech(response);
       res.setHeader('Content-Type', 'audio/mpeg');
@@ -1091,9 +1124,10 @@ export async function createServer(): Promise<Express> {
       res.write(`data: ${JSON.stringify({ type: 'transcript', text: command })}\n\n`);
 
       const services = allServices;
+      const userSub = req.user?.sub;
       let history: ConversationMessage[] = [];
-      if (conversationId && req.user?.sub) {
-        history = await loadConversationHistory(conversationId, req.user.sub);
+      if (conversationId && userSub) {
+        history = await loadConversationHistory(conversationId, userSub);
       }
 
       const onProgress: ProgressCallback = (event) => {
@@ -1102,9 +1136,12 @@ export async function createServer(): Promise<Express> {
         }
       };
 
-      const response = await executeAICommand(command, services, history, onProgress);
-      if (conversationId && req.user?.sub) {
-        await storeMessages(conversationId, req.user.sub, command, response, true);
+      const memoryFragment = await getMemoryContext(userSub);
+      const response = await executeAICommand(
+        command, services, history, onProgress, memoryFragment, userSub,
+      );
+      if (conversationId && userSub) {
+        await storeMessages(conversationId, userSub, command, response, true);
       }
 
       const audioResponse = await synthesizeSpeech(response);
@@ -1177,6 +1214,8 @@ export async function createServer(): Promise<Express> {
 
   app.use(adminRouter);
   app.use(pushRouter);
+  app.use(preferencesRouter);
+  app.use(memoryRouter);
   app.use(liveActivityTestRouter);
   app.use(notFoundHandler);
 
