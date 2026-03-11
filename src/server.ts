@@ -965,9 +965,7 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(
-        command, services, history, undefined, memoryFragment, userSub,
-      );
+      const response = await executeAICommand(command, services, history, undefined, memoryFragment, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, false);
       }
@@ -1015,9 +1013,7 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(
-        command, services, history, onProgress, memoryFragment, userSub,
-      );
+      const response = await executeAICommand(command, services, history, onProgress, memoryFragment, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, false);
       }
@@ -1068,9 +1064,7 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(
-        command, services, history, undefined, memoryFragment, userSub,
-      );
+      const response = await executeAICommand(command, services, history, undefined, memoryFragment, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }
@@ -1137,9 +1131,7 @@ export async function createServer(): Promise<Express> {
       };
 
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(
-        command, services, history, onProgress, memoryFragment, userSub,
-      );
+      const response = await executeAICommand(command, services, history, onProgress, memoryFragment, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }

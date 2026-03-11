@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { FluxHausServices } from './services';
-import { saveMemory, deleteMemory } from './memory';
+import { deleteMemory, saveMemory } from './memory';
 import logger from './logger';
 
 const aiLogger = logger.child({ subsystem: 'ai' });
@@ -1715,9 +1715,7 @@ export async function executeAICommand(
 
   switch (provider) {
   case 'anthropic':
-    return executeWithAnthropic(
-      command, services, conversationHistory, onProgress, systemPrompt, userSub,
-    );
+    return executeWithAnthropic(command, services, conversationHistory, onProgress, systemPrompt, userSub);
 
   case 'copilot':
   case 'github-copilot': {

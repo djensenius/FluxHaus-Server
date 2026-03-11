@@ -1,5 +1,5 @@
 import { getPool } from './db';
-import { encrypt, decrypt } from './encryption';
+import { decrypt, encrypt } from './encryption';
 import logger from './logger';
 
 const memLogger = logger.child({ subsystem: 'memory' });

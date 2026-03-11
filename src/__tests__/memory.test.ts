@@ -1,5 +1,5 @@
 import {
-  saveMemory, listMemories, deleteMemory, deleteAllMemories, buildMemoryPrompt,
+  buildMemoryPrompt, deleteAllMemories, deleteMemory, listMemories, saveMemory,
 } from '../memory';
 
 jest.mock('../db', () => ({

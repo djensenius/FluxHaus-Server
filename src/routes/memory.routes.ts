@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { listMemories, deleteMemory, deleteAllMemories } from '../memory';
+import { deleteAllMemories, deleteMemory, listMemories } from '../memory';
 import { csrfMiddleware } from '../middleware/csrf.middleware';
 
 const router = Router();
