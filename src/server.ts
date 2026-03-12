@@ -878,10 +878,24 @@ export async function createServer(): Promise<Express> {
       'SELECT role, content FROM conversation_messages WHERE conversation_id = $1 ORDER BY created_at',
       [conversationId],
     );
-    return result.rows.map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: decrypt(m.content, userSub),
-    }));
+    return result.rows.map((m) => {
+      const decrypted = decrypt(m.content, userSub);
+      // Try to parse as JSON envelope (new format with images)
+      try {
+        const parsed = JSON.parse(decrypted);
+        if (parsed && typeof parsed.text === 'string') {
+          return {
+            role: m.role as 'user' | 'assistant',
+            content: parsed.text,
+            images: parsed.images || undefined,
+          };
+        }
+      } catch { /* plain text — fall through */ }
+      return {
+        role: m.role as 'user' | 'assistant',
+        content: decrypted,
+      };
+    });
   }
 
   /**
@@ -894,10 +908,16 @@ export async function createServer(): Promise<Express> {
     userContent: string,
     assistantContent: string,
     isVoice: boolean,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    images?: Array<{ mediaType: string; base64: string }>,
   ): Promise<void> {
     const db = getPool();
     if (!db) return;
-    const encUser = encrypt(userContent, userSub);
+    // Wrap user content in JSON envelope if images are present
+    const userPayload = images?.length
+      ? JSON.stringify({ text: userContent, images })
+      : userContent;
+    const encUser = encrypt(userPayload, userSub);
     const encAssistant = encrypt(assistantContent, userSub);
     await db.query(
       `INSERT INTO conversation_messages (conversation_id, role, content, is_voice)
@@ -928,9 +948,10 @@ export async function createServer(): Promise<Express> {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const { command, conversationId } = req.body as {
+    const { command, conversationId, images } = req.body as {
       command?: string;
       conversationId?: string;
+      images?: Array<{ mediaType: string; base64: string }>;
     };
     if (!command || typeof command !== 'string') {
       res.status(400).json({ error: 'command is required' });
@@ -942,9 +963,11 @@ export async function createServer(): Promise<Express> {
       if (conversationId && req.user?.sub) {
         history = await loadConversationHistory(conversationId, req.user.sub);
       }
-      const response = await executeAICommand(command, services, history);
+      const response = await executeAICommand(
+        command, services, history, undefined, images,
+      );
       if (conversationId && req.user?.sub) {
-        await storeMessages(conversationId, req.user.sub, command, response, false);
+        await storeMessages(conversationId, req.user.sub, command, response, false, images);
       }
       res.json({ response });
     } catch (err) {
@@ -962,9 +985,10 @@ export async function createServer(): Promise<Express> {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const { command, conversationId } = req.body as {
+    const { command, conversationId, images } = req.body as {
       command?: string;
       conversationId?: string;
+      images?: Array<{ mediaType: string; base64: string }>;
     };
     if (!command || typeof command !== 'string') {
       res.status(400).json({ error: 'command is required' });
@@ -988,9 +1012,11 @@ export async function createServer(): Promise<Express> {
       if (conversationId && req.user?.sub) {
         history = await loadConversationHistory(conversationId, req.user.sub);
       }
-      const response = await executeAICommand(command, services, history, onProgress);
+      const response = await executeAICommand(
+        command, services, history, onProgress, images,
+      );
       if (conversationId && req.user?.sub) {
-        await storeMessages(conversationId, req.user.sub, command, response, false);
+        await storeMessages(conversationId, req.user.sub, command, response, false, images);
       }
       res.write(`data: ${JSON.stringify({ type: 'done', text: response })}\n\n`);
     } catch (err) {
