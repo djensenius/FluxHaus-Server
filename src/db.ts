@@ -149,6 +149,22 @@ export async function initDatabase(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_webhook_tokens_hash
         ON webhook_tokens (token_hash);
+
+      CREATE TABLE IF NOT EXISTS user_preferences (
+        user_sub TEXT PRIMARY KEY,
+        memory_enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+
+      CREATE TABLE IF NOT EXISTS user_memories (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        content TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_user_memories_user
+        ON user_memories (user_sub);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

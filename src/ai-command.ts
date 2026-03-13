@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { AzureOpenAI } from 'openai';
 import { FluxHausServices } from './services';
+import { deleteMemory, saveMemory } from './memory';
 import logger from './logger';
 
 const aiLogger = logger.child({ subsystem: 'ai' });
@@ -999,6 +1000,31 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       required: ['prompt'],
     },
   },
+
+  // ── User Memory ──
+  {
+    name: 'save_memory',
+    description: 'Save a fact or preference about the user to remember across conversations. '
+      + 'Use when the user shares personal preferences, important facts, or asks you to remember something.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: { type: 'string', description: 'The fact or preference to remember' },
+      },
+      required: ['content'],
+    },
+  },
+  {
+    name: 'delete_memory',
+    description: 'Delete a previously saved memory by its ID. Use when the user asks you to forget something.',
+    parameters: {
+      type: 'object',
+      properties: {
+        memory_id: { type: 'string', description: 'The ID of the memory to delete' },
+      },
+      required: ['memory_id'],
+    },
+  },
 ];
 
 // ── Tool executor ─────────────────────────────────────────────────────────────
@@ -1023,10 +1049,11 @@ export async function executeTool(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   args: Record<string, any>,
   services: FluxHausServices,
+  userSub?: string,
 ): Promise<string> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    const result = await withTimeout(executeToolInner(name, args, services), TOOL_TIMEOUT_MS, name);
+    const result = await withTimeout(executeToolInner(name, args, services, userSub), TOOL_TIMEOUT_MS, name);
     return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -1042,6 +1069,7 @@ async function executeToolRich(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   args: Record<string, any>,
   services: FluxHausServices,
+  userSub?: string,
 ): Promise<ToolResult> {
   try {
     // Image-aware tools return ToolResult with images
@@ -1055,7 +1083,7 @@ async function executeToolRich(
     }
     // All other tools return plain text
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    const text = await withTimeout(executeToolInner(name, args, services), TOOL_TIMEOUT_MS, name);
+    const text = await withTimeout(executeToolInner(name, args, services, userSub), TOOL_TIMEOUT_MS, name);
     return { text };
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -1152,6 +1180,7 @@ async function executeToolInner(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   args: Record<string, any>,
   services: FluxHausServices,
+  userSub?: string,
 ): Promise<string> {
   const {
     car, broombot, mopbot, homeAssistantClient, mieleClient, dishwasher,
@@ -1631,6 +1660,16 @@ async function executeToolInner(
   case 'generate_image':
     return 'Image generation is only available through the AI command interface.';
 
+  // ── User Memory ──
+  case 'save_memory':
+    if (!userSub) return 'Memory not available — user not authenticated';
+    return JSON.stringify(await saveMemory(userSub, args.content), null, 2);
+  case 'delete_memory':
+    if (!userSub) return 'Memory not available — user not authenticated';
+    return (await deleteMemory(userSub, args.memory_id))
+      ? 'Memory deleted successfully'
+      : 'Memory not found';
+
   default:
     return `Unknown tool: ${name}`;
   }
@@ -1691,6 +1730,8 @@ async function executeWithAnthropic(
   conversationHistory: ConversationMessage[],
   onProgress?: ProgressCallback,
   images?: ToolResultImage[],
+  systemPrompt?: string,
+  userSub?: string,
 ): Promise<string> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
@@ -1719,7 +1760,7 @@ async function executeWithAnthropic(
     const response = await client.messages.create({
       model,
       max_tokens: 4096,
-      system: SYSTEM_PROMPT,
+      system: SYSTEM_PROMPT + (systemPrompt || ''),
       tools,
       messages,
     });
@@ -1756,6 +1797,7 @@ async function executeWithAnthropic(
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             block.input as Record<string, any>,
             services,
+            userSub,
           );
 
           // Build content blocks — include images if the tool returned any
@@ -1802,6 +1844,8 @@ async function executeWithOpenAICompatible(
   conversationHistory: ConversationMessage[],
   onProgress?: ProgressCallback,
   images?: ToolResultImage[],
+  systemPrompt?: string,
+  userSub?: string,
 ): Promise<string> {
   const model = process.env.AI_MODEL || defaultModel;
 
@@ -1815,7 +1859,7 @@ async function executeWithOpenAICompatible(
   }));
 
   const messages: OpenAI.Chat.ChatCompletionMessageParam[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'system', content: SYSTEM_PROMPT + (systemPrompt || '') },
     ...conversationHistory.map((m) => ({
       role: m.role as 'user' | 'assistant',
       content: toOpenAIContent(m.content, m.images),
@@ -1896,6 +1940,7 @@ async function executeWithOpenAICompatible(
           toolCall.function.name,
           toolArgs,
           services,
+          userSub,
         );
         messages.push({
           role: 'tool',
@@ -1967,6 +2012,8 @@ export async function executeAICommand(
   conversationHistory: ConversationMessage[] = [],
   onProgress?: ProgressCallback,
   images?: ToolResultImage[],
+  systemPrompt?: string,
+  userSub?: string,
 ): Promise<string> {
 /* eslint-enable default-param-last */
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
@@ -1974,7 +2021,7 @@ export async function executeAICommand(
 
   switch (provider) {
   case 'anthropic':
-    return executeWithAnthropic(command, services, conversationHistory, onProgress, images);
+    return executeWithAnthropic(command, services, conversationHistory, onProgress, images, systemPrompt, userSub);
 
   case 'copilot':
   case 'github-copilot': {
@@ -1992,6 +2039,8 @@ export async function executeAICommand(
       conversationHistory,
       onProgress,
       images,
+      systemPrompt,
+      userSub,
     );
   }
 
@@ -2008,6 +2057,8 @@ export async function executeAICommand(
       conversationHistory,
       onProgress,
       images,
+      systemPrompt,
+      userSub,
     );
   }
 
@@ -2022,6 +2073,8 @@ export async function executeAICommand(
       conversationHistory,
       onProgress,
       images,
+      systemPrompt,
+      userSub,
     );
   }
 
@@ -2042,6 +2095,8 @@ export async function executeAICommand(
       conversationHistory,
       onProgress,
       images,
+      systemPrompt,
+      userSub,
     );
   }
 
