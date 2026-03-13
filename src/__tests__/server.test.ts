@@ -404,7 +404,7 @@ describe('Server', () => {
         undefined,
         undefined,
         undefined,
-        undefined,
+        'test-user-123',
       );
       expect(mockedSynthesizeSpeech).toHaveBeenCalledWith('Lights are on.');
       expect(response.headers['x-transcript']).toBe(encodeURIComponent('Turn on the lights'));
@@ -430,7 +430,7 @@ describe('Server', () => {
         undefined,
         undefined,
         undefined,
-        undefined,
+        'test-user-123',
       );
     });
 
