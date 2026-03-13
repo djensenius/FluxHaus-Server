@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { AzureOpenAI } from 'openai';
+import { Readability } from '@mozilla/readability';
+import { parseHTML } from 'linkedom';
 import { FluxHausServices } from './services';
 import { deleteMemory, saveMemory } from './memory';
 import logger from './logger';
@@ -941,7 +943,8 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   // ── Kagi Web Search ──
   {
     name: 'web_search',
-    description: 'Search the web using Kagi. Use this to look up current information, news, weather, facts, or anything the user asks about that requires up-to-date knowledge.',
+    description: 'Search the web using Kagi. Use this to look up current information, '
+      + 'news, weather, facts, or anything requiring up-to-date knowledge.',
     parameters: {
       type: 'object',
       properties: {
@@ -953,7 +956,8 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'fetch_webpage',
-    description: 'Fetch the text content of a web page. Use this to read articles, documentation, or any URL from search results. Returns the page text (HTML stripped).',
+    description: 'Fetch the text content of a web page. Use this to read articles, '
+      + 'documentation, or any URL from search results. Returns readable text.',
     parameters: {
       type: 'object',
       properties: {
@@ -964,12 +968,17 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'summarize_url',
-    description: 'Summarize a web page, article, PDF, or YouTube video using Kagi. Best for long content you need a quick overview of.',
+    description: 'Summarize a web page, article, PDF, or YouTube video using Kagi. '
+      + 'Best for long content you need a quick overview of.',
     parameters: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL to summarize (web page, PDF, YouTube video, etc.)' },
-        engine: { type: 'string', description: 'Summarizer engine: agnes (fast), cecil (balanced, default), muriel (high-quality)', enum: ['agnes', 'cecil', 'muriel'] },
+        engine: {
+          type: 'string',
+          description: 'Summarizer engine: agnes (fast), cecil (balanced, default), muriel (high-quality)',
+          enum: ['agnes', 'cecil', 'muriel'],
+        },
       },
       required: ['url'],
     },
@@ -977,19 +986,24 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   // ── Vision & Image Generation ──
   {
     name: 'view_image',
-    description: 'Fetch and analyze an image from a URL. Use this to look at camera feeds, photos, or any image the user asks about. The image will be shown to you for analysis.',
+    description: 'Fetch and analyze an image from a URL. Use this to look at camera '
+      + 'feeds, photos, or any image the user asks about.',
     parameters: {
       type: 'object',
       properties: {
         url: { type: 'string', description: 'URL of the image to view' },
-        question: { type: 'string', description: 'Optional question about the image (e.g. "What do you see?", "Is anyone at the door?")' },
+        question: {
+          type: 'string',
+          description: 'Optional question about the image (e.g. "What do you see?")',
+        },
       },
       required: ['url'],
     },
   },
   {
     name: 'generate_image',
-    description: 'Generate an image from a text description using DALL·E 3. Returns a URL to the generated image.',
+    description: 'Generate an image from a text description using DALL·E 3. '
+      + 'Returns a URL to the generated image.',
     parameters: {
       type: 'object',
       properties: {
@@ -1092,12 +1106,12 @@ async function executeToolRich(
   }
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function executeViewImage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   args: Record<string, any>,
   services: FluxHausServices,
 ): Promise<ToolResult> {
-  const url: string = args.url;
+  const { url } = args;
   if (!url) throw new Error('url is required');
 
   // If the URL is a relative camera path, resolve against the configured camera URL
@@ -1107,6 +1121,7 @@ async function executeViewImage(
   }
 
   aiLogger.info({ url: resolvedUrl }, 'Fetching image for vision');
+  // eslint-disable-next-line @typescript-eslint/no-use-before-define
   const image = await fetchImageAsBase64(resolvedUrl);
   const question = args.question || 'Describe what you see in this image.';
 
@@ -1123,7 +1138,7 @@ async function executeGenerateImage(args: Record<string, any>): Promise<ToolResu
     return { text: 'Image generation is not configured (set OPENAI_API_KEY for DALL·E 3)' };
   }
 
-  const prompt: string = args.prompt;
+  const { prompt } = args;
   if (!prompt) throw new Error('prompt is required');
 
   const size = args.size || '1024x1024';
@@ -1631,13 +1646,12 @@ async function executeToolInner(
       });
       if (!resp.ok) return `Error fetching page: ${resp.status} ${resp.statusText}`;
       const html = await resp.text();
-      // Strip HTML tags to get readable text, truncate to ~12k chars to fit context
-      const text = html
-        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-        .replace(/<[^>]+>/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
+      // Use Readability + linkedom for robust content extraction
+      const { document } = parseHTML(html);
+      const reader = new Readability(document);
+      const article = reader.parse();
+      const text = (article?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (!text) return 'Could not extract readable content from the page.';
       const truncated = text.length > 12_000
         ? `${text.substring(0, 12_000)}\n\n[Content truncated — ${text.length} chars total]`
         : text;
@@ -1803,7 +1817,7 @@ async function executeWithAnthropic(
           // Build content blocks — include images if the tool returned any
           if (result.images?.length) {
             const contentBlocks: Anthropic.ToolResultBlockParam['content'] = [];
-            for (const img of result.images) {
+            result.images.forEach((img) => {
               contentBlocks.push({
                 type: 'image',
                 source: {
@@ -1812,7 +1826,7 @@ async function executeWithAnthropic(
                   data: img.base64,
                 },
               });
-            }
+            });
             contentBlocks.push({ type: 'text', text: result.text });
             toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: contentBlocks });
           } else {
@@ -1954,12 +1968,12 @@ async function executeWithOpenAICompatible(
           const parts: any[] = [
             { type: 'text', text: 'Here is the image from the tool result. Analyze it and respond to the user.' },
           ];
-          for (const img of result.images) {
+          result.images.forEach((img) => {
             parts.push({
               type: 'image_url',
               image_url: { url: `data:${img.mediaType};base64,${img.base64}` },
             });
-          }
+          });
           messages.push({ role: 'user', content: parts });
         }
       }
@@ -2017,8 +2031,9 @@ export async function executeAICommand(
 ): Promise<string> {
 /* eslint-enable default-param-last */
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
-  aiLogger.info(`[AI] Provider: ${provider}, AI_MODEL=${process.env.AI_MODEL || '(default)'}${images?.length ? `, images=${images.length}` : ''}`);
-
+  const model = process.env.AI_MODEL || '(default)';
+  const imgInfo = images?.length ? `, images=${images.length}` : '';
+  aiLogger.info(`[AI] Provider: ${provider}, AI_MODEL=${model}${imgInfo}`);
   switch (provider) {
   case 'anthropic':
     return executeWithAnthropic(command, services, conversationHistory, onProgress, images, systemPrompt, userSub);

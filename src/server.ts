@@ -35,7 +35,7 @@ import memoryRouter from './routes/memory.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import { loadAndScheduleAll } from './scheduler';
-import { startMonitor, setAlertCallback } from './alert-monitor';
+import { setAlertCallback, startMonitor } from './alert-monitor';
 import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
 import { decrypt, encrypt } from './encryption';
@@ -991,9 +991,7 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(
-        command, services, history, undefined, images, memoryFragment, userSub,
-      );
+      const response = await executeAICommand(command, services, history, undefined, images, memoryFragment, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, false, images);
       }
@@ -1042,9 +1040,7 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(
-        command, services, history, onProgress, images, memoryFragment, userSub,
-      );
+      const response = await executeAICommand(command, services, history, onProgress, images, memoryFragment, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, false, images);
       }
@@ -1094,8 +1090,8 @@ export async function createServer(): Promise<Express> {
       if (conversationId && userSub) {
         history = await loadConversationHistory(conversationId, userSub);
       }
-      const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, undefined, undefined, memoryFragment, userSub);
+      const memCtx = await getMemoryContext(userSub);
+      const response = await executeAICommand(command, services, history, undefined, undefined, memCtx, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }
@@ -1161,8 +1157,8 @@ export async function createServer(): Promise<Express> {
         }
       };
 
-      const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, onProgress, undefined, memoryFragment, userSub);
+      const memCtx = await getMemoryContext(userSub);
+      const response = await executeAICommand(command, services, history, onProgress, undefined, memCtx, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }

@@ -1772,7 +1772,8 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
 
   server.tool(
     'web_search',
-    'Search the web using Kagi. Use this to look up current information, news, weather, facts, or anything requiring up-to-date knowledge.',
+    'Search the web using Kagi. Use this to look up current information, news, weather, facts, '
+      + 'or anything requiring up-to-date knowledge.',
     {
       query: z.string().describe('The search query'),
       limit: z.number().min(1).max(20).optional()
@@ -1802,7 +1803,12 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
           headers: { Accept: 'text/html,text/plain,application/json' },
         });
         if (!resp.ok) {
-          return { content: [{ type: 'text' as const, text: `Error fetching page: ${resp.status} ${resp.statusText}` }] };
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Error fetching page: ${resp.status} ${resp.statusText}`,
+            }],
+          };
         }
         const html = await resp.text();
         const text = html
@@ -1869,7 +1875,10 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {
         return {
-          content: [{ type: 'text' as const, text: 'Image generation is not configured (set OPENAI_API_KEY for DALL·E 3)' }],
+          content: [{
+            type: 'text' as const,
+            text: 'Image generation is not configured (set OPENAI_API_KEY for DALL·E 3)',
+          }],
         };
       }
 

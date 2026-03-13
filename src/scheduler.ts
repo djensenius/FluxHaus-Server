@@ -1,6 +1,7 @@
+// eslint-disable-next-line import/no-unresolved
 import schedule from 'node-schedule';
 import { getPool } from './db';
-import { executeAICommand, ConversationMessage } from './ai-command';
+import { executeAICommand } from './ai-command';
 import { FluxHausServices } from './services';
 import logger from './logger';
 
@@ -60,6 +61,7 @@ export function scheduleRoutine(
   routine: ScheduledRoutine,
   services: FluxHausServices,
 ): void {
+  // eslint-disable-next-line @typescript-eslint/no-use-before-define
   unscheduleRoutine(routine.id);
 
   if (!routine.enabled) return;
@@ -75,7 +77,12 @@ export function scheduleRoutine(
       activeJobs.set(routine.id, job);
       const next = job.nextInvocation();
       schedulerLogger.info(
-        { id: routine.id, name: routine.name, cron: routine.cron, nextRun: next?.toISOString() },
+        {
+          id: routine.id,
+          name: routine.name,
+          cron: routine.cron,
+          nextRun: next?.toISOString(),
+        },
         'Routine scheduled',
       );
     } else {
@@ -107,9 +114,9 @@ export async function loadAndScheduleAll(services: FluxHausServices): Promise<vo
 
   schedulerLogger.info({ count: result.rows.length }, 'Loading scheduled routines');
 
-  for (const row of result.rows) {
+  result.rows.forEach((row) => {
     scheduleRoutine(row as ScheduledRoutine, services);
-  }
+  });
 }
 
 export function getActiveJobCount(): number {
@@ -117,10 +124,10 @@ export function getActiveJobCount(): number {
 }
 
 export function cancelAll(): void {
-  for (const [id, job] of activeJobs) {
+  Array.from(activeJobs.entries()).forEach(([id, job]) => {
     job.cancel();
     activeJobs.delete(id);
-  }
+  });
   schedulerLogger.info('All scheduled routines cancelled');
 }
 

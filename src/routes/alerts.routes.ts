@@ -1,7 +1,7 @@
-import { Router, Request, Response } from 'express';
+import { Request, Response, Router } from 'express';
 import { requireRole } from '../middleware/auth.middleware';
 import {
-  listAlertRules, getAlertRule, createAlertRule, updateAlertRule, deleteAlertRule,
+  createAlertRule, deleteAlertRule, getAlertRule, listAlertRules, updateAlertRule,
 } from '../alert-monitor';
 
 const router = Router();
@@ -22,7 +22,13 @@ router.get('/alerts/:id', requireRole('admin'), async (req: Request, res: Respon
 
 router.post('/alerts', requireRole('admin'), async (req: Request, res: Response) => {
   const {
-    name, entity_id, condition_type, condition_value, message_template, cooldown_minutes, enabled,
+    name,
+    entity_id: entityId,
+    condition_type: conditionType,
+    condition_value: conditionValue,
+    message_template: messageTemplate,
+    cooldown_minutes: cooldownMinutes,
+    enabled,
   } = req.body as {
     name?: string;
     entity_id?: string;
@@ -33,7 +39,7 @@ router.post('/alerts', requireRole('admin'), async (req: Request, res: Response)
     enabled?: boolean;
   };
 
-  if (!name || !entity_id || !condition_type || !condition_value) {
+  if (!name || !entityId || !conditionType || !conditionValue) {
     res.status(400).json({ error: 'name, entity_id, condition_type, and condition_value are required' });
     return;
   }
@@ -41,11 +47,16 @@ router.post('/alerts', requireRole('admin'), async (req: Request, res: Response)
   const rule = await createAlertRule({
     user_sub: req.user?.sub || 'admin',
     name,
-    entity_id,
-    condition_type,
-    condition_value,
-    message_template,
-    cooldown_minutes,
+    // eslint-disable-next-line camelcase
+    entity_id: entityId,
+    // eslint-disable-next-line camelcase
+    condition_type: conditionType,
+    // eslint-disable-next-line camelcase
+    condition_value: conditionValue,
+    // eslint-disable-next-line camelcase
+    message_template: messageTemplate,
+    // eslint-disable-next-line camelcase
+    cooldown_minutes: cooldownMinutes,
     enabled,
   });
   res.status(201).json(rule);

@@ -60,11 +60,16 @@ export async function listTokens(userSub?: string): Promise<Omit<WebhookToken, '
   if (!pool) return [];
   const query = userSub
     ? {
-      text: 'SELECT id, user_sub, name, scopes, last_used_at, enabled, created_at FROM webhook_tokens WHERE user_sub = $1 ORDER BY created_at DESC',
+      text: `SELECT id, user_sub, name, scopes, last_used_at, enabled, created_at
+        FROM webhook_tokens
+        WHERE user_sub = $1
+        ORDER BY created_at DESC`,
       values: [userSub],
     }
     : {
-      text: 'SELECT id, user_sub, name, scopes, last_used_at, enabled, created_at FROM webhook_tokens ORDER BY created_at DESC',
+      text: `SELECT id, user_sub, name, scopes, last_used_at, enabled, created_at
+        FROM webhook_tokens
+        ORDER BY created_at DESC`,
       values: [],
     };
   const result = await pool.query(query.text, query.values);

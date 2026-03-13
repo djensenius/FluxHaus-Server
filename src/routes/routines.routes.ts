@@ -1,7 +1,7 @@
-import { Router, Request, Response } from 'express';
+import { Request, Response, Router } from 'express';
 import { requireRole } from '../middleware/auth.middleware';
 import {
-  listRoutines, getRoutine, createRoutine, updateRoutine, deleteRoutine,
+  createRoutine, deleteRoutine, getRoutine, listRoutines, updateRoutine,
 } from '../scheduler';
 import { FluxHausServices } from '../services';
 
@@ -23,7 +23,12 @@ export default function createRoutinesRouter(services: FluxHausServices): Router
   });
 
   router.post('/routines', requireRole('admin'), async (req: Request, res: Response) => {
-    const { name, cron, prompt, enabled } = req.body as {
+    const {
+      name,
+      cron,
+      prompt,
+      enabled,
+    } = req.body as {
       name?: string;
       cron?: string;
       prompt?: string;

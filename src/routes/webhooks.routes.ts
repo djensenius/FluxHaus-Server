@@ -1,8 +1,8 @@
-import { Router, Request, Response } from 'express';
+import { Request, Response, Router } from 'express';
 import { requireRole } from '../middleware/auth.middleware';
 import { logEvent } from '../audit';
 import {
-  validateToken, hasScope, listTokens, createToken, deleteToken, toggleToken,
+  createToken, deleteToken, hasScope, listTokens, toggleToken, validateToken,
 } from '../webhook-tokens';
 import { executeAICommand } from '../ai-command';
 import { FluxHausServices } from '../services';
