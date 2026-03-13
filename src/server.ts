@@ -27,8 +27,13 @@ import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
+import alertsRouter from './routes/alerts.routes';
+import createRoutinesRouter from './routes/routines.routes';
+import createWebhooksRouter from './routes/webhooks.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
+import { loadAndScheduleAll } from './scheduler';
+import { startMonitor, setAlertCallback } from './alert-monitor';
 import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
 import { decrypt, encrypt } from './encryption';
@@ -1204,6 +1209,21 @@ export async function createServer(): Promise<Express> {
   app.use(adminRouter);
   app.use(pushRouter);
   app.use(liveActivityTestRouter);
+  app.use(alertsRouter);
+  app.use(createRoutinesRouter(allServices));
+  app.use(createWebhooksRouter(allServices));
+
+  // Start background services
+  loadAndScheduleAll(allServices).catch((err) => {
+    serverLogger.error({ err }, 'Failed to load scheduled routines');
+  });
+
+  startMonitor(allServices.homeAssistantClient, 30_000);
+  setAlertCallback((rule, _entity, message) => {
+    serverLogger.info({ ruleId: rule.id, message }, 'Alert triggered');
+    // TODO: send push notification when simple alert push is implemented
+  });
+
   app.use(notFoundHandler);
 
   return app;

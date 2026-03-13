@@ -104,6 +104,51 @@ export async function initDatabase(): Promise<void> {
         display_name TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      CREATE TABLE IF NOT EXISTS scheduled_routines (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        name TEXT NOT NULL,
+        cron TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        enabled BOOLEAN DEFAULT true,
+        last_run_at TIMESTAMPTZ,
+        last_result TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_routines_user
+        ON scheduled_routines (user_sub);
+
+      CREATE TABLE IF NOT EXISTS alert_rules (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        name TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        condition_type TEXT NOT NULL,
+        condition_value JSONB NOT NULL,
+        message_template TEXT,
+        cooldown_minutes INTEGER DEFAULT 60,
+        last_triggered_at TIMESTAMPTZ,
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_alert_rules_user
+        ON alert_rules (user_sub);
+
+      CREATE TABLE IF NOT EXISTS webhook_tokens (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        name TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        scopes JSONB DEFAULT '["command"]'::jsonb,
+        last_used_at TIMESTAMPTZ,
+        enabled BOOLEAN DEFAULT true,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_webhook_tokens_hash
+        ON webhook_tokens (token_hash);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {
