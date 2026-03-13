@@ -46,7 +46,16 @@ jest.mock('../middleware/oidc.middleware', () => {
   return {
     initOidc: jest.fn(),
     getOidcIssuer: jest.fn().mockReturnValue(null),
-    validateBearerToken: jest.fn().mockResolvedValue(null),
+    validateBearerToken: jest.fn().mockImplementation(async (token: string) => {
+      if (token === 'test-oidc-token') {
+        return {
+          sub: 'test-user-123',
+          email: 'admin@test.com',
+          preferred_username: 'admin',
+        };
+      }
+      return null;
+    }),
     isOidcEnabled: jest.fn().mockReturnValue(false),
     createAuthRouter: jest.fn().mockReturnValue(Router()),
   };
@@ -67,6 +76,9 @@ global.fetch = jest.fn(() => Promise.resolve({
 function basicAuthHeader(user: string, pass: string): string {
   return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
 }
+
+// Helper: OIDC Bearer auth header (validates via mocked validateBearerToken)
+const oidcAuthHeader = 'Bearer test-oidc-token';
 
 describe('Server', () => {
   let app: express.Express;
@@ -158,7 +170,7 @@ describe('Server', () => {
   it('should return data for admin user', async () => {
     const response = await request(app)
       .get('/')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
 
     expect(response.body).toHaveProperty('timestamp');
@@ -174,7 +186,7 @@ describe('Server', () => {
 
     const response = await request(app)
       .get('/')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
 
     expect(response.body.broombot).not.toHaveProperty('batteryLevel');
@@ -203,7 +215,7 @@ describe('Server', () => {
   it('should turn on broombot', async () => {
     await request(app)
       .post('/turnOnBroombot')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockBroombot.turnOn).toHaveBeenCalled();
   });
@@ -211,7 +223,7 @@ describe('Server', () => {
   it('should turn off broombot', async () => {
     await request(app)
       .post('/turnOffBroombot')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockBroombot.turnOff).toHaveBeenCalled();
   });
@@ -219,7 +231,7 @@ describe('Server', () => {
   it('should turn on mopbot', async () => {
     await request(app)
       .post('/turnOnMopbot')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockMopbot.turnOn).toHaveBeenCalled();
   });
@@ -227,7 +239,7 @@ describe('Server', () => {
   it('should turn off mopbot', async () => {
     await request(app)
       .post('/turnOffMopbot')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockMopbot.turnOff).toHaveBeenCalled();
   });
@@ -236,7 +248,7 @@ describe('Server', () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
     await request(app)
       .post('/turnOnDeepClean')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
 
     expect(mockBroombot.turnOn).toHaveBeenCalled();
@@ -249,7 +261,7 @@ describe('Server', () => {
   it('should stop deep clean', async () => {
     await request(app)
       .post('/turnOffDeepClean')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
 
     expect(mockBroombot.turnOff).toHaveBeenCalled();
@@ -259,7 +271,7 @@ describe('Server', () => {
   it('should start car', async () => {
     await request(app)
       .post('/startCar')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockCar.start).toHaveBeenCalled();
   });
@@ -267,7 +279,7 @@ describe('Server', () => {
   it('should stop car', async () => {
     await request(app)
       .post('/stopCar')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockCar.stop).toHaveBeenCalled();
   });
@@ -275,7 +287,7 @@ describe('Server', () => {
   it('should lock car', async () => {
     await request(app)
       .post('/lockCar')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockCar.lock).toHaveBeenCalled();
   });
@@ -283,7 +295,7 @@ describe('Server', () => {
   it('should unlock car', async () => {
     await request(app)
       .post('/unlockCar')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockCar.unlock).toHaveBeenCalled();
   });
@@ -291,7 +303,7 @@ describe('Server', () => {
   it('should resync car', async () => {
     await request(app)
       .post('/resyncCar')
-      .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+      .set('Authorization', oidcAuthHeader)
       .expect(200);
     expect(mockCar.resync).toHaveBeenCalled();
   });
@@ -372,7 +384,7 @@ describe('Server', () => {
     it('returns 400 when neither audio nor text is provided', async () => {
       await request(app)
         .post('/voice')
-        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .set('Authorization', oidcAuthHeader)
         .send({})
         .expect(400);
     });
@@ -380,7 +392,7 @@ describe('Server', () => {
     it('processes text input and returns audio/mpeg', async () => {
       const response = await request(app)
         .post('/voice')
-        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .set('Authorization', oidcAuthHeader)
         .send({ text: 'Turn on the lights' })
         .expect(200);
 
@@ -403,7 +415,7 @@ describe('Server', () => {
       const fakeAudio = Buffer.from('fake audio bytes').toString('base64');
       await request(app)
         .post('/voice')
-        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .set('Authorization', oidcAuthHeader)
         .send({ audio: fakeAudio, filename: 'recording.webm' })
         .expect(200);
 
@@ -426,7 +438,7 @@ describe('Server', () => {
       const fakeAudio = Buffer.from('fake').toString('base64');
       await request(app)
         .post('/voice')
-        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .set('Authorization', oidcAuthHeader)
         .send({ audio: fakeAudio })
         .expect(200);
 
@@ -441,7 +453,7 @@ describe('Server', () => {
       const fakeAudio = Buffer.from('fake').toString('base64');
       const response = await request(app)
         .post('/voice')
-        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .set('Authorization', oidcAuthHeader)
         .send({ audio: fakeAudio })
         .expect(500);
 
@@ -452,7 +464,7 @@ describe('Server', () => {
       mockedSynthesizeSpeech.mockRejectedValue(new Error('TTS failed'));
       const response = await request(app)
         .post('/voice')
-        .set('Authorization', basicAuthHeader('admin', 'adminpassword'))
+        .set('Authorization', oidcAuthHeader)
         .send({ text: 'hello' })
         .expect(500);
 
