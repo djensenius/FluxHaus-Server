@@ -15,14 +15,14 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v6
         with:
-          node-version: '24.x'
+          node-version: '20.x'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Configure Git User
@@ -37,7 +37,7 @@ jobs:
           echo "new_version=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
 
       - name: Create Pull Request
-        uses: peter-evans/create-pull-request@v5
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.GH_PAT }}
           commit-message: "chore: release ${{ steps.version.outputs.new_version }}"
