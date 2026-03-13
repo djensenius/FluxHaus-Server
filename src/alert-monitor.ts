@@ -93,11 +93,12 @@ async function checkRules(haClient: HomeAssistantClient): Promise<void> {
   // Collect unique entity IDs and fetch their states
   const entityIds = [...new Set(rules.map((r) => r.entity_id))];
 
+  // eslint-disable-next-line no-restricted-syntax
   for (const entityId of entityIds) {
     try {
       // eslint-disable-next-line no-await-in-loop
       const states = await haClient.getState(entityId);
-      if (!states || (Array.isArray(states) && states.length === 0)) continue;
+      if (!states || (Array.isArray(states) && states.length === 0)) continue; // eslint-disable-line no-continue
 
       const entity = Array.isArray(states) ? states[0] : states;
       const currentState = String(entity.state);
@@ -108,12 +109,15 @@ async function checkRules(haClient: HomeAssistantClient): Promise<void> {
 
       // Evaluate rules for this entity
       const matchingRules = rules.filter((r) => r.entity_id === entityId);
+      // eslint-disable-next-line no-restricted-syntax
       for (const rule of matchingRules) {
-        if (isInCooldown(rule)) continue;
+        if (isInCooldown(rule)) continue; // eslint-disable-line no-continue
 
         if (evaluateCondition(rule, currentState, previousState)) {
           const message = buildAlertMessage(rule, currentState);
-          alertLogger.info({ ruleId: rule.id, name: rule.name, entityId, state: currentState }, 'Alert triggered');
+          alertLogger.info({
+            ruleId: rule.id, name: rule.name, entityId, state: currentState,
+          }, 'Alert triggered');
 
           // Update last_triggered_at
           // eslint-disable-next-line no-await-in-loop
@@ -195,7 +199,9 @@ export async function createAlertRule(
   if (!pool) throw new Error('Database not available');
 
   const result = await pool.query(
-    `INSERT INTO alert_rules (user_sub, name, entity_id, condition_type, condition_value, message_template, cooldown_minutes, enabled)
+    `INSERT INTO alert_rules
+       (user_sub, name, entity_id, condition_type, condition_value,
+        message_template, cooldown_minutes, enabled)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
@@ -226,13 +232,23 @@ export async function updateAlertRule(
   const values: unknown[] = [];
   let idx = 1;
 
-  if (data.name !== undefined) { sets.push(`name = $${idx}`); values.push(data.name); idx += 1; }
-  if (data.entity_id !== undefined) { sets.push(`entity_id = $${idx}`); values.push(data.entity_id); idx += 1; }
-  if (data.condition_type !== undefined) { sets.push(`condition_type = $${idx}`); values.push(data.condition_type); idx += 1; }
-  if (data.condition_value !== undefined) { sets.push(`condition_value = $${idx}`); values.push(JSON.stringify(data.condition_value)); idx += 1; }
-  if (data.message_template !== undefined) { sets.push(`message_template = $${idx}`); values.push(data.message_template); idx += 1; }
-  if (data.cooldown_minutes !== undefined) { sets.push(`cooldown_minutes = $${idx}`); values.push(data.cooldown_minutes); idx += 1; }
-  if (data.enabled !== undefined) { sets.push(`enabled = $${idx}`); values.push(data.enabled); idx += 1; }
+  const fieldMap: Array<[string, unknown]> = [
+    ['name', data.name],
+    ['entity_id', data.entity_id],
+    ['condition_type', data.condition_type],
+    ['condition_value', data.condition_value !== undefined
+      ? JSON.stringify(data.condition_value) : undefined],
+    ['message_template', data.message_template],
+    ['cooldown_minutes', data.cooldown_minutes],
+    ['enabled', data.enabled],
+  ];
+  fieldMap.forEach(([col, val]) => {
+    if (val !== undefined) {
+      sets.push(`${col} = $${idx}`);
+      values.push(val);
+      idx += 1;
+    }
+  });
   sets.push('updated_at = NOW()');
 
   if (sets.length === 1) return getAlertRule(id);
