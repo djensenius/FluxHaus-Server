@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
-import { authMiddleware, requireRole, requireOidcForMutations } from '../auth.middleware';
+import { authMiddleware, requireOidcForMutations, requireRole } from '../auth.middleware';
 import { validateBearerToken } from '../oidc.middleware';
 
 jest.mock('../oidc.middleware', () => ({
@@ -136,7 +136,9 @@ describe('requireOidcForMutations', () => {
   });
 
   it('should allow POST from OIDC user (has sub)', () => {
-    const req = { method: 'POST', path: '/startCar', user: { role: 'admin', username: 'admin', sub: 'user-123' } } as unknown as Request;
+    const req = {
+      method: 'POST', path: '/startCar', user: { role: 'admin', username: 'admin', sub: 'user-123' },
+    } as unknown as Request;
     const res = mockRes() as Response;
     const next: NextFunction = jest.fn();
     middleware(req, res, next);
@@ -163,7 +165,9 @@ describe('requireOidcForMutations', () => {
   });
 
   it('should block DELETE from non-OIDC user', () => {
-    const req = { method: 'DELETE', path: '/conversations/1', user: { role: 'admin', username: 'admin' } } as unknown as Request;
+    const req = {
+      method: 'DELETE', path: '/conversations/1', user: { role: 'admin', username: 'admin' },
+    } as unknown as Request;
     const res = mockRes() as Response;
     const next: NextFunction = jest.fn();
     middleware(req, res, next);
@@ -172,7 +176,9 @@ describe('requireOidcForMutations', () => {
   });
 
   it('should allow excluded paths without OIDC', () => {
-    const req = { method: 'POST', path: '/webhooks/trigger', user: { role: 'admin', username: 'admin' } } as unknown as Request;
+    const req = {
+      method: 'POST', path: '/webhooks/trigger', user: { role: 'admin', username: 'admin' },
+    } as unknown as Request;
     const res = mockRes() as Response;
     const next: NextFunction = jest.fn();
     middleware(req, res, next);
