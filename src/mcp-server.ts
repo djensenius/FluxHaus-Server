@@ -1,6 +1,8 @@
 import fs from 'fs';
 // eslint-disable-next-line import/extensions
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Readability } from '@mozilla/readability';
+import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
 
@@ -1811,12 +1813,13 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
           };
         }
         const html = await resp.text();
-        const text = html
-          .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-          .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
+        const { document } = parseHTML(html);
+        const reader = new Readability(document);
+        const article = reader.parse();
+        const text = (article?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        if (!text) {
+          return { content: [{ type: 'text' as const, text: 'Could not extract readable content from the page.' }] };
+        }
         const truncated = text.length > 12_000
           ? `${text.substring(0, 12_000)}\n\n[Content truncated — ${text.length} chars total]`
           : text;
