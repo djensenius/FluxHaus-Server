@@ -19,6 +19,7 @@ import { ImmichClient } from './clients/immich';
 import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
+import { KagiClient } from './clients/kagi';
 import logger from './logger';
 
 const servicesLogger = logger.child({ subsystem: 'services' });
@@ -46,6 +47,7 @@ export interface FluxHausServices {
   unifi?: UniFiClient;
   forgejo?: ForgejoClient;
   pihole?: PiHoleClient;
+  kagi?: KagiClient;
 }
 
 export async function createServices(): Promise<FluxHausServices> {
@@ -164,6 +166,9 @@ export async function createServices(): Promise<FluxHausServices> {
     pihole: new PiHoleClient({
       url: (process.env.PIHOLE_URL || '').trim(),
       password: (process.env.PIHOLE_PASSWORD || '').trim(),
+    }),
+    kagi: new KagiClient({
+      apiKey: (process.env.KAGI_API_KEY || '').trim(),
     }),
   };
 }

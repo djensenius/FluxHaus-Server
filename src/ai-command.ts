@@ -1,10 +1,24 @@
 import Anthropic from '@anthropic-ai/sdk';
 import OpenAI, { AzureOpenAI } from 'openai';
+import { Readability } from '@mozilla/readability';
+import { parseHTML } from 'linkedom';
 import { FluxHausServices } from './services';
 import { deleteMemory, saveMemory } from './memory';
 import logger from './logger';
 
 const aiLogger = logger.child({ subsystem: 'ai' });
+
+// ── Shared types ─────────────────────────────────────────────────────────────
+
+export interface ToolResultImage {
+  base64: string;
+  mediaType: string;
+}
+
+export interface ToolResult {
+  text: string;
+  images?: ToolResultImage[];
+}
 
 // ── Shared system prompt ──────────────────────────────────────────────────────
 
@@ -12,8 +26,12 @@ const SYSTEM_PROMPT = 'You are FluxHaus, an AI assistant for a smart home. '
   + 'Always use your tools to fulfill requests about the home — never guess '
   + 'device states or act without calling a tool first. For status queries, '
   + 'call the relevant get_ tools (e.g. get_car_status, get_robot_status, '
-  + 'get_appliance_status, get_entity_state). For general conversation that '
-  + 'doesn\'t involve devices or home data, you may respond directly. '
+  + 'get_appliance_status, get_entity_state). For questions that require '
+  + 'up-to-date information from the internet (news, weather, facts, prices, '
+  + 'etc.), use the web_search tool. To look at images or camera feeds, use '
+  + 'the view_image tool. To create images from descriptions, use generate_image. '
+  + 'For general conversation that doesn\'t involve devices, home data, images, '
+  + 'or web lookups, you may respond directly. '
   + 'After gathering real data from tools, reply with a concise, friendly summary.';
 
 // ── Provider-agnostic tool definitions ───────────────────────────────────────
@@ -922,6 +940,80 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
       },
     },
   },
+  // ── Kagi Web Search ──
+  {
+    name: 'web_search',
+    description: 'Search the web using Kagi. Use this to look up current information, '
+      + 'news, weather, facts, or anything requiring up-to-date knowledge.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'The search query' },
+        limit: { type: 'string', description: 'Maximum number of results to return (default 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'fetch_webpage',
+    description: 'Fetch the text content of a web page. Use this to read articles, '
+      + 'documentation, or any URL from search results. Returns readable text.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL of the web page to read' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'summarize_url',
+    description: 'Summarize a web page, article, PDF, or YouTube video using Kagi. '
+      + 'Best for long content you need a quick overview of.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL to summarize (web page, PDF, YouTube video, etc.)' },
+        engine: {
+          type: 'string',
+          description: 'Summarizer engine: agnes (fast), cecil (balanced, default), muriel (high-quality)',
+          enum: ['agnes', 'cecil', 'muriel'],
+        },
+      },
+      required: ['url'],
+    },
+  },
+  // ── Vision & Image Generation ──
+  {
+    name: 'view_image',
+    description: 'Fetch and analyze an image from a URL. Use this to look at camera '
+      + 'feeds, photos, or any image the user asks about.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'URL of the image to view' },
+        question: {
+          type: 'string',
+          description: 'Optional question about the image (e.g. "What do you see?")',
+        },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'generate_image',
+    description: 'Generate an image from a text description using DALL·E 3. '
+      + 'Returns a URL to the generated image.',
+    parameters: {
+      type: 'object',
+      properties: {
+        prompt: { type: 'string', description: 'Detailed description of the image to generate' },
+        size: { type: 'string', description: 'Image size', enum: ['1024x1024', '1792x1024', '1024x1792'] },
+        quality: { type: 'string', description: 'Image quality', enum: ['standard', 'hd'] },
+      },
+      required: ['prompt'],
+    },
+  },
 
   // ── User Memory ──
   {
@@ -952,6 +1044,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
 // ── Tool executor ─────────────────────────────────────────────────────────────
 
 const TOOL_TIMEOUT_MS = 30_000;
+const IMAGE_FETCH_TIMEOUT_MS = 15_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -963,6 +1056,7 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+// Public API — returns plain text (backward compat for tests and callers)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function executeTool(
   name: string,
@@ -973,11 +1067,125 @@ export async function executeTool(
 ): Promise<string> {
   try {
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
-    return await withTimeout(executeToolInner(name, args, services, userSub), TOOL_TIMEOUT_MS, name);
+    const result = await withTimeout(executeToolInner(name, args, services, userSub), TOOL_TIMEOUT_MS, name);
+    return result;
   } catch (err) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
     aiLogger.error({ tool: name, err: msg }, 'Tool execution failed');
     return `Error: ${msg}`;
+  }
+}
+
+// Internal — returns rich result with optional images (used by agentic loops)
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeToolRich(
+  name: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>,
+  services: FluxHausServices,
+  userSub?: string,
+): Promise<ToolResult> {
+  try {
+    // Image-aware tools return ToolResult with images
+    if (name === 'view_image') {
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      return await withTimeout(executeViewImage(args, services), TOOL_TIMEOUT_MS, name);
+    }
+    if (name === 'generate_image') {
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      return await withTimeout(executeGenerateImage(args), TOOL_TIMEOUT_MS, name);
+    }
+    // All other tools return plain text
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    const text = await withTimeout(executeToolInner(name, args, services, userSub), TOOL_TIMEOUT_MS, name);
+    return { text };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    aiLogger.error({ tool: name, err: msg }, 'Tool execution failed');
+    return { text: `Error: ${msg}` };
+  }
+}
+
+async function executeViewImage(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  args: Record<string, any>,
+  services: FluxHausServices,
+): Promise<ToolResult> {
+  const { url } = args;
+  if (!url) throw new Error('url is required');
+
+  // If the URL is a relative camera path, resolve against the configured camera URL
+  let resolvedUrl = url;
+  if (services.cameraURL && !url.startsWith('http')) {
+    resolvedUrl = `${services.cameraURL.replace(/\/$/, '')}/${url.replace(/^\//, '')}`;
+  }
+
+  aiLogger.info({ url: resolvedUrl }, 'Fetching image for vision');
+  // eslint-disable-next-line @typescript-eslint/no-use-before-define
+  const image = await fetchImageAsBase64(resolvedUrl);
+  const question = args.question || 'Describe what you see in this image.';
+
+  return {
+    text: `Image fetched from ${resolvedUrl}. ${question}`,
+    images: [image],
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function executeGenerateImage(args: Record<string, any>): Promise<ToolResult> {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    return { text: 'Image generation is not configured (set OPENAI_API_KEY for DALL·E 3)' };
+  }
+
+  const { prompt } = args;
+  if (!prompt) throw new Error('prompt is required');
+
+  const size = args.size || '1024x1024';
+  const quality = args.quality || 'standard';
+
+  aiLogger.info({ prompt: prompt.substring(0, 100), size, quality }, 'Generating image with DALL·E 3');
+
+  const client = new OpenAI({ apiKey });
+  const response = await client.images.generate({
+    model: 'dall-e-3',
+    prompt,
+    n: 1,
+    size: size as '1024x1024' | '1792x1024' | '1024x1792',
+    quality: quality as 'standard' | 'hd',
+    response_format: 'url',
+  });
+
+  const imageUrl = response.data?.[0]?.url;
+  const revisedPrompt = response.data?.[0]?.revised_prompt;
+
+  if (!imageUrl) {
+    return { text: 'Image generation failed — no image URL returned.' };
+  }
+
+  return {
+    text: `Image generated successfully.\n\nURL: ${imageUrl}\n\n`
+      + `Revised prompt: ${revisedPrompt || prompt}\n\n`
+      + 'Include this image URL in your response using markdown: '
+      + `![Generated image](${imageUrl})`,
+  };
+}
+
+async function fetchImageAsBase64(url: string): Promise<ToolResultImage> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`Failed to fetch image: ${response.status} ${response.statusText}`);
+    }
+    const contentType = response.headers.get('content-type') || 'image/jpeg';
+    const mediaType = contentType.split(';')[0].trim();
+    const buffer = await response.arrayBuffer();
+    const base64 = Buffer.from(buffer).toString('base64');
+    return { base64, mediaType };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -1422,6 +1630,50 @@ async function executeToolInner(
     if (!services.influxdb?.configured) return 'InfluxDB is not configured';
     return JSON.stringify(await services.influxdb.listMeasurements(args.bucket), null, 2);
 
+  // ── Kagi Web Search ──
+  case 'web_search':
+    if (!services.kagi?.configured) return 'Kagi web search is not configured (set KAGI_API_KEY)';
+    return JSON.stringify(await services.kagi.search(args.query, args.limit ? Number(args.limit) : 5), null, 2);
+  case 'fetch_webpage': {
+    const pageUrl: string = args.url;
+    if (!pageUrl) return 'Error: url is required';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const resp = await fetch(pageUrl, {
+        signal: controller.signal,
+        headers: { Accept: 'text/html,text/plain,application/json' },
+      });
+      if (!resp.ok) return `Error fetching page: ${resp.status} ${resp.statusText}`;
+      const html = await resp.text();
+      // Use Readability + linkedom for robust content extraction
+      const { document } = parseHTML(html);
+      const reader = new Readability(document);
+      const article = reader.parse();
+      const text = (article?.textContent ?? '').replace(/\s+/g, ' ').trim();
+      if (!text) return 'Could not extract readable content from the page.';
+      const truncated = text.length > 12_000
+        ? `${text.substring(0, 12_000)}\n\n[Content truncated — ${text.length} chars total]`
+        : text;
+      return truncated;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  case 'summarize_url':
+    if (!services.kagi?.configured) return 'Kagi is not configured (set KAGI_API_KEY)';
+    return JSON.stringify(
+      await services.kagi.summarize(args.url, args.engine || 'cecil'),
+      null,
+      2,
+    );
+
+  // ── Vision & Image Generation (text-only fallback for non-agentic callers) ──
+  case 'view_image':
+    return `Image at ${args.url} — use the AI command for vision analysis.`;
+  case 'generate_image':
+    return 'Image generation is only available through the AI command interface.';
+
   // ── User Memory ──
   case 'save_memory':
     if (!userSub) return 'Memory not available — user not authenticated';
@@ -1442,6 +1694,7 @@ async function executeToolInner(
 export interface ConversationMessage {
   role: 'user' | 'assistant';
   content: string;
+  images?: ToolResultImage[];
 }
 
 export type ProgressCallback = (event: {
@@ -1450,11 +1703,47 @@ export type ProgressCallback = (event: {
   tool?: string;
 }) => void;
 
+// Build Anthropic message content with optional images
+function toAnthropicContent(
+  text: string,
+  images?: ToolResultImage[],
+): string | Anthropic.ContentBlockParam[] {
+  if (!images?.length) return text;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const blocks: any[] = images.map((img) => ({
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: img.mediaType,
+      data: img.base64,
+    },
+  }));
+  blocks.push({ type: 'text', text });
+  return blocks;
+}
+
+// Build OpenAI message content with optional images
+function toOpenAIContent(
+  text: string,
+  images?: ToolResultImage[],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): string | any[] {
+  if (!images?.length) return text;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parts: any[] = images.map((img) => ({
+    type: 'image_url',
+    image_url: { url: `data:${img.mediaType};base64,${img.base64}` },
+  }));
+  parts.push({ type: 'text', text });
+  return parts;
+}
+
 async function executeWithAnthropic(
   command: string,
   services: FluxHausServices,
   conversationHistory: ConversationMessage[],
   onProgress?: ProgressCallback,
+  images?: ToolResultImage[],
   systemPrompt?: string,
   userSub?: string,
 ): Promise<string> {
@@ -1473,9 +1762,9 @@ async function executeWithAnthropic(
   const messages: Anthropic.MessageParam[] = [
     ...conversationHistory.map((m) => ({
       role: m.role as 'user' | 'assistant',
-      content: m.content,
+      content: toAnthropicContent(m.content, m.images),
     })),
-    { role: 'user', content: command },
+    { role: 'user', content: toAnthropicContent(command, images) },
   ];
 
   aiLogger.info(`[AI] Anthropic model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
@@ -1517,18 +1806,32 @@ async function executeWithAnthropic(
           aiLogger.info(`[AI] Tool call: ${block.name}(${JSON.stringify(block.input).substring(0, 200)})`);
           if (onProgress) onProgress({ type: 'tool_call', tool: block.name });
           // eslint-disable-next-line no-await-in-loop
-          const result = await executeTool(
+          const result = await executeToolRich(
             block.name,
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             block.input as Record<string, any>,
             services,
             userSub,
           );
-          toolResults.push({
-            type: 'tool_result',
-            tool_use_id: block.id,
-            content: result,
-          });
+
+          // Build content blocks — include images if the tool returned any
+          if (result.images?.length) {
+            const contentBlocks: Anthropic.ToolResultBlockParam['content'] = [];
+            result.images.forEach((img) => {
+              contentBlocks.push({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: img.mediaType as 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp',
+                  data: img.base64,
+                },
+              });
+            });
+            contentBlocks.push({ type: 'text', text: result.text });
+            toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: contentBlocks });
+          } else {
+            toolResults.push({ type: 'tool_result', tool_use_id: block.id, content: result.text });
+          }
         }
       }
 
@@ -1554,6 +1857,7 @@ async function executeWithOpenAICompatible(
   defaultModel: string,
   conversationHistory: ConversationMessage[],
   onProgress?: ProgressCallback,
+  images?: ToolResultImage[],
   systemPrompt?: string,
   userSub?: string,
 ): Promise<string> {
@@ -1572,9 +1876,9 @@ async function executeWithOpenAICompatible(
     { role: 'system', content: SYSTEM_PROMPT + (systemPrompt || '') },
     ...conversationHistory.map((m) => ({
       role: m.role as 'user' | 'assistant',
-      content: m.content,
+      content: toOpenAIContent(m.content, m.images),
     })),
-    { role: 'user', content: command },
+    { role: 'user', content: toOpenAIContent(command, images) },
   ];
 
   aiLogger.info(`[AI] OpenAI-compat model=${model}, tools=${tools.length}, history=${conversationHistory.length}`);
@@ -1646,7 +1950,7 @@ async function executeWithOpenAICompatible(
           aiLogger.warn({ tool: toolCall.function.name }, 'Malformed tool arguments, using empty');
         }
         // eslint-disable-next-line no-await-in-loop
-        const result = await executeTool(
+        const result = await executeToolRich(
           toolCall.function.name,
           toolArgs,
           services,
@@ -1655,8 +1959,23 @@ async function executeWithOpenAICompatible(
         messages.push({
           role: 'tool',
           tool_call_id: toolCall.id,
-          content: result,
+          content: result.text,
         });
+
+        // OpenAI tool messages don't support image blocks — inject as a user message
+        if (result.images?.length) {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const parts: any[] = [
+            { type: 'text', text: 'Here is the image from the tool result. Analyze it and respond to the user.' },
+          ];
+          result.images.forEach((img) => {
+            parts.push({
+              type: 'image_url',
+              image_url: { url: `data:${img.mediaType};base64,${img.base64}` },
+            });
+          });
+          messages.push({ role: 'user', content: parts });
+        }
       }
     } else if (finishReason === 'tool_calls') {
       // Safety net: finish_reason=tool_calls but no tool_calls found across any choice.
@@ -1706,16 +2025,18 @@ export async function executeAICommand(
   services: FluxHausServices,
   conversationHistory: ConversationMessage[] = [],
   onProgress?: ProgressCallback,
+  images?: ToolResultImage[],
   systemPrompt?: string,
   userSub?: string,
 ): Promise<string> {
 /* eslint-enable default-param-last */
   const provider = (process.env.AI_PROVIDER || 'copilot').toLowerCase();
-  aiLogger.info(`[AI] Provider: ${provider}, AI_MODEL=${process.env.AI_MODEL || '(default)'}`);
-
+  const model = process.env.AI_MODEL || '(default)';
+  const imgInfo = images?.length ? `, images=${images.length}` : '';
+  aiLogger.info(`[AI] Provider: ${provider}, AI_MODEL=${model}${imgInfo}`);
   switch (provider) {
   case 'anthropic':
-    return executeWithAnthropic(command, services, conversationHistory, onProgress, systemPrompt, userSub);
+    return executeWithAnthropic(command, services, conversationHistory, onProgress, images, systemPrompt, userSub);
 
   case 'copilot':
   case 'github-copilot': {
@@ -1732,6 +2053,7 @@ export async function executeAICommand(
       'gpt-4o',
       conversationHistory,
       onProgress,
+      images,
       systemPrompt,
       userSub,
     );
@@ -1749,6 +2071,7 @@ export async function executeAICommand(
       'glm-4-flash',
       conversationHistory,
       onProgress,
+      images,
       systemPrompt,
       userSub,
     );
@@ -1764,6 +2087,7 @@ export async function executeAICommand(
       'gpt-4o',
       conversationHistory,
       onProgress,
+      images,
       systemPrompt,
       userSub,
     );
@@ -1785,6 +2109,7 @@ export async function executeAICommand(
       deployment,
       conversationHistory,
       onProgress,
+      images,
       systemPrompt,
       userSub,
     );

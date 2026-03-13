@@ -1,6 +1,8 @@
 import fs from 'fs';
 // eslint-disable-next-line import/extensions
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { Readability } from '@mozilla/readability';
+import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
 
@@ -1765,6 +1767,144 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
       }
       const data = await services.pihole.getBlockingStatus();
       return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Kagi Web Search ─────────────────────────────────────────────────────────
+
+  server.tool(
+    'web_search',
+    'Search the web using Kagi. Use this to look up current information, news, weather, facts, '
+      + 'or anything requiring up-to-date knowledge.',
+    {
+      query: z.string().describe('The search query'),
+      limit: z.number().min(1).max(20).optional()
+        .describe('Maximum number of results to return (default 5)'),
+    },
+    async ({ query, limit }) => {
+      if (!services.kagi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Kagi web search is not configured (set KAGI_API_KEY)' }] };
+      }
+      const data = await services.kagi.search(query, limit ?? 5);
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  server.tool(
+    'fetch_webpage',
+    'Fetch the text content of a web page. Use this to read articles, documentation, or any URL.',
+    {
+      url: z.string().describe('URL of the web page to read'),
+    },
+    async ({ url }) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
+      try {
+        const resp = await fetch(url, {
+          signal: controller.signal,
+          headers: { Accept: 'text/html,text/plain,application/json' },
+        });
+        if (!resp.ok) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `Error fetching page: ${resp.status} ${resp.statusText}`,
+            }],
+          };
+        }
+        const html = await resp.text();
+        const { document } = parseHTML(html);
+        const reader = new Readability(document);
+        const article = reader.parse();
+        const text = (article?.textContent ?? '').replace(/\s+/g, ' ').trim();
+        if (!text) {
+          return { content: [{ type: 'text' as const, text: 'Could not extract readable content from the page.' }] };
+        }
+        const truncated = text.length > 12_000
+          ? `${text.substring(0, 12_000)}\n\n[Content truncated — ${text.length} chars total]`
+          : text;
+        return { content: [{ type: 'text' as const, text: truncated }] };
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  );
+
+  server.tool(
+    'summarize_url',
+    'Summarize a web page, article, PDF, or YouTube video using Kagi.',
+    {
+      url: z.string().describe('URL to summarize'),
+      engine: z.enum(['agnes', 'cecil', 'muriel']).optional()
+        .describe('Summarizer engine: agnes (fast), cecil (balanced, default), muriel (high-quality)'),
+    },
+    async ({ url, engine }) => {
+      if (!services.kagi?.configured) {
+        return { content: [{ type: 'text' as const, text: 'Kagi is not configured (set KAGI_API_KEY)' }] };
+      }
+      const data = await services.kagi.summarize(url, engine || 'cecil');
+      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+    },
+  );
+
+  // ── Vision & Image Generation ──────────────────────────────────────────────
+
+  server.tool(
+    'view_image',
+    'Fetch and analyze an image from a URL. Use this to look at camera feeds, photos, or any image.',
+    {
+      url: z.string().describe('URL of the image to view'),
+      question: z.string().optional()
+        .describe('Optional question about the image'),
+    },
+    async ({ url }) => {
+      const text = `Image available at: ${url}\n\n`
+        + 'Note: MCP does not support inline images. Use this URL to view the image in a browser.';
+      return { content: [{ type: 'text' as const, text }] };
+    },
+  );
+
+  server.tool(
+    'generate_image',
+    'Generate an image from a text description using DALL·E 3.',
+    {
+      prompt: z.string().describe('Detailed description of the image to generate'),
+      size: z.enum(['1024x1024', '1792x1024', '1024x1792']).optional()
+        .describe('Image size (default 1024x1024)'),
+      quality: z.enum(['standard', 'hd']).optional()
+        .describe('Image quality (default standard)'),
+    },
+    async ({ prompt, size, quality }) => {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: 'Image generation is not configured (set OPENAI_API_KEY for DALL·E 3)',
+          }],
+        };
+      }
+
+      const { default: OpenAI } = await import('openai');
+      const client = new OpenAI({ apiKey });
+      const response = await client.images.generate({
+        model: 'dall-e-3',
+        prompt,
+        n: 1,
+        size: (size || '1024x1024') as '1024x1024' | '1792x1024' | '1024x1792',
+        quality: (quality || 'standard') as 'standard' | 'hd',
+        response_format: 'url',
+      });
+
+      const imageUrl = response.data?.[0]?.url;
+      const revisedPrompt = response.data?.[0]?.revised_prompt;
+
+      if (!imageUrl) {
+        return { content: [{ type: 'text' as const, text: 'Image generation failed — no URL returned.' }] };
+      }
+
+      const text = `Image generated successfully.\n\nURL: ${imageUrl}\n\nRevised prompt: ${revisedPrompt || prompt}`;
+      return { content: [{ type: 'text' as const, text }] };
     },
   );
 

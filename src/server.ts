@@ -27,10 +27,15 @@ import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
+import alertsRouter from './routes/alerts.routes';
+import createRoutinesRouter from './routes/routines.routes';
+import createWebhooksRouter from './routes/webhooks.routes';
 import preferencesRouter from './routes/preferences.routes';
 import memoryRouter from './routes/memory.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
+import { loadAndScheduleAll } from './scheduler';
+import { setAlertCallback, startMonitor } from './alert-monitor';
 import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
 import { decrypt, encrypt } from './encryption';
@@ -882,10 +887,24 @@ export async function createServer(): Promise<Express> {
       'SELECT role, content FROM conversation_messages WHERE conversation_id = $1 ORDER BY created_at',
       [conversationId],
     );
-    return result.rows.map((m) => ({
-      role: m.role as 'user' | 'assistant',
-      content: decrypt(m.content, userSub),
-    }));
+    return result.rows.map((m) => {
+      const decrypted = decrypt(m.content, userSub);
+      // Try to parse as JSON envelope (new format with images)
+      try {
+        const parsed = JSON.parse(decrypted);
+        if (parsed && typeof parsed.text === 'string') {
+          return {
+            role: m.role as 'user' | 'assistant',
+            content: parsed.text,
+            images: parsed.images || undefined,
+          };
+        }
+      } catch { /* plain text — fall through */ }
+      return {
+        role: m.role as 'user' | 'assistant',
+        content: decrypted,
+      };
+    });
   }
 
   /**
@@ -898,10 +917,16 @@ export async function createServer(): Promise<Express> {
     userContent: string,
     assistantContent: string,
     isVoice: boolean,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    images?: Array<{ mediaType: string; base64: string }>,
   ): Promise<void> {
     const db = getPool();
     if (!db) return;
-    const encUser = encrypt(userContent, userSub);
+    // Wrap user content in JSON envelope if images are present
+    const userPayload = images?.length
+      ? JSON.stringify({ text: userContent, images })
+      : userContent;
+    const encUser = encrypt(userPayload, userSub);
     const encAssistant = encrypt(assistantContent, userSub);
     await db.query(
       `INSERT INTO conversation_messages (conversation_id, role, content, is_voice)
@@ -949,9 +974,10 @@ export async function createServer(): Promise<Express> {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const { command, conversationId } = req.body as {
+    const { command, conversationId, images } = req.body as {
       command?: string;
       conversationId?: string;
+      images?: Array<{ mediaType: string; base64: string }>;
     };
     if (!command || typeof command !== 'string') {
       res.status(400).json({ error: 'command is required' });
@@ -965,9 +991,9 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, undefined, memoryFragment, userSub);
+      const response = await executeAICommand(command, services, history, undefined, images, memoryFragment, userSub);
       if (conversationId && userSub) {
-        await storeMessages(conversationId, userSub, command, response, false);
+        await storeMessages(conversationId, userSub, command, response, false, images);
       }
       res.json({ response });
     } catch (err) {
@@ -985,9 +1011,10 @@ export async function createServer(): Promise<Express> {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    const { command, conversationId } = req.body as {
+    const { command, conversationId, images } = req.body as {
       command?: string;
       conversationId?: string;
+      images?: Array<{ mediaType: string; base64: string }>;
     };
     if (!command || typeof command !== 'string') {
       res.status(400).json({ error: 'command is required' });
@@ -1013,9 +1040,9 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, onProgress, memoryFragment, userSub);
+      const response = await executeAICommand(command, services, history, onProgress, images, memoryFragment, userSub);
       if (conversationId && userSub) {
-        await storeMessages(conversationId, userSub, command, response, false);
+        await storeMessages(conversationId, userSub, command, response, false, images);
       }
       res.write(`data: ${JSON.stringify({ type: 'done', text: response })}\n\n`);
     } catch (err) {
@@ -1063,8 +1090,8 @@ export async function createServer(): Promise<Express> {
       if (conversationId && userSub) {
         history = await loadConversationHistory(conversationId, userSub);
       }
-      const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, undefined, memoryFragment, userSub);
+      const memCtx = await getMemoryContext(userSub);
+      const response = await executeAICommand(command, services, history, undefined, undefined, memCtx, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }
@@ -1130,8 +1157,8 @@ export async function createServer(): Promise<Express> {
         }
       };
 
-      const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, onProgress, memoryFragment, userSub);
+      const memCtx = await getMemoryContext(userSub);
+      const response = await executeAICommand(command, services, history, onProgress, undefined, memCtx, userSub);
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }
@@ -1209,6 +1236,21 @@ export async function createServer(): Promise<Express> {
   app.use(preferencesRouter);
   app.use(memoryRouter);
   app.use(liveActivityTestRouter);
+  app.use(alertsRouter);
+  app.use(createRoutinesRouter(allServices));
+  app.use(createWebhooksRouter(allServices));
+
+  // Start background services
+  loadAndScheduleAll(allServices).catch((err) => {
+    serverLogger.error({ err }, 'Failed to load scheduled routines');
+  });
+
+  startMonitor(allServices.homeAssistantClient, 30_000);
+  setAlertCallback((rule, _entity, message) => {
+    serverLogger.info({ ruleId: rule.id, message }, 'Alert triggered');
+    // TODO: send push notification when simple alert push is implemented
+  });
+
   app.use(notFoundHandler);
 
   return app;
