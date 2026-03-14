@@ -28,6 +28,7 @@ import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
 import alertsRouter from './routes/alerts.routes';
+import radarRouter from './routes/radar.routes';
 import createRoutinesRouter from './routes/routines.routes';
 import createWebhooksRouter from './routes/webhooks.routes';
 import preferencesRouter from './routes/preferences.routes';
@@ -1238,6 +1239,7 @@ export async function createServer(): Promise<Express> {
   app.use(memoryRouter);
   app.use(liveActivityTestRouter);
   app.use(alertsRouter);
+  app.use(radarRouter);
   app.use(createRoutinesRouter(allServices));
   app.use(createWebhooksRouter(allServices));
 
