@@ -33,6 +33,7 @@ import createRoutinesRouter from './routes/routines.routes';
 import createWebhooksRouter from './routes/webhooks.routes';
 import preferencesRouter from './routes/preferences.routes';
 import memoryRouter from './routes/memory.routes';
+import conversationSearchRouter from './routes/conversation-search.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import { loadAndScheduleAll } from './scheduler';
@@ -727,6 +728,9 @@ export async function createServer(): Promise<Express> {
   );
 
   // ── Conversation CRUD ─────────────────────────────────────────────────────
+
+  // Search must be registered before :id param route
+  app.use(conversationSearchRouter);
 
   app.get('/conversations', cors(corsOptions), async (req, res) => {
     if (!req.user?.sub) {
