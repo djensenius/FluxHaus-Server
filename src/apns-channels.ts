@@ -251,49 +251,67 @@ export async function ensureAllChannels(): Promise<void> {
   let existing = 0;
   let synced = 0;
 
-  // First, check which types already exist in DB
+  // Check which types already exist in DB
+  const dbResults = await Promise.all(
+    ACTIVITY_TYPES.map(async (actType) => ({
+      actType,
+      stored: await getStoredChannelId(actType),
+    })),
+  );
+
   const missingTypes: string[] = [];
-  for (const actType of ACTIVITY_TYPES) {
-    const stored = await getStoredChannelId(actType);
+  dbResults.forEach(({ actType, stored }) => {
     if (stored) {
       channelCache.set(actType, stored);
       existing += 1;
     } else {
       missingTypes.push(actType);
     }
-  }
+  });
 
   // If any are missing, try listing existing channels from Apple to resync
   if (missingTypes.length > 0) {
     const remoteChannels = await listRemoteChannels();
 
-    for (const remote of remoteChannels) {
-      // Match by display name pattern "FluxHaus {DisplayName}"
-      const matched = missingTypes.find((actType) => {
-        const expected = `FluxHaus ${DISPLAY_NAMES[actType] || actType}`;
-        return remote.name === expected;
-      });
-      if (matched) {
-        await storeChannelId(matched, remote.channelId, remote.name);
-        channelCache.set(matched, remote.channelId);
-        synced += 1;
-        missingTypes.splice(missingTypes.indexOf(matched), 1);
-      }
-    }
+    await Promise.all(
+      remoteChannels
+        .map((remote) => {
+          const matched = missingTypes.find((actType) => {
+            const expected = `FluxHaus ${DISPLAY_NAMES[actType] || actType}`;
+            return remote.name === expected;
+          });
+          if (!matched) return null;
+          return (async () => {
+            await storeChannelId(matched, remote.channelId, remote.name);
+            channelCache.set(matched, remote.channelId);
+            synced += 1;
+            missingTypes.splice(missingTypes.indexOf(matched), 1);
+          })();
+        })
+        .filter(Boolean),
+    );
   }
 
   // Create any that are truly missing (not on Apple's side either)
-  for (const actType of missingTypes) {
-    const channelId = await createChannel(actType);
-    if (channelId) {
-      await storeChannelId(actType, channelId, DISPLAY_NAMES[actType] || actType);
-      channelCache.set(actType, channelId);
-      created += 1;
-    } else {
-      failedAttempts.set(actType, Date.now());
-      channelCache.set(actType, null);
-    }
-  }
+  const createResults = await Promise.all(
+    missingTypes.map(async (actType) => {
+      const channelId = await createChannel(actType);
+      return { actType, channelId };
+    }),
+  );
+
+  await Promise.all(
+    createResults.map(async ({ actType, channelId }) => {
+      if (channelId) {
+        await storeChannelId(actType, channelId, DISPLAY_NAMES[actType] || actType);
+        channelCache.set(actType, channelId);
+        created += 1;
+      } else {
+        failedAttempts.set(actType, Date.now());
+        channelCache.set(actType, null);
+      }
+    }),
+  );
 
   channelLogger.info(
     {
