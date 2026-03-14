@@ -1,5 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
-import { authMiddleware, requireRole } from '../auth.middleware';
+import { authMiddleware, requireOidcForMutations, requireRole } from '../auth.middleware';
 import { validateBearerToken } from '../oidc.middleware';
 
 jest.mock('../oidc.middleware', () => ({
@@ -121,5 +121,76 @@ describe('requireRole', () => {
     const next: NextFunction = jest.fn();
     requireRole('admin')(req, res, next);
     expect(res.status).toHaveBeenCalledWith(403);
+  });
+});
+
+describe('requireOidcForMutations', () => {
+  const middleware = requireOidcForMutations(['/webhooks/trigger']);
+
+  it('should allow GET requests without OIDC', () => {
+    const req = { method: 'GET', path: '/startCar', user: { role: 'demo', username: 'demo' } } as unknown as Request;
+    const res = mockRes() as Response;
+    const next: NextFunction = jest.fn();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('should allow POST from OIDC user (has sub)', () => {
+    const req = {
+      method: 'POST', path: '/startCar', user: { role: 'admin', username: 'admin', sub: 'user-123' },
+    } as unknown as Request;
+    const res = mockRes() as Response;
+    const next: NextFunction = jest.fn();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('should block POST from non-OIDC user (no sub)', () => {
+    const req = { method: 'POST', path: '/startCar', user: { role: 'admin', username: 'admin' } } as unknown as Request;
+    const res = mockRes() as Response;
+    const next: NextFunction = jest.fn();
+    middleware(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.json).toHaveBeenCalledWith({ error: 'OIDC authentication required' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('should block POST from demo user', () => {
+    const req = { method: 'POST', path: '/command', user: { role: 'demo', username: 'demo' } } as unknown as Request;
+    const res = mockRes() as Response;
+    const next: NextFunction = jest.fn();
+    middleware(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('should block DELETE from non-OIDC user', () => {
+    const req = {
+      method: 'DELETE', path: '/conversations/1', user: { role: 'admin', username: 'admin' },
+    } as unknown as Request;
+    const res = mockRes() as Response;
+    const next: NextFunction = jest.fn();
+    middleware(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('should allow excluded paths without OIDC', () => {
+    const req = {
+      method: 'POST', path: '/webhooks/trigger', user: { role: 'admin', username: 'admin' },
+    } as unknown as Request;
+    const res = mockRes() as Response;
+    const next: NextFunction = jest.fn();
+    middleware(req, res, next);
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('should block when no user at all', () => {
+    const req = { method: 'POST', path: '/startCar' } as unknown as Request;
+    const res = mockRes() as Response;
+    const next: NextFunction = jest.fn();
+    middleware(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
   });
 });

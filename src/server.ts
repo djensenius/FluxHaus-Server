@@ -10,7 +10,7 @@ import cors, { CorsOptions } from 'cors';
 // eslint-disable-next-line import/extensions
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import notFoundHandler from './middleware/not-found.middleware';
-import { authMiddleware } from './middleware/auth.middleware';
+import { authMiddleware, requireOidcForMutations } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
 import { csrfMiddleware, generateCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
@@ -189,6 +189,7 @@ export async function createServer(): Promise<Express> {
 
   // Auth middleware
   app.use(authMiddleware);
+  app.use(requireOidcForMutations(['/webhooks/trigger']));
   app.use(auditMiddleware);
 
   // CSRF token endpoint — returns (or lazily generates) the per-session CSRF

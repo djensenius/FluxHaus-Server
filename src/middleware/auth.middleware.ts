@@ -27,6 +27,25 @@ export function requireRole(...roles: string[]) {
   };
 }
 
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Block all state-mutating requests from non-OIDC users (no `sub` claim).
+ * Safe methods (GET, HEAD, OPTIONS) and explicitly excluded paths are allowed.
+ */
+export function requireOidcForMutations(excludePaths: string[] = []) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (SAFE_METHODS.has(req.method)) return next();
+    if (excludePaths.some((p) => req.path === p || req.path.startsWith(`${p}/`))) {
+      return next();
+    }
+    if (!req.user?.sub) {
+      return res.status(403).json({ error: 'OIDC authentication required' });
+    }
+    return next();
+  };
+}
+
 export async function authMiddleware(
   req: Request,
   res: Response,
