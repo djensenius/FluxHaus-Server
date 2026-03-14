@@ -1,5 +1,4 @@
 import { Request, Response, Router } from 'express';
-import { requireRole } from '../middleware/auth.middleware';
 import logger from '../logger';
 
 const router = Router();
@@ -13,7 +12,12 @@ const router = Router();
  *
  * Response: { snapshot, tileBase, tileQuery }
  */
-router.get('/api/radar/config', requireRole('admin'), async (_req: Request, res: Response) => {
+router.get('/api/radar/config', async (req: Request, res: Response) => {
+  if (!req.user?.sub) {
+    res.status(403).json({ error: 'OIDC authentication required' });
+    return;
+  }
+
   const apiKey = process.env.RAINBOW_API_KEY;
   if (!apiKey) {
     res.status(503).json({ error: 'RAINBOW_API_KEY not configured' });
