@@ -40,7 +40,7 @@ router.get('/api/radar/config', async (req: Request, res: Response) => {
     res.json({
       snapshot: data.snapshot,
       tileBase: 'https://api.rainbow.ai/tiles/v1/precip',
-      tileQuery: `token=${apiKey}`,
+      tileQuery: `token=${apiKey}&color=1`,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';
