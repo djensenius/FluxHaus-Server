@@ -165,6 +165,13 @@ export async function initDatabase(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_user_memories_user
         ON user_memories (user_sub);
+
+      CREATE TABLE IF NOT EXISTS la_subscriptions (
+        user_sub TEXT PRIMARY KEY,
+        device_types JSONB NOT NULL DEFAULT '["dishwasher","washer","dryer","broombot","mopbot"]'::jsonb,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

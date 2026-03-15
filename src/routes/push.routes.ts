@@ -3,6 +3,7 @@ import {
   deleteDeviceToken, saveDeviceToken,
 } from '../push-token-store';
 import { getAllChannels, getChannelId } from '../apns-channels';
+import { getSubscriptions, saveSubscriptions } from '../la-subscriptions';
 import logger from '../logger';
 
 const pushLogger = logger.child({ subsystem: 'push-routes' });
@@ -83,6 +84,47 @@ router.delete('/push-tokens/device/:token', async (req, res) => {
   } catch (err) {
     pushLogger.error({ err, userSub }, 'Failed to unregister device token');
     res.status(500).json({ error: 'Failed to unregister device token' });
+  }
+});
+
+// --- Live Activity subscription preferences ---
+
+router.get('/push-tokens/subscriptions', async (req, res) => {
+  const userSub = req.user?.sub;
+  if (!userSub) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  try {
+    const deviceTypes = await getSubscriptions(userSub);
+    res.json({ deviceTypes });
+  } catch (err) {
+    pushLogger.error({ err, userSub }, 'Failed to get subscriptions');
+    res.status(500).json({ error: 'Failed to get subscriptions' });
+  }
+});
+
+router.post('/push-tokens/subscriptions', async (req, res) => {
+  const userSub = req.user?.sub;
+  if (!userSub) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const { deviceTypes } = req.body as { deviceTypes?: string[] };
+  if (!Array.isArray(deviceTypes)) {
+    res.status(400).json({ error: 'deviceTypes array is required' });
+    return;
+  }
+
+  try {
+    await saveSubscriptions(userSub, deviceTypes);
+    pushLogger.info({ userSub, count: deviceTypes.length }, 'Subscriptions updated');
+    res.json({ success: true, deviceTypes });
+  } catch (err) {
+    pushLogger.error({ err, userSub }, 'Failed to save subscriptions');
+    res.status(500).json({ error: 'Failed to save subscriptions' });
   }
 });
 

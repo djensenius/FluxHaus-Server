@@ -6,7 +6,7 @@ import logger from './logger';
 
 const channelLogger = logger.child({ subsystem: 'apns-channels' });
 
-const ACTIVITY_TYPES = ['dishwasher', 'washer', 'dryer', 'broombot', 'mopbot'];
+const ACTIVITY_TYPES = ['dishwasher', 'washer', 'dryer', 'broombot', 'mopbot', 'consolidated'];
 
 const DISPLAY_NAMES: Record<string, string> = {
   dishwasher: 'Dishwasher',
@@ -14,6 +14,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   dryer: 'Dryer',
   broombot: 'BroomBot',
   mopbot: 'MopBot',
+  consolidated: 'All Appliances',
 };
 
 // In-memory cache to avoid repeated DB queries and Apple API calls
