@@ -73,7 +73,7 @@ export async function sendLiveActivityUpdate(
       timestamp: Math.floor(Date.now() / 1000),
       event,
       'content-state': contentState,
-      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) + 300 } : {}),
+      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
       'stale-date': Math.floor(Date.now() / 1000) + 900,
     },
   };
@@ -222,7 +222,7 @@ export async function sendBroadcastUpdate(
       timestamp: Math.floor(Date.now() / 1000),
       event,
       'content-state': contentState,
-      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) + 300 } : {}),
+      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
       'stale-date': Math.floor(Date.now() / 1000) + 900,
     },
   };
@@ -329,7 +329,7 @@ export async function sendMultiDeviceBroadcast(
       timestamp: Math.floor(Date.now() / 1000),
       event,
       'content-state': contentState,
-      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) + 300 } : {}),
+      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
       'stale-date': Math.floor(Date.now() / 1000) + 900,
     },
   };

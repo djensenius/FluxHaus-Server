@@ -17,6 +17,13 @@ const previousRunningState = new Map<string, boolean>();
 // Cached device states for building consolidated activity
 const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
 
+// Throttle consolidated broadcasts to avoid flooding
+let lastConsolidatedBroadcast = 0;
+const CONSOLIDATED_THROTTLE_MS = 10_000;
+
+// Periodic keep-alive interval to prevent stale activities
+let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
+
 function formatTimeRemaining(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
@@ -144,8 +151,9 @@ async function maybePushToStart(
 /**
  * Build and broadcast the consolidated multi-device Live Activity.
  * Called after every individual device state change.
+ * Throttled to avoid flooding Apple's servers.
  */
-async function broadcastConsolidated(): Promise<void> {
+async function broadcastConsolidated(force = false): Promise<void> {
   const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
   const hasRunning = runningDevices.length > 0;
   const wasAnyRunning = previousRunningState.get('consolidated') ?? false;
@@ -164,11 +172,46 @@ async function broadcastConsolidated(): Promise<void> {
         laLogger.info({ count: runningDevices.length }, 'Sending consolidated push-to-start');
         await multiDevicePushToStartAll(subscribedTokens, contentState, channelId);
       }
+      startKeepAlive();
     }
+
+    // Throttle regular updates (but always send transitions)
+    const now = Date.now();
+    if (!force && wasAnyRunning && now - lastConsolidatedBroadcast < CONSOLIDATED_THROTTLE_MS) {
+      return;
+    }
+    lastConsolidatedBroadcast = now;
+
     await sendMultiDeviceBroadcast(channelId, contentState, 'update');
   } else if (wasAnyRunning) {
-    // All devices stopped — end the consolidated activity
+    // All devices stopped — end the consolidated activity immediately
+    stopKeepAlive();
     await sendMultiDeviceBroadcast(channelId, { devices: [] }, 'end');
+  }
+}
+
+/**
+ * Start a periodic keep-alive that re-broadcasts the consolidated state
+ * to prevent activities from going stale (stale-date is 15 min).
+ * Runs every 5 minutes while any device is running.
+ */
+function startKeepAlive(): void {
+  if (keepAliveInterval) return;
+  keepAliveInterval = setInterval(() => {
+    const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
+    if (runningDevices.length === 0) {
+      stopKeepAlive();
+      return;
+    }
+    laLogger.debug({ count: runningDevices.length }, 'Keep-alive broadcast');
+    broadcastConsolidated(true).catch(() => {});
+  }, 5 * 60 * 1000);
+}
+
+function stopKeepAlive(): void {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
   }
 }
 
