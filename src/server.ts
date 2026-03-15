@@ -892,9 +892,8 @@ export async function createServer(): Promise<Express> {
       }
 
       const snippet = history.slice(0, 4).map((m) => `${m.role}: ${m.content.substring(0, 150)}`).join('\n');
-      const titlePrompt = 'Generate a concise title (3-6 words) for this conversation. '
-        + 'Return ONLY the title text, nothing else. No quotes, no punctuation at the end.\n\n'
-        + snippet;
+      const titlePrompt = `Generate a concise title (3-6 words) for this conversation. `
+        + `Return ONLY the title text, nothing else. No quotes, no punctuation at the end.\n\n${snippet}`;
 
       const title = await executeAICommand(titlePrompt, allServices);
       const cleanTitle = title.replace(/^["']|["']$/g, '').trim().substring(0, 80);

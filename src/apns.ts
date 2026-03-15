@@ -1,6 +1,6 @@
 import apn from '@parse/node-apn';
 import logger from './logger';
-import { deleteDeviceToken, deletePushToken } from './push-token-store';
+import { deleteApnsToken, deleteDeviceToken, deletePushToken } from './push-token-store';
 
 const apnsLogger = logger.child({ subsystem: 'apns' });
 
@@ -352,6 +352,51 @@ export async function sendMultiDeviceBroadcast(
     apnsLogger.error({ err }, 'Multi-device broadcast error');
     return false;
   }
+}
+
+// --- Regular alert push notifications ---
+
+export async function sendAlertNotification(
+  token: string,
+  title: string,
+  body: string,
+  category?: string,
+): Promise<boolean> {
+  if (!provider) return false;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+  const notification = new apn.Notification();
+  notification.topic = bundleId;
+  notification.sound = 'default';
+  notification.alert = { title, body };
+  notification.payload = { category: category || 'appliance_done' };
+
+  try {
+    const result = await provider.send(notification, token);
+    if (result.failed.length > 0) {
+      const reason = result.failed[0]?.response?.reason || 'unknown';
+      apnsLogger.warn({ reason }, 'Alert push failed');
+      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+        await deleteApnsToken(token);
+      }
+      return false;
+    }
+    return true;
+  } catch (err) {
+    apnsLogger.error({ err }, 'Alert push error');
+    return false;
+  }
+}
+
+export async function sendAlertToAll(
+  tokens: Array<{ token: string }>,
+  title: string,
+  body: string,
+  category?: string,
+): Promise<void> {
+  await Promise.allSettled(
+    tokens.map((t) => sendAlertNotification(t.token, title, body, category)),
+  );
 }
 
 export function closeApns(): void {

@@ -2,10 +2,12 @@ import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } fr
 import * as apns from '../apns';
 import * as apnsChannels from '../apns-channels';
 import * as pushStore from '../push-token-store';
+import * as laSubs from '../la-subscriptions';
 
 jest.mock('../apns');
 jest.mock('../apns-channels');
 jest.mock('../push-token-store');
+jest.mock('../la-subscriptions');
 jest.mock('../logger', () => ({
   child: () => ({
     info: jest.fn(),
@@ -19,15 +21,27 @@ const mockGetChannelId = apnsChannels.getChannelId as jest.Mock;
 const mockBroadcast = apns.sendBroadcastUpdate as jest.Mock;
 const mockPushToStartAll = apns.pushToStartAll as jest.Mock;
 const mockGetDeviceTokens = pushStore.getAllDeviceTokens as jest.Mock;
+const mockGetApnsTokens = pushStore.getAllApnsTokens as jest.Mock;
+const mockMultiDeviceBroadcast = apns.sendMultiDeviceBroadcast as jest.Mock;
+const mockSendAlertToAll = apns.sendAlertToAll as jest.Mock;
+const mockGetSubscribedTokens = laSubs.getSubscribedDeviceTokens as jest.Mock;
 
 beforeEach(() => {
   mockGetChannelId.mockReset();
   mockBroadcast.mockReset();
   mockPushToStartAll.mockReset();
   mockGetDeviceTokens.mockReset();
+  mockGetApnsTokens.mockReset();
+  mockMultiDeviceBroadcast.mockReset();
+  mockSendAlertToAll.mockReset();
+  mockGetSubscribedTokens.mockReset();
   mockBroadcast.mockResolvedValue(true);
   mockPushToStartAll.mockResolvedValue(undefined);
   mockGetDeviceTokens.mockResolvedValue([]);
+  mockGetApnsTokens.mockResolvedValue([]);
+  mockMultiDeviceBroadcast.mockResolvedValue(true);
+  mockSendAlertToAll.mockResolvedValue(undefined);
+  mockGetSubscribedTokens.mockResolvedValue([]);
 });
 
 describe('live-activity-hooks (broadcast)', () => {

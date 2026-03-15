@@ -1,11 +1,12 @@
 import { DishWasher, MieleDevice } from './types/types';
 import {
   LiveActivityContentState, MultiDeviceContentState, WidgetDevicePayload,
-  pushToStartAll, sendBroadcastUpdate,
-  multiDevicePushToStartAll, sendMultiDeviceBroadcast,
+  multiDevicePushToStartAll, pushToStartAll,
+  sendAlertToAll, sendBroadcastUpdate,
+  sendMultiDeviceBroadcast,
 } from './apns';
 import { getChannelId } from './apns-channels';
-import { getAllDeviceTokens } from './push-token-store';
+import { getAllApnsTokens, getAllDeviceTokens } from './push-token-store';
 import { getSubscribedDeviceTokens } from './la-subscriptions';
 import logger from './logger';
 
@@ -23,6 +24,13 @@ const CONSOLIDATED_THROTTLE_MS = 10_000;
 
 // Periodic keep-alive interval to prevent stale activities
 let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
+
+function stopKeepAlive(): void {
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+}
 
 function formatTimeRemaining(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
@@ -149,6 +157,25 @@ async function maybePushToStart(
 }
 
 /**
+ * Start a periodic keep-alive that re-broadcasts the consolidated state
+ * to prevent activities from going stale (stale-date is 15 min).
+ * Runs every 5 minutes while any device is running.
+ */
+function startKeepAlive(): void {
+  if (keepAliveInterval) return;
+  keepAliveInterval = setInterval(() => {
+    const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
+    if (runningDevices.length === 0) {
+      stopKeepAlive();
+      return;
+    }
+    laLogger.debug({ count: runningDevices.length }, 'Keep-alive broadcast');
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    broadcastConsolidated(true).catch(() => {});
+  }, 5 * 60 * 1000);
+}
+
+/**
  * Build and broadcast the consolidated multi-device Live Activity.
  * Called after every individual device state change.
  * Throttled to avoid flooding Apple's servers.
@@ -190,29 +217,27 @@ async function broadcastConsolidated(force = false): Promise<void> {
   }
 }
 
-/**
- * Start a periodic keep-alive that re-broadcasts the consolidated state
- * to prevent activities from going stale (stale-date is 15 min).
- * Runs every 5 minutes while any device is running.
- */
-function startKeepAlive(): void {
-  if (keepAliveInterval) return;
-  keepAliveInterval = setInterval(() => {
-    const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
-    if (runningDevices.length === 0) {
-      stopKeepAlive();
-      return;
-    }
-    laLogger.debug({ count: runningDevices.length }, 'Keep-alive broadcast');
-    broadcastConsolidated(true).catch(() => {});
-  }, 5 * 60 * 1000);
-}
+const DISPLAY_NAMES: Record<string, string> = {
+  washer: 'Washer',
+  dryer: 'Dryer',
+  dishwasher: 'Dishwasher',
+  broombot: 'BroomBot',
+  mopbot: 'MopBot',
+};
 
-function stopKeepAlive(): void {
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    keepAliveInterval = null;
-  }
+/**
+ * Send a regular push notification when a device finishes.
+ */
+async function sendCompletionAlert(activityType: string): Promise<void> {
+  const wasRunning = previousRunningState.get(activityType) ?? false;
+  if (!wasRunning) return; // Only alert on running → stopped transition
+
+  const tokens = await getAllApnsTokens();
+  if (tokens.length === 0) return;
+
+  const name = DISPLAY_NAMES[activityType] || activityType;
+  await sendAlertToAll(tokens, `${name} Done`, `Your ${name.toLowerCase()} has finished.`, 'appliance_done');
+  laLogger.info({ activityType }, 'Sent completion alert notification');
 }
 
 export async function onMieleStatusChange(
@@ -229,6 +254,11 @@ export async function onMieleStatusChange(
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
 
+  // Send completion alert when device finishes
+  if (!running) {
+    await sendCompletionAlert(activityType);
+  }
+
   await maybePushToStart(activityType, running, contentState);
   laLogger.debug({ activityType, event }, 'Broadcasting Miele Live Activity update');
   await broadcastUpdate(activityType, contentState, event);
@@ -243,6 +273,11 @@ export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
+
+  // Send completion alert when device finishes
+  if (!running) {
+    await sendCompletionAlert(activityType);
+  }
 
   await maybePushToStart(activityType, running, contentState);
   laLogger.debug({ activityType, event }, 'Broadcasting dishwasher Live Activity update');
@@ -261,6 +296,11 @@ export async function onRobotStatusChange(
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
+
+  // Send completion alert when device finishes
+  if (!running) {
+    await sendCompletionAlert(activityType);
+  }
 
   await maybePushToStart(activityType, running, contentState);
   laLogger.debug({ activityType, event }, 'Broadcasting robot Live Activity update');

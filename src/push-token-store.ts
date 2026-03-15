@@ -149,3 +149,61 @@ export async function deleteDeviceToken(pushToStartToken: string): Promise<void>
     );
   }
 }
+
+// --- Regular APNs tokens for alert notifications ---
+
+export interface ApnsTokenData {
+  userSub: string;
+  deviceName?: string;
+  token: string;
+  bundleId?: string;
+}
+
+export async function saveApnsToken(data: ApnsTokenData): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  try {
+    await pool.query(
+      `INSERT INTO apns_tokens (user_sub, device_name, token, bundle_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (token) DO UPDATE SET
+         user_sub = EXCLUDED.user_sub,
+         device_name = EXCLUDED.device_name,
+         bundle_id = EXCLUDED.bundle_id,
+         updated_at = NOW()`,
+      [data.userSub, data.deviceName, data.token, data.bundleId],
+    );
+  } catch (err) {
+    pushLogger.error({ err, userSub: data.userSub }, 'Failed to save APNs token');
+    throw err;
+  }
+}
+
+export async function getAllApnsTokens(): Promise<ApnsTokenData[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT user_sub AS "userSub", device_name AS "deviceName",
+              token, bundle_id AS "bundleId"
+       FROM apns_tokens`,
+    );
+    return result.rows;
+  } catch (err) {
+    pushLogger.error({ err }, 'Failed to get APNs tokens');
+    return [];
+  }
+}
+
+export async function deleteApnsToken(token: string): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  try {
+    await pool.query('DELETE FROM apns_tokens WHERE token = $1', [token]);
+  } catch (err) {
+    pushLogger.error({ err }, 'Failed to delete APNs token');
+  }
+}
