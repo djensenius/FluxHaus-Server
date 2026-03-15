@@ -877,6 +877,39 @@ export async function createServer(): Promise<Express> {
     }
   });
 
+  app.post('/conversations/:id/generate-title', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (!req.user?.sub) {
+      res.status(403).json({ error: 'OIDC authentication required' });
+      return;
+    }
+    const db = getPool();
+    if (!db) { res.status(503).json({ error: 'Database unavailable' }); return; }
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-use-before-define
+      const history = await loadConversationHistory(req.params.id, req.user.sub);
+      if (history.length === 0) {
+        res.status(400).json({ error: 'No messages to generate title from' });
+        return;
+      }
+
+      const snippet = history.slice(0, 4).map((m) => `${m.role}: ${m.content.substring(0, 150)}`).join('\n');
+      const titlePrompt = 'Generate a concise title (3-6 words) for this conversation. '
+        + `Return ONLY the title text, nothing else. No quotes, no punctuation at the end.\n\n${snippet}`;
+
+      const title = await executeAICommand(titlePrompt, allServices);
+      const cleanTitle = title.replace(/^["']|["']$/g, '').trim().substring(0, 80);
+      const encTitle = encrypt(cleanTitle, req.user.sub);
+      await db.query(
+        'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2 AND user_sub = $3',
+        [encTitle, req.params.id, req.user.sub],
+      );
+      res.json({ title: cleanTitle });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      res.status(500).json({ error: message });
+    }
+  });
+
   // ── AI command & voice endpoints ──────────────────────────────────────────
 
   /**
@@ -914,8 +947,47 @@ export async function createServer(): Promise<Express> {
   }
 
   /**
+   * Use AI to generate a concise conversation title from the first exchange.
+   */
+  async function generateAndSaveTitle(
+    conversationId: string,
+    userSub: string,
+    userMessage: string,
+    assistantMessage: string,
+  ): Promise<void> {
+    const db = getPool();
+    if (!db) return;
+
+    try {
+      const titlePrompt = 'Generate a concise title (3-6 words) for this conversation. '
+        + 'Return ONLY the title text, nothing else. No quotes, no punctuation at the end.\n\n'
+        + `User: ${userMessage.substring(0, 200)}\n`
+        + `Assistant: ${assistantMessage.substring(0, 200)}`;
+
+      const title = await executeAICommand(titlePrompt, allServices, [], undefined, undefined, undefined, userSub);
+      const cleanTitle = title.replace(/^["']|["']$/g, '').trim().substring(0, 80);
+
+      if (cleanTitle) {
+        const encTitle = encrypt(cleanTitle, userSub);
+        await db.query(
+          'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2',
+          [encTitle, conversationId],
+        );
+      }
+    } catch (err) {
+      // Fallback to truncated user message
+      const fallback = encrypt(userMessage.substring(0, 50), userSub);
+      await db.query(
+        'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2',
+        [fallback, conversationId],
+      );
+      serverLogger.warn({ err }, 'AI title generation failed, using fallback');
+    }
+  }
+
+  /**
    * Store a user+assistant message pair in an existing conversation (encrypted).
-   * Auto-generates title from first user message if conversation has no title.
+   * Auto-generates title using AI from first user message if conversation has no title.
    */
   async function storeMessages(
     conversationId: string,
@@ -945,11 +1017,8 @@ export async function createServer(): Promise<Express> {
       [conversationId],
     );
     if (conv.rows.length > 0 && !conv.rows[0].title) {
-      const autoTitle = encrypt(userContent.substring(0, 50), userSub);
-      await db.query(
-        'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2',
-        [autoTitle, conversationId],
-      );
+      // Generate title asynchronously — don't block the response
+      generateAndSaveTitle(conversationId, userSub, userContent, assistantContent).catch(() => {});
     } else {
       await db.query(
         'UPDATE conversations SET updated_at = NOW() WHERE id = $1',

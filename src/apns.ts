@@ -1,6 +1,6 @@
 import apn from '@parse/node-apn';
 import logger from './logger';
-import { deleteDeviceToken, deletePushToken } from './push-token-store';
+import { deleteApnsToken, deleteDeviceToken, deletePushToken } from './push-token-store';
 
 const apnsLogger = logger.child({ subsystem: 'apns' });
 
@@ -32,15 +32,21 @@ export function initApns(): void {
   apnsLogger.info('APNs provider initialized');
 }
 
+export interface WidgetDevicePayload {
+  name: string;
+  progress: number;
+  icon: string;
+  trailingText: string;
+  shortText: string;
+  running: boolean;
+}
+
 export interface LiveActivityContentState {
-  device: {
-    name: string;
-    progress: number;
-    icon: string;
-    trailingText: string;
-    shortText: string;
-    running: boolean;
-  };
+  device: WidgetDevicePayload;
+}
+
+export interface MultiDeviceContentState {
+  devices: WidgetDevicePayload[];
 }
 
 export async function sendLiveActivityUpdate(
@@ -67,7 +73,7 @@ export async function sendLiveActivityUpdate(
       timestamp: Math.floor(Date.now() / 1000),
       event,
       'content-state': contentState,
-      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) + 300 } : {}),
+      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
       'stale-date': Math.floor(Date.now() / 1000) + 900,
     },
   };
@@ -216,7 +222,7 @@ export async function sendBroadcastUpdate(
       timestamp: Math.floor(Date.now() / 1000),
       event,
       'content-state': contentState,
-      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) + 300 } : {}),
+      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
       'stale-date': Math.floor(Date.now() / 1000) + 900,
     },
   };
@@ -240,6 +246,157 @@ export async function sendBroadcastUpdate(
     apnsLogger.error({ err, activityType }, 'Broadcast send error');
     return false;
   }
+}
+
+// --- Multi-device consolidated Live Activity ---
+
+export async function sendMultiDevicePushToStart(
+  deviceToken: string,
+  contentState: MultiDeviceContentState,
+  channelId?: string,
+): Promise<boolean> {
+  if (!provider) return false;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+  const notification = new apn.Notification();
+  notification.topic = `${bundleId}.push-type.liveactivity`;
+  notification.pushType = 'liveactivity';
+  notification.priority = 10;
+  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+  if (channelId) notification.channelId = channelId;
+
+  const names = contentState.devices.map((d) => d.name).join(', ');
+  notification.rawPayload = {
+    aps: {
+      timestamp: Math.floor(Date.now() / 1000),
+      event: 'start',
+      'content-state': contentState,
+      'stale-date': Math.floor(Date.now() / 1000) + 900,
+      'attributes-type': 'FluxWidgetMultiAttributes',
+      attributes: { name: 'Appliances' },
+      alert: {
+        title: 'Appliances Running',
+        body: names,
+      },
+    },
+  };
+
+  try {
+    const result = await provider.send(notification, deviceToken);
+    if (result.failed.length > 0) {
+      const reason = result.failed[0]?.response?.reason || 'unknown';
+      apnsLogger.warn({ reason }, 'Multi-device push-to-start failed');
+      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+        await deleteDeviceToken(deviceToken);
+      }
+      return false;
+    }
+    apnsLogger.info({ count: contentState.devices.length }, 'Multi-device push-to-start sent');
+    return true;
+  } catch (err) {
+    apnsLogger.error({ err }, 'Multi-device push-to-start error');
+    return false;
+  }
+}
+
+export async function multiDevicePushToStartAll(
+  deviceTokens: Array<{ pushToStartToken: string }>,
+  contentState: MultiDeviceContentState,
+  channelId?: string,
+): Promise<void> {
+  await Promise.allSettled(
+    deviceTokens.map((t) => sendMultiDevicePushToStart(t.pushToStartToken, contentState, channelId)),
+  );
+}
+
+export async function sendMultiDeviceBroadcast(
+  channelId: string,
+  contentState: MultiDeviceContentState,
+  event: 'update' | 'end',
+): Promise<boolean> {
+  if (!provider) return false;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+  const notification = new apn.Notification();
+  notification.topic = `${bundleId}.push-type.liveactivity`;
+  notification.pushType = 'liveactivity';
+  notification.priority = 10;
+  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+  notification.channelId = channelId;
+
+  notification.rawPayload = {
+    aps: {
+      timestamp: Math.floor(Date.now() / 1000),
+      event,
+      'content-state': contentState,
+      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
+      'stale-date': Math.floor(Date.now() / 1000) + 900,
+    },
+  };
+
+  try {
+    const result = await (provider as unknown as {
+      broadcast: (n: apn.Notification, b: string) => Promise<{
+        sent: unknown[]; failed: Array<{ response?: { reason?: string } }>;
+      }>;
+    }).broadcast(notification, bundleId);
+
+    if (result.failed.length > 0) {
+      const reason = result.failed[0]?.response?.reason || 'unknown';
+      apnsLogger.warn({ reason }, 'Multi-device broadcast failed');
+      return false;
+    }
+    apnsLogger.debug({ event, count: contentState.devices.length }, 'Multi-device broadcast sent');
+    return true;
+  } catch (err) {
+    apnsLogger.error({ err }, 'Multi-device broadcast error');
+    return false;
+  }
+}
+
+// --- Regular alert push notifications ---
+
+export async function sendAlertNotification(
+  token: string,
+  title: string,
+  body: string,
+  category?: string,
+): Promise<boolean> {
+  if (!provider) return false;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+  const notification = new apn.Notification();
+  notification.topic = bundleId;
+  notification.sound = 'default';
+  notification.alert = { title, body };
+  notification.payload = { category: category || 'appliance_done' };
+
+  try {
+    const result = await provider.send(notification, token);
+    if (result.failed.length > 0) {
+      const reason = result.failed[0]?.response?.reason || 'unknown';
+      apnsLogger.warn({ reason }, 'Alert push failed');
+      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+        await deleteApnsToken(token);
+      }
+      return false;
+    }
+    return true;
+  } catch (err) {
+    apnsLogger.error({ err }, 'Alert push error');
+    return false;
+  }
+}
+
+export async function sendAlertToAll(
+  tokens: Array<{ token: string }>,
+  title: string,
+  body: string,
+  category?: string,
+): Promise<void> {
+  await Promise.allSettled(
+    tokens.map((t) => sendAlertNotification(t.token, title, body, category)),
+  );
 }
 
 export function closeApns(): void {
