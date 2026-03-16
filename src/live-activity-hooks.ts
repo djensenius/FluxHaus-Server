@@ -1,12 +1,12 @@
 import { DishWasher, MieleDevice } from './types/types';
 import {
   LiveActivityContentState, MultiDeviceContentState, WidgetDevicePayload,
-  multiDevicePushToStartAll, pushToStartAll,
-  sendAlertToAll, sendBroadcastUpdate,
+  multiDevicePushToStartAll,
+  sendAlertToAll,
   sendMultiDeviceBroadcast,
 } from './apns';
 import { getChannelId } from './apns-channels';
-import { getAllApnsTokens, getAllDeviceTokens } from './push-token-store';
+import { getAllApnsTokens } from './push-token-store';
 import { getSubscribedDeviceTokens } from './la-subscriptions';
 import logger from './logger';
 
@@ -116,47 +116,6 @@ function buildRobotContentState(
 }
 
 /**
- * Send a broadcast update for the given activity type via its channel.
- */
-async function broadcastUpdate(
-  activityType: string,
-  contentState: LiveActivityContentState,
-  event: 'update' | 'end',
-): Promise<void> {
-  const channelId = await getChannelId(activityType);
-  if (!channelId) {
-    laLogger.warn({ activityType }, 'No channel ID — skipping broadcast');
-    return;
-  }
-  await sendBroadcastUpdate(channelId, contentState, event, activityType);
-}
-
-/**
- * When a device first starts running, send push-to-start so iOS creates
- * the Live Activity (and subscribes to the broadcast channel) even if
- * the app hasn't been opened recently.
- */
-async function maybePushToStart(
-  activityType: string,
-  running: boolean,
-  contentState: LiveActivityContentState,
-): Promise<void> {
-  const wasRunning = previousRunningState.get(activityType) ?? false;
-  previousRunningState.set(activityType, running);
-
-  if (!running || wasRunning) return;
-
-  const deviceTokens = await getAllDeviceTokens();
-  if (deviceTokens.length === 0) return;
-
-  // Include channel ID so the activity is created already subscribed
-  const channelId = await getChannelId(activityType);
-
-  laLogger.info({ activityType, hasChannel: !!channelId }, 'Sending push-to-start');
-  await pushToStartAll(deviceTokens, contentState, channelId ?? undefined);
-}
-
-/**
  * Start a periodic keep-alive that re-broadcasts the consolidated state
  * to prevent activities from going stale (stale-date is 15 min).
  * Runs every 5 minutes while any device is running.
@@ -249,7 +208,6 @@ export async function onMieleStatusChange(
   const icon = deviceType === 'washer' ? 'washer' : 'dryer';
   const contentState = buildMieleContentState(name, icon, device);
   const running = (device.timeRemaining ?? 0) > 0;
-  const event = running ? 'update' : 'end';
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
@@ -259,9 +217,10 @@ export async function onMieleStatusChange(
     await sendCompletionAlert(activityType);
   }
 
-  await maybePushToStart(activityType, running, contentState);
-  laLogger.debug({ activityType, event }, 'Broadcasting Miele Live Activity update');
-  await broadcastUpdate(activityType, contentState, event);
+  // Track state for transition detection
+  previousRunningState.set(activityType, running);
+
+  laLogger.debug({ activityType, running }, 'Miele status change');
   await broadcastConsolidated();
 }
 
@@ -269,7 +228,6 @@ export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<
   const activityType = 'dishwasher';
   const contentState = buildDishwasherContentState(dishwasher);
   const running = (dishwasher.programProgress ?? 0) > 0;
-  const event = running ? 'update' : 'end';
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
@@ -279,9 +237,10 @@ export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<
     await sendCompletionAlert(activityType);
   }
 
-  await maybePushToStart(activityType, running, contentState);
-  laLogger.debug({ activityType, event }, 'Broadcasting dishwasher Live Activity update');
-  await broadcastUpdate(activityType, contentState, event);
+  // Track state for transition detection
+  previousRunningState.set(activityType, running);
+
+  laLogger.debug({ activityType, running }, 'Dishwasher status change');
   await broadcastConsolidated();
 }
 
@@ -292,7 +251,6 @@ export async function onRobotStatusChange(
   const activityType = name.toLowerCase().replace(/\s+/g, '');
   const contentState = buildRobotContentState(name, status);
   const running = status.running ?? false;
-  const event = running ? 'update' : 'end';
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
@@ -302,8 +260,9 @@ export async function onRobotStatusChange(
     await sendCompletionAlert(activityType);
   }
 
-  await maybePushToStart(activityType, running, contentState);
-  laLogger.debug({ activityType, event }, 'Broadcasting robot Live Activity update');
-  await broadcastUpdate(activityType, contentState, event);
+  // Track state for transition detection
+  previousRunningState.set(activityType, running);
+
+  laLogger.debug({ activityType, running }, 'Robot status change');
   await broadcastConsolidated();
 }
