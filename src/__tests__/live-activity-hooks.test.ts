@@ -18,36 +18,35 @@ jest.mock('../logger', () => ({
 }));
 
 const mockGetChannelId = apnsChannels.getChannelId as jest.Mock;
-const mockBroadcast = apns.sendBroadcastUpdate as jest.Mock;
-const mockPushToStartAll = apns.pushToStartAll as jest.Mock;
-const mockGetDeviceTokens = pushStore.getAllDeviceTokens as jest.Mock;
 const mockGetApnsTokens = pushStore.getAllApnsTokens as jest.Mock;
 const mockMultiDeviceBroadcast = apns.sendMultiDeviceBroadcast as jest.Mock;
 const mockSendAlertToAll = apns.sendAlertToAll as jest.Mock;
 const mockGetSubscribedTokens = laSubs.getSubscribedDeviceTokens as jest.Mock;
+const mockMultiPushToStart = apns.multiDevicePushToStartAll as jest.Mock;
 
 beforeEach(() => {
+  jest.useFakeTimers();
   mockGetChannelId.mockReset();
-  mockBroadcast.mockReset();
-  mockPushToStartAll.mockReset();
-  mockGetDeviceTokens.mockReset();
   mockGetApnsTokens.mockReset();
   mockMultiDeviceBroadcast.mockReset();
   mockSendAlertToAll.mockReset();
   mockGetSubscribedTokens.mockReset();
-  mockBroadcast.mockResolvedValue(true);
-  mockPushToStartAll.mockResolvedValue(undefined);
-  mockGetDeviceTokens.mockResolvedValue([]);
+  mockMultiPushToStart.mockReset();
   mockGetApnsTokens.mockResolvedValue([]);
   mockMultiDeviceBroadcast.mockResolvedValue(true);
   mockSendAlertToAll.mockResolvedValue(undefined);
   mockGetSubscribedTokens.mockResolvedValue([]);
+  mockMultiPushToStart.mockResolvedValue(undefined);
 });
 
-describe('live-activity-hooks (broadcast)', () => {
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+describe('live-activity-hooks (consolidated)', () => {
   describe('onMieleStatusChange', () => {
-    it('broadcasts update when washer is running', async () => {
-      mockGetChannelId.mockResolvedValue('ch-washer');
+    it('broadcasts consolidated update when washer is running', async () => {
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
       await onMieleStatusChange('washer', {
         name: 'Washing machine',
         timeRunning: 30,
@@ -56,43 +55,42 @@ describe('live-activity-hooks (broadcast)', () => {
         status: 'In use',
         inUse: true,
       });
-      expect(mockGetChannelId).toHaveBeenCalledWith('washer');
-      expect(mockBroadcast).toHaveBeenCalledTimes(1);
-      const [channelId, contentState, event] = mockBroadcast.mock.calls[0];
-      expect(channelId).toBe('ch-washer');
+      expect(mockGetChannelId).toHaveBeenCalledWith('consolidated');
+      expect(mockMultiDeviceBroadcast).toHaveBeenCalledTimes(1);
+      const [channelId, contentState, event] = mockMultiDeviceBroadcast.mock.calls[0];
+      expect(channelId).toBe('ch-consolidated');
       expect(event).toBe('update');
-      expect(contentState.device.name).toBe('Washer');
-      expect(contentState.device.running).toBe(true);
+      expect(contentState.devices.length).toBe(1);
+      expect(contentState.devices[0].name).toBe('Washer');
+      expect(contentState.devices[0].running).toBe(true);
     });
 
-    it('sends end event when dryer finishes', async () => {
-      mockGetChannelId.mockResolvedValue('ch-dryer');
-      await onMieleStatusChange('dryer', {
-        name: 'Tumble dryer',
-        timeRunning: 0,
-        timeRemaining: 0,
-        programName: '',
-        status: 'Off',
-        inUse: false,
+    it('sends end event when no devices running', async () => {
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });
-      expect(mockBroadcast.mock.calls[0][2]).toBe('end');
+      mockMultiDeviceBroadcast.mockClear();
+      jest.setSystemTime(Date.now() + 15_000);
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
+      });
+      expect(mockMultiDeviceBroadcast).toHaveBeenCalledWith('ch-consolidated', { devices: [] }, 'end');
     });
 
-    it('skips when no channel exists', async () => {
+    it('skips when no consolidated channel exists', async () => {
       mockGetChannelId.mockResolvedValue(null);
       await onMieleStatusChange('washer', {
-        name: 'Washing machine',
-        timeRunning: 30,
-        timeRemaining: 60,
-        inUse: true,
+        name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });
-      expect(mockBroadcast).not.toHaveBeenCalled();
+      expect(mockMultiDeviceBroadcast).not.toHaveBeenCalled();
     });
   });
 
   describe('onDishwasherStatusChange', () => {
-    it('broadcasts update when dishwasher is running', async () => {
-      mockGetChannelId.mockResolvedValue('ch-dishwasher');
+    it('includes dishwasher in consolidated broadcast', async () => {
+      jest.setSystemTime(Date.now() + 15_000);
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
       await onDishwasherStatusChange({
         operationState: 'Run',
         doorState: 'Closed',
@@ -100,47 +98,51 @@ describe('live-activity-hooks (broadcast)', () => {
         remainingTime: 1800,
         activeProgram: 'Auto2',
       });
-      expect(mockGetChannelId).toHaveBeenCalledWith('dishwasher');
-      const [, contentState, event] = mockBroadcast.mock.calls[0];
-      expect(event).toBe('update');
-      expect(contentState.device.name).toBe('Dishwasher');
-      expect(contentState.device.progress).toBe(45);
-    });
-
-    it('sends end event when dishwasher finishes', async () => {
-      mockGetChannelId.mockResolvedValue('ch-dishwasher');
-      await onDishwasherStatusChange({
-        operationState: 'Finished',
-        doorState: 'Closed',
-        programProgress: 0,
-      });
-      expect(mockBroadcast.mock.calls[0][2]).toBe('end');
+      expect(mockMultiDeviceBroadcast).toHaveBeenCalled();
+      const [, contentState] = mockMultiDeviceBroadcast.mock.calls[0];
+      const dw = contentState.devices.find((d: { name: string }) => d.name === 'Dishwasher');
+      expect(dw).toBeDefined();
+      expect(dw.progress).toBe(45);
     });
   });
 
   describe('onRobotStatusChange', () => {
-    it('broadcasts update when robot is cleaning', async () => {
-      mockGetChannelId.mockResolvedValue('ch-broombot');
+    it('includes robot in consolidated broadcast', async () => {
+      jest.setSystemTime(Date.now() + 60_000);
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
       await onRobotStatusChange('Broombot', {
         running: true,
         batteryLevel: 75,
         timeStarted: new Date(),
       });
-      expect(mockGetChannelId).toHaveBeenCalledWith('broombot');
-      const [, contentState, event] = mockBroadcast.mock.calls[0];
-      expect(event).toBe('update');
-      expect(contentState.device.name).toBe('Broombot');
-      expect(contentState.device.running).toBe(true);
-      expect(contentState.device.progress).toBe(75);
+      expect(mockMultiDeviceBroadcast).toHaveBeenCalled();
+      const lastCall = mockMultiDeviceBroadcast.mock.calls[
+        mockMultiDeviceBroadcast.mock.calls.length - 1
+      ];
+      const contentState = lastCall[1];
+      const bot = contentState.devices.find((d: { name: string }) => d.name === 'Broombot');
+      expect(bot).toBeDefined();
+      expect(bot.running).toBe(true);
     });
+  });
 
-    it('sends end event when robot stops', async () => {
-      mockGetChannelId.mockResolvedValue('ch-mopbot');
-      await onRobotStatusChange('Mopbot', {
-        running: false,
-        batteryLevel: 90,
+  describe('completion alerts', () => {
+    it('sends alert when device stops running', async () => {
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
+      mockGetApnsTokens.mockResolvedValue([{ token: 'tok1' }]);
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });
-      expect(mockBroadcast.mock.calls[0][2]).toBe('end');
+      jest.setSystemTime(Date.now() + 15_000);
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
+      });
+      expect(mockSendAlertToAll).toHaveBeenCalledWith(
+        [{ token: 'tok1' }],
+        'Washer Done',
+        'Your washer has finished.',
+        'appliance_done',
+      );
     });
   });
 });
