@@ -6,8 +6,7 @@ import {
   sendMultiDeviceBroadcast,
 } from './apns';
 import { getChannelId } from './apns-channels';
-import { getAllApnsTokens } from './push-token-store';
-import { getSubscribedDeviceTokens } from './la-subscriptions';
+import { getApnsTokensForDeviceType, getSubscribedDeviceTokens } from './la-subscriptions';
 import logger from './logger';
 
 const laLogger = logger.child({ subsystem: 'live-activity-hooks' });
@@ -220,17 +219,18 @@ const DISPLAY_NAMES: Record<string, string> = {
 
 /**
  * Send a regular push notification when a device finishes.
+ * Only sends to users subscribed to this device type.
  */
 async function sendCompletionAlert(activityType: string): Promise<void> {
   const wasRunning = previousRunningState.get(activityType) ?? false;
   if (!wasRunning) return; // Only alert on running → stopped transition
 
-  const tokens = await getAllApnsTokens();
+  const tokens = await getApnsTokensForDeviceType(activityType);
   if (tokens.length === 0) return;
 
   const name = DISPLAY_NAMES[activityType] || activityType;
   await sendAlertToAll(tokens, `${name} Done`, `Your ${name.toLowerCase()} has finished.`, 'appliance_done');
-  laLogger.info({ activityType }, 'Sent completion alert notification');
+  laLogger.info({ activityType, recipients: tokens.length }, 'Sent completion alert notification');
 }
 
 export async function onMieleStatusChange(
