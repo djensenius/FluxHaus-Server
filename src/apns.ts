@@ -39,6 +39,7 @@ export interface WidgetDevicePayload {
   trailingText: string;
   shortText: string;
   running: boolean;
+  programName?: string;
 }
 
 export interface LiveActivityContentState {
