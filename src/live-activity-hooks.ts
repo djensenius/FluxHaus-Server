@@ -6,14 +6,15 @@ import {
   sendMultiDeviceBroadcast,
 } from './apns';
 import { getChannelId } from './apns-channels';
-import { getAllApnsTokens } from './push-token-store';
-import { getSubscribedDeviceTokens } from './la-subscriptions';
+import { getApnsTokensForDeviceType, getSubscribedDeviceTokens } from './la-subscriptions';
 import logger from './logger';
 
 const laLogger = logger.child({ subsystem: 'live-activity-hooks' });
 
 // Track previous running state to detect start transitions for push-to-start
 const previousRunningState = new Map<string, boolean>();
+// Track whether each device type has been initialized to avoid false alerts on startup
+const initializedDeviceTypes = new Set<string>();
 
 // Cached device states for building consolidated activity
 const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
@@ -67,15 +68,46 @@ function buildMieleContentState(
       trailingText,
       shortText: `${device.timeRemaining ?? 0}m`,
       running,
+      programName: device.programName,
     },
   };
 }
 
+const PROGRAM_DISPLAY_NAMES: Record<string, string> = {
+  PreRinse: 'Pre-Rinse',
+  Auto1: 'Auto 1',
+  Auto2: 'Auto 2',
+  Auto3: 'Auto 3',
+  Eco50: 'Eco 50°',
+  Quick45: 'Quick 45\'',
+  Intensiv70: 'Intensive 70°',
+  Normal65: 'Normal 65°',
+  Glas40: 'Glass 40°',
+  GlassCare: 'Glass Care',
+  NightWash: 'Night Wash',
+  Quick65: 'Quick 65\'',
+  Normal45: 'Normal 45°',
+  Intensiv45: 'Intensive 45°',
+  AutoHalfLoad: 'Auto Half Load',
+  IntensivPower: 'Intensive Power',
+  MagicDaily: 'Magic Daily',
+  Super60: 'Super 60°',
+  Kurz60: 'Short 60\'',
+  ExpressSparkle65: 'Express Sparkle 65°',
+  MachineCare: 'Machine Care',
+  SteamFresh: 'Steam Fresh',
+  MaximumCleaning: 'Maximum Cleaning',
+  MixedLoad: 'Mixed Load',
+};
+
 function buildDishwasherContentState(dishwasher: DishWasher): LiveActivityContentState {
   const remainingText = formatTimeRemaining(dishwasher.remainingTime ?? 0);
+  const programDisplay = dishwasher.activeProgram
+    ? (PROGRAM_DISPLAY_NAMES[dishwasher.activeProgram] || dishwasher.activeProgram)
+    : undefined;
   let trailingText = remainingText;
-  if (dishwasher.activeProgram) {
-    trailingText = `${dishwasher.activeProgram} · ${trailingText}`;
+  if (programDisplay) {
+    trailingText = `${programDisplay} · ${trailingText}`;
   }
   if (dishwasher.operationState !== 'Run') {
     trailingText = `${dishwasher.operationState} · ${trailingText}`;
@@ -91,6 +123,7 @@ function buildDishwasherContentState(dishwasher: DishWasher): LiveActivityConten
       trailingText,
       shortText: `${dishwasher.remainingTime ?? 0}m`,
       running,
+      programName: programDisplay,
     },
   };
 }
@@ -186,17 +219,18 @@ const DISPLAY_NAMES: Record<string, string> = {
 
 /**
  * Send a regular push notification when a device finishes.
+ * Only sends to users subscribed to this device type.
  */
 async function sendCompletionAlert(activityType: string): Promise<void> {
   const wasRunning = previousRunningState.get(activityType) ?? false;
   if (!wasRunning) return; // Only alert on running → stopped transition
 
-  const tokens = await getAllApnsTokens();
+  const tokens = await getApnsTokensForDeviceType(activityType);
   if (tokens.length === 0) return;
 
   const name = DISPLAY_NAMES[activityType] || activityType;
   await sendAlertToAll(tokens, `${name} Done`, `Your ${name.toLowerCase()} has finished.`, 'appliance_done');
-  laLogger.info({ activityType }, 'Sent completion alert notification');
+  laLogger.info({ activityType, recipients: tokens.length }, 'Sent completion alert notification');
 }
 
 export async function onMieleStatusChange(
@@ -211,6 +245,15 @@ export async function onMieleStatusChange(
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
+
+  // On first poll after startup, just record state — don't send alerts
+  if (!initializedDeviceTypes.has(activityType)) {
+    initializedDeviceTypes.add(activityType);
+    previousRunningState.set(activityType, running);
+    laLogger.debug({ activityType, running }, 'Miele initial state recorded');
+    await broadcastConsolidated();
+    return;
+  }
 
   // Send completion alert when device finishes
   if (!running) {
@@ -231,6 +274,15 @@ export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
+
+  // On first poll after startup, just record state — don't send alerts
+  if (!initializedDeviceTypes.has(activityType)) {
+    initializedDeviceTypes.add(activityType);
+    previousRunningState.set(activityType, running);
+    laLogger.debug({ activityType, running }, 'Dishwasher initial state recorded');
+    await broadcastConsolidated();
+    return;
+  }
 
   // Send completion alert when device finishes
   if (!running) {
@@ -254,6 +306,15 @@ export async function onRobotStatusChange(
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
+
+  // On first poll after startup, just record state — don't send alerts
+  if (!initializedDeviceTypes.has(activityType)) {
+    initializedDeviceTypes.add(activityType);
+    previousRunningState.set(activityType, running);
+    laLogger.debug({ activityType, running }, 'Robot initial state recorded');
+    await broadcastConsolidated();
+    return;
+  }
 
   // Send completion alert when device finishes
   if (!running) {

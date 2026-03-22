@@ -16,13 +16,30 @@ interface HomeAssistantDishwasherConfig {
 }
 
 const PROGRAM_MAP: Record<string, DishWasherProgram> = {
-  dishcare_dishwasher_program_auto_2: 'Auto2',
-  dishcare_dishwasher_program_intensiv_70: 'Intensiv70',
-  dishcare_dishwasher_program_eco_50: 'Eco50',
-  dishcare_dishwasher_program_glas_40: 'Glas40',
-  dishcare_dishwasher_program_quick_65: 'Quick65',
-  dishcare_dishwasher_program_quick_45: 'Quick45',
   dishcare_dishwasher_program_pre_rinse: 'PreRinse',
+  dishcare_dishwasher_program_auto_1: 'Auto1',
+  dishcare_dishwasher_program_auto_2: 'Auto2',
+  dishcare_dishwasher_program_auto_3: 'Auto3',
+  dishcare_dishwasher_program_eco_50: 'Eco50',
+  dishcare_dishwasher_program_quick_45: 'Quick45',
+  dishcare_dishwasher_program_intensiv_70: 'Intensiv70',
+  dishcare_dishwasher_program_normal_65: 'Normal65',
+  dishcare_dishwasher_program_glas_40: 'Glas40',
+  dishcare_dishwasher_program_glass_care: 'GlassCare',
+  dishcare_dishwasher_program_night_wash: 'NightWash',
+  dishcare_dishwasher_program_quick_65: 'Quick65',
+  dishcare_dishwasher_program_normal_45: 'Normal45',
+  dishcare_dishwasher_program_intensiv_45: 'Intensiv45',
+  dishcare_dishwasher_program_auto_half_load: 'AutoHalfLoad',
+  dishcare_dishwasher_program_intensiv_power: 'IntensivPower',
+  dishcare_dishwasher_program_magic_daily: 'MagicDaily',
+  dishcare_dishwasher_program_super_60: 'Super60',
+  dishcare_dishwasher_program_kurz_60: 'Kurz60',
+  dishcare_dishwasher_program_express_sparkle_65: 'ExpressSparkle65',
+  dishcare_dishwasher_program_machine_care: 'MachineCare',
+  dishcare_dishwasher_program_steam_fresh: 'SteamFresh',
+  dishcare_dishwasher_program_maximum_cleaning: 'MaximumCleaning',
+  dishcare_dishwasher_program_mixed_load: 'MixedLoad',
 };
 
 const OPERATION_STATE_MAP: Record<string, OperationState> = {
@@ -126,7 +143,7 @@ export default class HomeAssistantDishwasher {
 
       // Selected program
       const selectedProgramKey = selectedProgram?.state || '';
-      this.dishwasher.selectedProgram = selectedProgramKey;
+      this.dishwasher.selectedProgram = PROGRAM_MAP[selectedProgramKey] || selectedProgramKey;
 
       // Remaining time (in seconds, matching old HomeConnect behavior)
       const ftState = finishTime?.state;

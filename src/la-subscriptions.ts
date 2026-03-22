@@ -75,3 +75,29 @@ export async function getSubscribedDeviceTokens(): Promise<Array<{ pushToStartTo
     return [];
   }
 }
+
+/**
+ * Get APNs tokens for users subscribed to a specific device type.
+ * Users with no subscription record default to all device types.
+ */
+export async function getApnsTokensForDeviceType(
+  activityType: string,
+): Promise<Array<{ userSub: string; token: string }>> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT a.user_sub AS "userSub", a.token
+       FROM apns_tokens a
+       LEFT JOIN la_subscriptions s ON a.user_sub = s.user_sub
+       WHERE s.device_types IS NULL
+          OR s.device_types::jsonb ? $1`,
+      [activityType],
+    );
+    return result.rows;
+  } catch (err) {
+    subLogger.error({ err, activityType }, 'Failed to get filtered APNs tokens');
+    return [];
+  }
+}
