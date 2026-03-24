@@ -141,7 +141,6 @@ async function listRemoteChannels(): Promise<Array<{ channelId: string; name: st
 async function createChannel(activityType: string): Promise<string | null> {
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
   const path = `/1/apps/${bundleId}/channels`;
-  const displayName = DISPLAY_NAMES[activityType] || activityType;
 
   try {
     const { status, data } = await makeChannelRequest('POST', path, {
