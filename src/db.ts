@@ -183,6 +183,17 @@ export async function initDatabase(): Promise<void> {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_apns_tokens_user ON apns_tokens (user_sub);
+
+      CREATE TABLE IF NOT EXISTS activity_tokens (
+        id SERIAL PRIMARY KEY,
+        user_sub TEXT NOT NULL,
+        device_name TEXT,
+        activity_token TEXT NOT NULL UNIQUE,
+        bundle_id TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_activity_tokens_user ON activity_tokens (user_sub);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

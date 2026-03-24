@@ -207,3 +207,62 @@ export async function deleteApnsToken(token: string): Promise<void> {
     pushLogger.error({ err }, 'Failed to delete APNs token');
   }
 }
+
+// --- Per-activity Live Activity push tokens (for direct token-based updates) ---
+
+export interface ActivityTokenData {
+  userSub: string;
+  deviceName?: string;
+  activityToken: string;
+  bundleId?: string;
+}
+
+export async function saveActivityToken(data: ActivityTokenData): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  try {
+    await pool.query(
+      `INSERT INTO activity_tokens (user_sub, device_name, activity_token, bundle_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (activity_token) DO UPDATE SET
+         user_sub = EXCLUDED.user_sub,
+         device_name = EXCLUDED.device_name,
+         bundle_id = EXCLUDED.bundle_id,
+         updated_at = NOW()`,
+      [data.userSub, data.deviceName, data.activityToken, data.bundleId],
+    );
+  } catch (err) {
+    pushLogger.error({ err, userSub: data.userSub }, 'Failed to save activity token');
+    throw err;
+  }
+}
+
+export async function getAllActivityTokens(): Promise<ActivityTokenData[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT user_sub AS "userSub", device_name AS "deviceName",
+              activity_token AS "activityToken",
+              bundle_id AS "bundleId"
+       FROM activity_tokens`,
+    );
+    return result.rows;
+  } catch (err) {
+    pushLogger.error({ err }, 'Failed to get activity tokens');
+    return [];
+  }
+}
+
+export async function deleteActivityToken(activityToken: string): Promise<void> {
+  const pool = getPool();
+  if (!pool) return;
+
+  try {
+    await pool.query('DELETE FROM activity_tokens WHERE activity_token = $1', [activityToken]);
+  } catch (err) {
+    pushLogger.error({ err }, 'Failed to delete activity token');
+  }
+}

@@ -2,6 +2,7 @@ import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } fr
 import * as apns from '../apns';
 import * as apnsChannels from '../apns-channels';
 import * as laSubs from '../la-subscriptions';
+import * as pushTokenStore from '../push-token-store';
 
 jest.mock('../apns');
 jest.mock('../apns-channels');
@@ -22,6 +23,8 @@ const mockMultiDeviceBroadcast = apns.sendMultiDeviceBroadcast as jest.Mock;
 const mockSendAlertToAll = apns.sendAlertToAll as jest.Mock;
 const mockGetSubscribedTokens = laSubs.getSubscribedDeviceTokens as jest.Mock;
 const mockMultiPushToStart = apns.multiDevicePushToStartAll as jest.Mock;
+const mockSendSilentPush = apns.sendSilentPushToAll as jest.Mock;
+const mockGetAllApnsTokens = pushTokenStore.getAllApnsTokens as jest.Mock;
 
 beforeEach(() => {
   jest.useFakeTimers();
@@ -31,11 +34,15 @@ beforeEach(() => {
   mockSendAlertToAll.mockReset();
   mockGetSubscribedTokens.mockReset();
   mockMultiPushToStart.mockReset();
+  mockSendSilentPush.mockReset();
+  mockGetAllApnsTokens.mockReset();
   mockGetFilteredApnsTokens.mockResolvedValue([]);
   mockMultiDeviceBroadcast.mockResolvedValue(true);
   mockSendAlertToAll.mockResolvedValue(undefined);
   mockGetSubscribedTokens.mockResolvedValue([]);
   mockMultiPushToStart.mockResolvedValue(undefined);
+  mockSendSilentPush.mockResolvedValue(undefined);
+  mockGetAllApnsTokens.mockResolvedValue([]);
 });
 
 afterEach(() => {

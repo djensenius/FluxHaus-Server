@@ -1,6 +1,12 @@
 import apn from '@parse/node-apn';
+import http2 from 'http2';
+import fs from 'fs';
+import { SignJWT, importPKCS8 } from 'jose';
 import logger from './logger';
-import { deleteApnsToken, deleteDeviceToken, deletePushToken } from './push-token-store';
+import {
+  deleteActivityToken, deleteApnsToken, deleteDeviceToken, deletePushToken,
+  getAllActivityTokens,
+} from './push-token-store';
 
 const apnsLogger = logger.child({ subsystem: 'apns' });
 
@@ -119,6 +125,10 @@ export async function pushLiveActivityToAll(
   );
 }
 
+/**
+ * @deprecated Use sendMultiDevicePushToStart for the consolidated activity.
+ * Kept for backward compatibility — starts a LEGACY single-device activity (FluxWidgetAttributes).
+ */
 export async function sendPushToStart(
   deviceToken: string,
   contentState: LiveActivityContentState,
@@ -188,6 +198,9 @@ export async function sendPushToStart(
   }
 }
 
+/**
+ * @deprecated Use multiDevicePushToStartAll for the consolidated activity.
+ */
 export async function pushToStartAll(
   deviceTokens: Array<{ pushToStartToken: string }>,
   contentState: LiveActivityContentState,
@@ -198,27 +211,161 @@ export async function pushToStartAll(
   );
 }
 
+// --- Raw HTTP/2 broadcast for Live Activities ---
+
+async function generateBroadcastJwt(): Promise<string | null> {
+  const { APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID } = process.env;
+  if (!APNS_KEY_PATH || !APNS_KEY_ID || !APNS_TEAM_ID) return null;
+
+  const keyPem = fs.readFileSync(APNS_KEY_PATH, 'utf8');
+  const key = await importPKCS8(keyPem, 'ES256');
+
+  return new SignJWT({})
+    .setProtectedHeader({ alg: 'ES256', kid: APNS_KEY_ID })
+    .setIssuer(APNS_TEAM_ID)
+    .setIssuedAt()
+    .setExpirationTime('1h')
+    .sign(key);
+}
+
+function getBroadcastHost(): string {
+  const env = process.env.APNS_ENVIRONMENT;
+  return env === 'development'
+    ? 'https://api.sandbox.push.apple.com:443'
+    : 'https://api.push.apple.com:443';
+}
+
+async function sendRawBroadcast(
+  channelId: string,
+  payload: Record<string, unknown>,
+  activityType: string,
+): Promise<boolean> {
+  const { APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID } = process.env;
+  if (!APNS_KEY_PATH || !APNS_KEY_ID || !APNS_TEAM_ID) {
+    apnsLogger.debug('APNs not configured — skipping broadcast');
+    return false;
+  }
+
+  const jwt = await generateBroadcastJwt();
+  if (!jwt) return false;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+  const host = getBroadcastHost();
+  const path = `/4/broadcasts/apps/${bundleId}`;
+
+  return new Promise((resolve) => {
+    const client = http2.connect(host);
+    client.on('error', (err) => {
+      apnsLogger.error({ err, activityType }, 'Broadcast HTTP/2 connection error');
+      client.close();
+      resolve(false);
+    });
+
+    const headers: Record<string, string> = {
+      ':method': 'POST',
+      ':path': path,
+      'apns-topic': `${bundleId}.push-type.liveactivity`,
+      'apns-push-type': 'liveactivity',
+      'apns-priority': '10',
+      'apns-channel-id': channelId,
+      authorization: `bearer ${jwt}`,
+      'content-type': 'application/json',
+    };
+
+    const req = client.request(headers);
+    let responseData = '';
+    let status = 0;
+
+    req.on('response', (hdrs) => {
+      status = hdrs[':status'] as number || 0;
+    });
+
+    req.on('data', (chunk: Buffer) => {
+      responseData += chunk.toString();
+    });
+
+    req.on('end', () => {
+      client.close();
+      if (status === 200 || status === 201 || status === 204) {
+        apnsLogger.info({ activityType, status }, 'Broadcast sent successfully');
+        resolve(true);
+      } else {
+        let reason = 'unknown';
+        try {
+          const parsed = JSON.parse(responseData);
+          reason = parsed.reason || JSON.stringify(parsed);
+        } catch {
+          reason = responseData || `status ${status}`;
+        }
+        apnsLogger.warn({ activityType, status, reason }, 'Broadcast failed');
+        resolve(false);
+      }
+    });
+
+    req.on('error', (err: Error) => {
+      apnsLogger.error({ err, activityType }, 'Broadcast request error');
+      client.close();
+      resolve(false);
+    });
+
+    req.write(JSON.stringify(payload));
+    req.end();
+  });
+}
+
+// --- Per-activity token Live Activity updates (fallback to broadcast) ---
+
+async function sendLiveActivityUpdateToTokens(
+  tokens: Array<{ activityToken: string }>,
+  contentState: MultiDeviceContentState,
+  event: 'update' | 'end',
+): Promise<void> {
+  if (!provider) return;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+
+  await Promise.allSettled(
+    tokens.map(async (t) => {
+      const notification = new apn.Notification();
+      notification.topic = `${bundleId}.push-type.liveactivity`;
+      notification.pushType = 'liveactivity';
+      notification.priority = 10;
+      notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+
+      notification.rawPayload = {
+        aps: {
+          timestamp: Math.floor(Date.now() / 1000),
+          event,
+          'content-state': contentState,
+          ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
+          'stale-date': Math.floor(Date.now() / 1000) + 900,
+        },
+      };
+
+      try {
+        const result = await provider!.send(notification, t.activityToken);
+        if (result.failed.length > 0) {
+          const reason = result.failed[0]?.response?.reason || 'unknown';
+          if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+            await deleteActivityToken(t.activityToken);
+          }
+        }
+      } catch (err) {
+        apnsLogger.error({ err }, 'Activity token push error');
+      }
+    }),
+  );
+}
+
+// --- Broadcast update functions ---
+
 export async function sendBroadcastUpdate(
   channelId: string,
   contentState: LiveActivityContentState,
   event: 'update' | 'end',
   activityType: string,
 ): Promise<boolean> {
-  if (!provider) {
-    apnsLogger.debug('APNs not initialized — skipping broadcast');
-    return false;
-  }
-
-  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-
-  const notification = new apn.Notification();
-  notification.topic = `${bundleId}.push-type.liveactivity`;
-  notification.pushType = 'liveactivity';
-  notification.priority = 10;
-  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-  notification.channelId = channelId;
-
-  notification.rawPayload = {
+  const payload = {
     aps: {
       timestamp: Math.floor(Date.now() / 1000),
       event,
@@ -227,26 +374,7 @@ export async function sendBroadcastUpdate(
       'stale-date': Math.floor(Date.now() / 1000) + 900,
     },
   };
-
-  try {
-    const result = await (provider as unknown as {
-      broadcast: (n: apn.Notification, b: string) => Promise<{
-        sent: unknown[]; failed: Array<{ response?: { reason?: string } }>;
-      }>;
-    }).broadcast(notification, bundleId);
-
-    if (result.failed.length > 0) {
-      const failure = result.failed[0];
-      const reason = failure.response?.reason || 'unknown';
-      apnsLogger.warn({ reason, activityType }, 'Broadcast update failed');
-      return false;
-    }
-    apnsLogger.debug({ activityType, event }, 'Broadcast update sent');
-    return true;
-  } catch (err) {
-    apnsLogger.error({ err, activityType }, 'Broadcast send error');
-    return false;
-  }
+  return sendRawBroadcast(channelId, payload, activityType);
 }
 
 // --- Multi-device consolidated Live Activity ---
@@ -315,17 +443,7 @@ export async function sendMultiDeviceBroadcast(
   contentState: MultiDeviceContentState,
   event: 'update' | 'end',
 ): Promise<boolean> {
-  if (!provider) return false;
-
-  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-  const notification = new apn.Notification();
-  notification.topic = `${bundleId}.push-type.liveactivity`;
-  notification.pushType = 'liveactivity';
-  notification.priority = 10;
-  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-  notification.channelId = channelId;
-
-  notification.rawPayload = {
+  const payload = {
     aps: {
       timestamp: Math.floor(Date.now() / 1000),
       event,
@@ -335,24 +453,16 @@ export async function sendMultiDeviceBroadcast(
     },
   };
 
-  try {
-    const result = await (provider as unknown as {
-      broadcast: (n: apn.Notification, b: string) => Promise<{
-        sent: unknown[]; failed: Array<{ response?: { reason?: string } }>;
-      }>;
-    }).broadcast(notification, bundleId);
+  const broadcastOk = await sendRawBroadcast(channelId, payload, 'consolidated');
 
-    if (result.failed.length > 0) {
-      const reason = result.failed[0]?.response?.reason || 'unknown';
-      apnsLogger.warn({ reason }, 'Multi-device broadcast failed');
-      return false;
-    }
-    apnsLogger.info({ event, count: contentState.devices.length }, 'Multi-device broadcast sent');
-    return true;
-  } catch (err) {
-    apnsLogger.error({ err }, 'Multi-device broadcast error');
-    return false;
+  // Fallback: also send via per-activity push tokens for devices that may not
+  // have received the broadcast (e.g., activity started with pushType: .token)
+  const activityTokens = await getAllActivityTokens();
+  if (activityTokens.length > 0) {
+    await sendLiveActivityUpdateToTokens(activityTokens, contentState, event);
   }
+
+  return broadcastOk;
 }
 
 // --- Regular alert push notifications ---
@@ -397,6 +507,39 @@ export async function sendAlertToAll(
 ): Promise<void> {
   await Promise.allSettled(
     tokens.map((t) => sendAlertNotification(t.token, title, body, category)),
+  );
+}
+
+// --- Silent content-available push to wake app in background ---
+
+export async function sendSilentPushToAll(
+  tokens: Array<{ token: string }>,
+): Promise<void> {
+  if (!provider) return;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+
+  await Promise.allSettled(
+    tokens.map(async (t) => {
+      const notification = new apn.Notification();
+      notification.topic = bundleId;
+      notification.pushType = 'background';
+      notification.priority = 5;
+      notification.contentAvailable = true;
+      notification.payload = { type: 'live-activity-refresh' };
+
+      try {
+        const result = await provider!.send(notification, t.token);
+        if (result.failed.length > 0) {
+          const reason = result.failed[0]?.response?.reason || 'unknown';
+          if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+            await deleteApnsToken(t.token);
+          }
+        }
+      } catch {
+        // Silent push failures are expected sometimes; don't log as errors
+      }
+    }),
   );
 }
 

@@ -3,7 +3,8 @@ import { requireRole } from '../middleware/auth.middleware';
 import { generateCsrfToken } from '../middleware/csrf.middleware';
 import {
   LiveActivityContentState,
-  pushToStartAll,
+  MultiDeviceContentState,
+  multiDevicePushToStartAll,
   sendBroadcastUpdate,
 } from '../apns';
 import { getAllDeviceTokens } from '../push-token-store';
@@ -128,13 +129,14 @@ router.post('/admin/live-activity-test/simulate', requireRole('admin'), async (r
 
   activeSimulations.set(activityType, sim);
 
-  // Send push-to-start with channel ID so activity is channel-subscribed
+  // Send push-to-start using consolidated multi-device activity
   const deviceTokens = await getAllDeviceTokens();
   if (deviceTokens.length > 0) {
     const contentState = buildContentState(sim);
     const channelId = await getChannelId(activityType);
-    await pushToStartAll(deviceTokens, contentState, channelId ?? undefined);
-    testLogger.info({ activityType, hasChannel: !!channelId }, 'Push-to-start sent');
+    const multiState: MultiDeviceContentState = { devices: [contentState.device] };
+    await multiDevicePushToStartAll(deviceTokens, multiState, channelId ?? undefined);
+    testLogger.info({ activityType, hasChannel: !!channelId }, 'Multi-device push-to-start sent');
   }
 
   // Start ticking every 15 seconds
