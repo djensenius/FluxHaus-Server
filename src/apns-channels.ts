@@ -145,8 +145,7 @@ async function createChannel(activityType: string): Promise<string | null> {
 
   try {
     const { status, data } = await makeChannelRequest('POST', path, {
-      displayName: `FluxHaus ${displayName}`,
-      messageStoragePolicy: 'medium',
+      messageStoragePolicy: 'short_term',
     });
 
     if (status === 200 || status === 201) {
