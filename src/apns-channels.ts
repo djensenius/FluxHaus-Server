@@ -26,8 +26,8 @@ const RETRY_BACKOFF_MS = 5 * 60 * 1000; // 5 minutes between retries
 function getApnsChannelHost(): string {
   const env = process.env.APNS_ENVIRONMENT;
   return env === 'development'
-    ? 'https://api-manage-broadcast.sandbox.push.apple.com:443'
-    : 'https://api-manage-broadcast.push.apple.com:443';
+    ? 'https://api-manage-broadcast.sandbox.push.apple.com:2195'
+    : 'https://api-manage-broadcast.push.apple.com:2196';
 }
 
 async function generateApnsJwt(): Promise<string | null> {

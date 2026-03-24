@@ -4,11 +4,12 @@ import {
   multiDevicePushToStartAll,
   sendAlertToAll,
   sendMultiDeviceBroadcast,
+  sendMultiDeviceDirectUpdate,
   sendSilentPushToAll,
 } from './apns';
 import { getChannelId } from './apns-channels';
 import { getApnsTokensForDeviceType, getSubscribedDeviceTokens } from './la-subscriptions';
-import { getAllApnsTokens } from './push-token-store';
+import { getAllActivityTokens, getAllApnsTokens } from './push-token-store';
 import logger from './logger';
 
 const laLogger = logger.child({ subsystem: 'live-activity-hooks' });
@@ -38,8 +39,10 @@ function stopKeepAlive(): void {
 function formatTimeRemaining(seconds: number): string {
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m`;
-  const finishTime = new Date(Date.now() + seconds * 1000);
-  return finishTime.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (remainingMinutes === 0) return `${hours}h`;
+  return `${hours}h ${remainingMinutes}m`;
 }
 
 function buildMieleContentState(
@@ -178,28 +181,33 @@ async function broadcastConsolidated(force = false): Promise<void> {
   const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
   const hasRunning = runningDevices.length > 0;
   const wasAnyRunning = previousRunningState.get('consolidated') ?? false;
-  previousRunningState.set('consolidated', hasRunning);
 
   const contentState: MultiDeviceContentState = { devices: runningDevices };
 
+  // Try to get channel, but don't block on it — push-to-start works without channels
   const channelId = await getChannelId('consolidated');
-  if (!channelId) return;
+
+  // Update state after attempting channel (don't lose edge if channel fails)
+  previousRunningState.set('consolidated', hasRunning);
 
   if (hasRunning) {
     // Push-to-start if transitioning from no devices to at least one
     if (!wasAnyRunning) {
       const subscribedTokens = await getSubscribedDeviceTokens();
       if (subscribedTokens.length > 0) {
-        laLogger.info({ count: runningDevices.length }, 'Sending consolidated push-to-start');
-        await multiDevicePushToStartAll(subscribedTokens, contentState, channelId);
+        laLogger.info(
+          { count: runningDevices.length, hasChannel: !!channelId },
+          'Sending consolidated push-to-start',
+        );
+        // channelId is optional — push-to-start works without it
+        await multiDevicePushToStartAll(subscribedTokens, contentState, channelId ?? undefined);
         // Retry push-to-start after 5s in case the first attempt was rejected
-        // (e.g., stale activity was still on device and got cleaned up by silent push)
         setTimeout(async () => {
           try {
             const retryTokens = await getSubscribedDeviceTokens();
             if (retryTokens.length > 0) {
               laLogger.debug('Retrying push-to-start');
-              await multiDevicePushToStartAll(retryTokens, contentState, channelId);
+              await multiDevicePushToStartAll(retryTokens, contentState, channelId ?? undefined);
             }
           } catch {
             // Retry failures are non-critical
@@ -221,11 +229,29 @@ async function broadcastConsolidated(force = false): Promise<void> {
     }
     lastConsolidatedBroadcast = now;
 
-    await sendMultiDeviceBroadcast(channelId, contentState, 'update');
+    // Send via broadcast channel if available
+    if (channelId) {
+      await sendMultiDeviceBroadcast(channelId, contentState, 'update');
+    }
+
+    // Also send via per-activity push tokens (works without channels)
+    const activityTokens = await getAllActivityTokens();
+    if (activityTokens.length > 0) {
+      await sendMultiDeviceDirectUpdate(activityTokens, contentState, 'update');
+    }
   } else if (wasAnyRunning) {
-    // All devices stopped — end the consolidated activity immediately
+    // All devices stopped — end the consolidated activity
     stopKeepAlive();
-    await sendMultiDeviceBroadcast(channelId, { devices: [] }, 'end');
+
+    if (channelId) {
+      await sendMultiDeviceBroadcast(channelId, { devices: [] }, 'end');
+    }
+
+    const activityTokens = await getAllActivityTokens();
+    if (activityTokens.length > 0) {
+      await sendMultiDeviceDirectUpdate(activityTokens, { devices: [] }, 'end');
+    }
+
     // Silent push to wake the app so it can clean up the local activity
     const apnsTokens = await getAllApnsTokens();
     if (apnsTokens.length > 0) {
@@ -352,4 +378,26 @@ export async function onRobotStatusChange(
 
   laLogger.debug({ activityType, running }, 'Robot status change');
   await broadcastConsolidated();
+}
+
+/**
+ * Called when a new push-to-start token is registered.
+ * If devices are currently running, immediately send a push-to-start
+ * to the new token so the user doesn't have to wait for the next transition.
+ */
+export async function onPushToStartTokenRegistered(
+  pushToStartToken: string,
+): Promise<void> {
+  const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
+  if (runningDevices.length === 0) return;
+
+  const channelId = await getChannelId('consolidated');
+  if (!channelId) return;
+
+  const contentState: MultiDeviceContentState = { devices: runningDevices };
+  laLogger.info(
+    { count: runningDevices.length },
+    'Sending catch-up push-to-start for newly registered token',
+  );
+  await multiDevicePushToStartAll([{ pushToStartToken }], contentState, channelId);
 }
