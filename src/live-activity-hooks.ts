@@ -19,9 +19,9 @@ const initializedDeviceTypes = new Set<string>();
 // Cached device states for building consolidated activity
 const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
 
-// Throttle consolidated broadcasts to avoid flooding
+// Throttle consolidated broadcasts to once per minute
 let lastConsolidatedBroadcast = 0;
-const CONSOLIDATED_THROTTLE_MS = 10_000;
+const CONSOLIDATED_THROTTLE_MS = 60_000;
 
 // Periodic keep-alive interval to prevent stale activities
 let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
@@ -121,7 +121,7 @@ function buildDishwasherContentState(dishwasher: DishWasher): LiveActivityConten
       progress: dishwasher.programProgress ?? 0,
       icon: 'dishwasher',
       trailingText,
-      shortText: `${dishwasher.remainingTime ?? 0}m`,
+      shortText: formatTimeRemaining(dishwasher.remainingTime ?? 0),
       running,
       programName: programDisplay,
     },
@@ -164,7 +164,7 @@ function startKeepAlive(): void {
     laLogger.debug({ count: runningDevices.length }, 'Keep-alive broadcast');
     // eslint-disable-next-line @typescript-eslint/no-use-before-define
     broadcastConsolidated(true).catch(() => {});
-  }, 5 * 60 * 1000);
+  }, 60 * 1000);
 }
 
 /**

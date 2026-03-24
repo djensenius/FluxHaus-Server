@@ -347,7 +347,7 @@ export async function sendMultiDeviceBroadcast(
       apnsLogger.warn({ reason }, 'Multi-device broadcast failed');
       return false;
     }
-    apnsLogger.debug({ event, count: contentState.devices.length }, 'Multi-device broadcast sent');
+    apnsLogger.info({ event, count: contentState.devices.length }, 'Multi-device broadcast sent');
     return true;
   } catch (err) {
     apnsLogger.error({ err }, 'Multi-device broadcast error');

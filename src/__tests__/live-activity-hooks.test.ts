@@ -70,7 +70,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });
       mockMultiDeviceBroadcast.mockClear();
-      jest.setSystemTime(Date.now() + 15_000);
+      jest.setSystemTime(Date.now() + 120_000);
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
       });
@@ -88,7 +88,7 @@ describe('live-activity-hooks (consolidated)', () => {
 
   describe('onDishwasherStatusChange', () => {
     it('includes dishwasher in consolidated broadcast', async () => {
-      jest.setSystemTime(Date.now() + 15_000);
+      jest.setSystemTime(Date.now() + 120_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       await onDishwasherStatusChange({
         operationState: 'Run',
@@ -107,7 +107,7 @@ describe('live-activity-hooks (consolidated)', () => {
 
   describe('onRobotStatusChange', () => {
     it('includes robot in consolidated broadcast', async () => {
-      jest.setSystemTime(Date.now() + 60_000);
+      jest.setSystemTime(Date.now() + 240_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       await onRobotStatusChange('Broombot', {
         running: true,
@@ -132,7 +132,7 @@ describe('live-activity-hooks (consolidated)', () => {
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });
-      jest.setSystemTime(Date.now() + 15_000);
+      jest.setSystemTime(Date.now() + 120_000);
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
       });
