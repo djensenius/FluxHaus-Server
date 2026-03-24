@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  deleteDeviceToken, saveApnsToken, saveDeviceToken, saveActivityToken,
+  deleteDeviceToken, saveActivityToken, saveApnsToken, saveDeviceToken,
 } from '../push-token-store';
 import { getAllChannels, getChannelId } from '../apns-channels';
 import { getSubscriptions, saveSubscriptions } from '../la-subscriptions';
