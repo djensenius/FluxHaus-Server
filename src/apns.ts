@@ -465,6 +465,50 @@ export async function sendMultiDeviceBroadcast(
   return broadcastOk;
 }
 
+// --- Direct per-activity token updates (fallback when channels unavailable) ---
+
+export async function sendMultiDeviceDirectUpdate(
+  tokens: Array<{ activityToken: string }>,
+  contentState: MultiDeviceContentState,
+  event: 'update' | 'end',
+): Promise<void> {
+  if (!provider || tokens.length === 0) return;
+
+  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+
+  await Promise.allSettled(
+    tokens.map(async (t) => {
+      const notification = new apn.Notification();
+      notification.topic = `${bundleId}.push-type.liveactivity`;
+      notification.pushType = 'liveactivity';
+      notification.priority = 10;
+      notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+
+      notification.rawPayload = {
+        aps: {
+          timestamp: Math.floor(Date.now() / 1000),
+          event,
+          'content-state': contentState,
+          ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
+          'stale-date': Math.floor(Date.now() / 1000) + 900,
+        },
+      };
+
+      try {
+        const result = await provider!.send(notification, t.activityToken);
+        if (result.failed.length > 0) {
+          const reason = result.failed[0]?.response?.reason || 'unknown';
+          if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+            await deleteActivityToken(t.activityToken);
+          }
+        }
+      } catch (err) {
+        apnsLogger.error({ err }, 'Activity token push error');
+      }
+    }),
+  );
+}
+
 // --- Regular alert push notifications ---
 
 export async function sendAlertNotification(

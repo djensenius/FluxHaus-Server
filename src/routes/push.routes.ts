@@ -4,6 +4,7 @@ import {
 } from '../push-token-store';
 import { getAllChannels, getChannelId } from '../apns-channels';
 import { getSubscriptions, saveSubscriptions } from '../la-subscriptions';
+import { onPushToStartTokenRegistered } from '../live-activity-hooks';
 import logger from '../logger';
 
 const pushLogger = logger.child({ subsystem: 'push-routes' });
@@ -64,6 +65,9 @@ router.post('/push-tokens/device', async (req, res) => {
     });
     pushLogger.info({ userSub }, 'Device push-to-start token registered');
     res.json({ success: true });
+
+    // If devices are already running, send push-to-start immediately
+    onPushToStartTokenRegistered(pushToStartToken).catch(() => {});
   } catch (err) {
     pushLogger.error({ err, userSub }, 'Failed to register device token');
     res.status(500).json({ error: 'Failed to register device token' });

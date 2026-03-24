@@ -20,29 +20,35 @@ jest.mock('../logger', () => ({
 const mockGetChannelId = apnsChannels.getChannelId as jest.Mock;
 const mockGetFilteredApnsTokens = laSubs.getApnsTokensForDeviceType as jest.Mock;
 const mockMultiDeviceBroadcast = apns.sendMultiDeviceBroadcast as jest.Mock;
+const mockDirectUpdate = apns.sendMultiDeviceDirectUpdate as jest.Mock;
 const mockSendAlertToAll = apns.sendAlertToAll as jest.Mock;
 const mockGetSubscribedTokens = laSubs.getSubscribedDeviceTokens as jest.Mock;
 const mockMultiPushToStart = apns.multiDevicePushToStartAll as jest.Mock;
 const mockSendSilentPush = apns.sendSilentPushToAll as jest.Mock;
 const mockGetAllApnsTokens = pushTokenStore.getAllApnsTokens as jest.Mock;
+const mockGetAllActivityTokens = pushTokenStore.getAllActivityTokens as jest.Mock;
 
 beforeEach(() => {
   jest.useFakeTimers();
   mockGetChannelId.mockReset();
   mockGetFilteredApnsTokens.mockReset();
   mockMultiDeviceBroadcast.mockReset();
+  mockDirectUpdate.mockReset();
   mockSendAlertToAll.mockReset();
   mockGetSubscribedTokens.mockReset();
   mockMultiPushToStart.mockReset();
   mockSendSilentPush.mockReset();
   mockGetAllApnsTokens.mockReset();
+  mockGetAllActivityTokens.mockReset();
   mockGetFilteredApnsTokens.mockResolvedValue([]);
   mockMultiDeviceBroadcast.mockResolvedValue(true);
+  mockDirectUpdate.mockResolvedValue(undefined);
   mockSendAlertToAll.mockResolvedValue(undefined);
   mockGetSubscribedTokens.mockResolvedValue([]);
   mockMultiPushToStart.mockResolvedValue(undefined);
   mockSendSilentPush.mockResolvedValue(undefined);
   mockGetAllApnsTokens.mockResolvedValue([]);
+  mockGetAllActivityTokens.mockResolvedValue([]);
 });
 
 afterEach(() => {
