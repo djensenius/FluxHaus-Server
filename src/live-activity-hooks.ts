@@ -4,9 +4,11 @@ import {
   multiDevicePushToStartAll,
   sendAlertToAll,
   sendMultiDeviceBroadcast,
+  sendSilentPushToAll,
 } from './apns';
 import { getChannelId } from './apns-channels';
 import { getApnsTokensForDeviceType, getSubscribedDeviceTokens } from './la-subscriptions';
+import { getAllApnsTokens } from './push-token-store';
 import logger from './logger';
 
 const laLogger = logger.child({ subsystem: 'live-activity-hooks' });
@@ -190,6 +192,24 @@ async function broadcastConsolidated(force = false): Promise<void> {
       if (subscribedTokens.length > 0) {
         laLogger.info({ count: runningDevices.length }, 'Sending consolidated push-to-start');
         await multiDevicePushToStartAll(subscribedTokens, contentState, channelId);
+        // Retry push-to-start after 5s in case the first attempt was rejected
+        // (e.g., stale activity was still on device and got cleaned up by silent push)
+        setTimeout(async () => {
+          try {
+            const retryTokens = await getSubscribedDeviceTokens();
+            if (retryTokens.length > 0) {
+              laLogger.debug('Retrying push-to-start');
+              await multiDevicePushToStartAll(retryTokens, contentState, channelId);
+            }
+          } catch {
+            // Retry failures are non-critical
+          }
+        }, 5000);
+      }
+      // Also send silent push to wake the app for local reconcile
+      const apnsTokens = await getAllApnsTokens();
+      if (apnsTokens.length > 0) {
+        await sendSilentPushToAll(apnsTokens);
       }
       startKeepAlive();
     }
@@ -206,6 +226,11 @@ async function broadcastConsolidated(force = false): Promise<void> {
     // All devices stopped — end the consolidated activity immediately
     stopKeepAlive();
     await sendMultiDeviceBroadcast(channelId, { devices: [] }, 'end');
+    // Silent push to wake the app so it can clean up the local activity
+    const apnsTokens = await getAllApnsTokens();
+    if (apnsTokens.length > 0) {
+      await sendSilentPushToAll(apnsTokens);
+    }
   }
 }
 
@@ -220,11 +245,9 @@ const DISPLAY_NAMES: Record<string, string> = {
 /**
  * Send a regular push notification when a device finishes.
  * Only sends to users subscribed to this device type.
+ * Callers must ensure this is only invoked on running → stopped transitions.
  */
 async function sendCompletionAlert(activityType: string): Promise<void> {
-  const wasRunning = previousRunningState.get(activityType) ?? false;
-  if (!wasRunning) return; // Only alert on running → stopped transition
-
   const tokens = await getApnsTokensForDeviceType(activityType);
   if (tokens.length === 0) return;
 
@@ -255,13 +278,14 @@ export async function onMieleStatusChange(
     return;
   }
 
-  // Send completion alert when device finishes
-  if (!running) {
+  // Track state BEFORE sending alert to prevent race-condition duplicates
+  const wasRunning = previousRunningState.get(activityType) ?? false;
+  previousRunningState.set(activityType, running);
+
+  // Send completion alert only on running → stopped transition
+  if (!running && wasRunning) {
     await sendCompletionAlert(activityType);
   }
-
-  // Track state for transition detection
-  previousRunningState.set(activityType, running);
 
   laLogger.debug({ activityType, running }, 'Miele status change');
   await broadcastConsolidated();
@@ -284,13 +308,14 @@ export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<
     return;
   }
 
-  // Send completion alert when device finishes
-  if (!running) {
+  // Track state BEFORE sending alert to prevent race-condition duplicates
+  const wasRunning = previousRunningState.get(activityType) ?? false;
+  previousRunningState.set(activityType, running);
+
+  // Send completion alert only on running → stopped transition
+  if (!running && wasRunning) {
     await sendCompletionAlert(activityType);
   }
-
-  // Track state for transition detection
-  previousRunningState.set(activityType, running);
 
   laLogger.debug({ activityType, running }, 'Dishwasher status change');
   await broadcastConsolidated();
@@ -316,13 +341,14 @@ export async function onRobotStatusChange(
     return;
   }
 
-  // Send completion alert when device finishes
-  if (!running) {
+  // Track state BEFORE sending alert to prevent race-condition duplicates
+  const wasRunning = previousRunningState.get(activityType) ?? false;
+  previousRunningState.set(activityType, running);
+
+  // Send completion alert only on running → stopped transition
+  if (!running && wasRunning) {
     await sendCompletionAlert(activityType);
   }
-
-  // Track state for transition detection
-  previousRunningState.set(activityType, running);
 
   laLogger.debug({ activityType, running }, 'Robot status change');
   await broadcastConsolidated();

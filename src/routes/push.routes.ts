@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import {
-  deleteDeviceToken, saveApnsToken, saveDeviceToken,
+  deleteDeviceToken, saveApnsToken, saveDeviceToken, saveActivityToken,
 } from '../push-token-store';
 import { getAllChannels, getChannelId } from '../apns-channels';
 import { getSubscriptions, saveSubscriptions } from '../la-subscriptions';
@@ -114,6 +114,36 @@ router.post('/push-tokens/apns', async (req, res) => {
   } catch (err) {
     pushLogger.error({ err, userSub }, 'Failed to register APNs token');
     res.status(500).json({ error: 'Failed to register APNs token' });
+  }
+});
+
+// --- Per-activity push token for direct Live Activity updates ---
+
+router.post('/push-tokens/activity', async (req, res) => {
+  const userSub = req.user?.sub;
+  if (!userSub) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+
+  const { activityToken, deviceName } = req.body;
+  if (!activityToken) {
+    res.status(400).json({ error: 'activityToken is required' });
+    return;
+  }
+
+  try {
+    await saveActivityToken({
+      userSub,
+      activityToken,
+      deviceName,
+      bundleId: process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus',
+    });
+    pushLogger.info({ userSub }, 'Activity push token registered');
+    res.json({ success: true });
+  } catch (err) {
+    pushLogger.error({ err, userSub }, 'Failed to register activity token');
+    res.status(500).json({ error: 'Failed to register activity token' });
   }
 });
 

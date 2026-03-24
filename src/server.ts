@@ -251,7 +251,6 @@ export async function createServer(): Promise<Express> {
   setInterval(() => {
     mieleClient.getActivePrograms();
   }, 600000);
-  mieleClient.listenEvents();
 
   const dishwasher = new HomeAssistantDishwasher({
     client: homeAssistantClient,
