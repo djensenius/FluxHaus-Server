@@ -59,6 +59,7 @@ import { ImmichClient } from './clients/immich';
 import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
+import { KagiClient } from './clients/kagi';
 import { closeApns, initApns } from './apns';
 import { ensureAllChannels } from './apns-channels';
 import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from './live-activity-hooks';
@@ -338,6 +339,9 @@ export async function createServer(): Promise<Express> {
     url: (process.env.PIHOLE_URL || '').trim(),
     password: (process.env.PIHOLE_PASSWORD || '').trim(),
   });
+  const kagi = new KagiClient({
+    apiKey: (process.env.KAGI_API_KEY || '').trim(),
+  });
 
   // Shared services object — used by MCP, /command, and /voice endpoints
   const allServices = {
@@ -363,6 +367,7 @@ export async function createServer(): Promise<Express> {
     unifi,
     forgejo,
     pihole,
+    kagi,
   };
 
   app.get('/', cors(corsOptions), (req, res) => {
