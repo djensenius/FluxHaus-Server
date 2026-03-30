@@ -3,7 +3,7 @@ import { HomeAssistantClient } from './homeassistant-client';
 import HomeAssistantRobot from './homeassistant-robot';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import Car, { CarConfig } from './car';
-import Miele from './miele';
+import HomeAssistantMiele from './homeassistant-miele';
 import { PlexClient } from './clients/plex';
 import { OverseerrClient } from './clients/overseerr';
 import { TautulliClient } from './clients/tautulli';
@@ -29,7 +29,7 @@ export interface FluxHausServices {
   broombot: HomeAssistantRobot;
   mopbot: HomeAssistantRobot;
   car: Car;
-  mieleClient: Miele;
+  mieleClient: HomeAssistantMiele;
   dishwasher: HomeAssistantDishwasher;
   cameraURL: string;
   plex?: PlexClient;
@@ -79,10 +79,10 @@ export async function createServices(): Promise<FluxHausServices> {
   const car = new Car(carConfig);
   await car.setStatus();
 
-  const mieleClient = new Miele(
-    process.env.mieleClientId || '',
-    process.env.mieleSecretId || '',
-  );
+  const mieleClient = new HomeAssistantMiele({
+    client: homeAssistantClient,
+    pollInterval: 10_000,
+  });
 
   const dishwasher = new HomeAssistantDishwasher({
     client: homeAssistantClient,
