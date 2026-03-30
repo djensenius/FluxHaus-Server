@@ -132,12 +132,16 @@ export default class HomeAssistantMiele {
       entityIds.map((id) => this.client.getState(id)),
     );
 
-    let idx = 0;
-    const statusResult = results[idx++];
-    const programNameResult = entities.programName ? results[idx++] : null;
-    const programPhaseResult = entities.programPhase ? results[idx++] : null;
-    const elapsedTimeResult = entities.elapsedTime ? results[idx++] : null;
-    const remainingTimeResult = entities.remainingTime ? results[idx++] : null;
+    // Map results back to entities by walking the filtered array in order
+    const statusResult = results[0];
+    let nextIdx = 1;
+    const programNameResult = entities.programName ? results[nextIdx] : null;
+    if (entities.programName) nextIdx += 1;
+    const programPhaseResult = entities.programPhase ? results[nextIdx] : null;
+    if (entities.programPhase) nextIdx += 1;
+    const elapsedTimeResult = entities.elapsedTime ? results[nextIdx] : null;
+    if (entities.elapsedTime) nextIdx += 1;
+    const remainingTimeResult = entities.remainingTime ? results[nextIdx] : null;
 
     // Status — normalize to lowercase/underscore to match STATUS_MAP keys
     // (HA Miele integration reports states like "running", "not_connected", etc.)

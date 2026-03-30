@@ -148,6 +148,7 @@ describe('HomeAssistantMiele', () => {
       { haState: 'idle', expectedStatus: 'Idle', expectedInUse: true },
     ];
 
+    // eslint-disable-next-line no-restricted-syntax
     for (const { haState, expectedStatus, expectedInUse } of testCases) {
       jest.clearAllMocks();
       mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
@@ -158,6 +159,7 @@ describe('HomeAssistantMiele', () => {
       });
 
       miele = new HomeAssistantMiele({ client: mockClient });
+      // eslint-disable-next-line no-await-in-loop
       await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 
       expect(miele.washer.status).toBe(expectedStatus);
@@ -294,7 +296,7 @@ describe('HomeAssistantMiele', () => {
 
     const afterStop = (mockClient.getState as jest.Mock).mock.calls.length;
     jest.advanceTimersByTime(1000);
-    expect((mockClient.getState as jest.Mock).mock.calls.length).toBe(afterStop);
+    expect((mockClient.getState as jest.Mock).mock.calls).toHaveLength(afterStop);
   });
 
   it('should handle poll errors gracefully', async () => {
