@@ -40,16 +40,16 @@ const STATUS_MAP: Record<string, string> = {
 };
 
 const DEFAULT_WASHER_ENTITIES: MieleDeviceEntities = {
-  status: 'sensor.washing_machine_status',
-  programName: 'sensor.washing_machine_program_name',
+  status: 'sensor.washing_machine',
+  programName: 'sensor.washing_machine_program',
   programPhase: 'sensor.washing_machine_program_phase',
   elapsedTime: 'sensor.washing_machine_elapsed_time',
   remainingTime: 'sensor.washing_machine_remaining_time',
 };
 
 const DEFAULT_DRYER_ENTITIES: MieleDeviceEntities = {
-  status: 'sensor.tumble_dryer_status',
-  programName: 'sensor.tumble_dryer_program_name',
+  status: 'sensor.tumble_dryer',
+  programName: 'sensor.tumble_dryer_program',
   programPhase: 'sensor.tumble_dryer_program_phase',
   elapsedTime: 'sensor.tumble_dryer_elapsed_time',
   remainingTime: 'sensor.tumble_dryer_remaining_time',

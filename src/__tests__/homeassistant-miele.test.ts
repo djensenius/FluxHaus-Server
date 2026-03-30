@@ -62,10 +62,10 @@ describe('HomeAssistantMiele', () => {
 
   it('should update washer status from HA entities', async () => {
     mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
-      if (entityId === 'sensor.washing_machine_status') {
+      if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'running' });
       }
-      if (entityId === 'sensor.washing_machine_program_name') {
+      if (entityId === 'sensor.washing_machine_program') {
         return Promise.resolve({ state: 'Cottons' });
       }
       if (entityId === 'sensor.washing_machine_program_phase') {
@@ -100,10 +100,10 @@ describe('HomeAssistantMiele', () => {
 
   it('should update dryer status from HA entities', async () => {
     mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
-      if (entityId === 'sensor.tumble_dryer_status') {
+      if (entityId === 'sensor.tumble_dryer') {
         return Promise.resolve({ state: 'running' });
       }
-      if (entityId === 'sensor.tumble_dryer_program_name') {
+      if (entityId === 'sensor.tumble_dryer_program') {
         return Promise.resolve({ state: 'Warm air' });
       }
       if (entityId === 'sensor.tumble_dryer_program_phase') {
@@ -151,7 +151,7 @@ describe('HomeAssistantMiele', () => {
     for (const { haState, expectedStatus, expectedInUse } of testCases) {
       jest.clearAllMocks();
       mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
-        if (entityId === 'sensor.washing_machine_status') {
+        if (entityId === 'sensor.washing_machine') {
           return Promise.resolve({ state: haState });
         }
         return Promise.resolve({ state: 'off' });
@@ -168,10 +168,10 @@ describe('HomeAssistantMiele', () => {
 
   it('should handle unknown/unavailable entity states', async () => {
     mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
-      if (entityId === 'sensor.washing_machine_status') {
+      if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'off' });
       }
-      if (entityId === 'sensor.washing_machine_program_name') {
+      if (entityId === 'sensor.washing_machine_program') {
         return Promise.resolve({ state: 'unknown' });
       }
       if (entityId === 'sensor.washing_machine_program_phase') {
@@ -197,7 +197,7 @@ describe('HomeAssistantMiele', () => {
 
   it('should parse HH:MM time format', async () => {
     mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
-      if (entityId === 'sensor.washing_machine_status') {
+      if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'running' });
       }
       if (entityId === 'sensor.washing_machine_elapsed_time') {
@@ -311,7 +311,7 @@ describe('HomeAssistantMiele', () => {
 
   it('should fall back to raw state for unmapped status values', async () => {
     mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
-      if (entityId === 'sensor.washing_machine_status') {
+      if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'SomeNewStatus' });
       }
       return Promise.resolve({ state: 'off' });
