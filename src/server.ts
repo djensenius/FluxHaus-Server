@@ -22,7 +22,7 @@ import { closeClient as closeInflux, flushWrites, initInflux } from './influx';
 import HomeAssistantRobot from './homeassistant-robot';
 import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
-import Miele from './miele';
+import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
@@ -241,17 +241,13 @@ export async function createServer(): Promise<Express> {
   const car = new Car(carConfig);
   await car.setStatus();
   const cameraURL = process.env.CAMERA_URL || '';
-  const clientId = process.env.mieleClientId || '';
-  const secretId = process.env.mieleSecretId || '';
-  const mieleClient = new Miele(clientId, secretId);
+  const mieleClient = new HomeAssistantMiele({
+    client: homeAssistantClient,
+    pollInterval: 10_000,
+  });
   mieleClient.onStatusChange = (deviceType, device) => {
     onMieleStatusChange(deviceType, device).catch(() => {});
   };
-  mieleClient.getActivePrograms();
-  mieleClient.listenEvents();
-  setInterval(() => {
-    mieleClient.getActivePrograms();
-  }, 600000);
 
   const dishwasher = new HomeAssistantDishwasher({
     client: homeAssistantClient,
@@ -436,7 +432,7 @@ export async function createServer(): Promise<Express> {
         timestamp: new Date(),
         mieleClientId: process.env.mieleClientId,
         mieleSecretId: process.env.mieleSecretId,
-        mieleAppliances: process.env.mieleAppliances!.split(', '),
+        mieleAppliances: process.env.mieleAppliances?.split(', ') ?? [],
         boschClientId: process.env.boschClientId,
         boschSecretId: process.env.boschSecretId,
         boschAppliance: process.env.boschAppliance,
