@@ -319,6 +319,7 @@ describe('Server', () => {
 
   it('should fetch schedule', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
       json: jest.fn().mockResolvedValue({ schedule: [] }),
     });
 
@@ -342,6 +343,7 @@ describe('Server', () => {
 
   it('should fetch rhizome photos', async () => {
     (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
       json: jest.fn().mockResolvedValue([{ download_url: 'http://photo.url' }]),
     });
 

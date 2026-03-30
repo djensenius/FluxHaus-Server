@@ -66,6 +66,10 @@ export default class Miele {
       body: formBody.join('&'),
     });
 
+    if (!response.ok) {
+      mieleLogger.error({ status: response.status }, 'Miele: Failed to get token');
+      return;
+    }
     const body = await response.json();
     if (body.access_token) {
       this.MIELE_TOKEN = body.access_token;
@@ -100,6 +104,10 @@ export default class Miele {
       body: formBody.join('&'),
     });
 
+    if (!response.ok) {
+      mieleLogger.error({ status: response.status }, 'Miele: Failed to refresh token');
+      return;
+    }
     const body = await response.json();
     if (body.access_token) {
       this.MIELE_TOKEN = body.access_token;
@@ -158,6 +166,10 @@ export default class Miele {
     };
 
     const response = await fetch(url, { method: 'GET', headers });
+    if (!response.ok) {
+      mieleLogger.error({ status: response.status }, 'Miele: Failed to get active programs');
+      return;
+    }
     const body = await response.json();
     this.parseMessage(body);
     fs.writeFileSync(
