@@ -105,7 +105,7 @@ export default class HomeAssistantMiele {
   // eslint-disable-next-line class-methods-use-this
   private parseTimeMinutes(state: string | undefined | null): number | undefined {
     if (!state || state === 'unknown' || state === 'unavailable') return undefined;
-    // Try HH:MM format first (before parseFloat, which would partially parse it)
+    // Try HH:MM format first (Number() would parse "1:30" as NaN unlike parseFloat)
     const match = state.match(/^(\d+):(\d+)$/);
     if (match) {
       return parseInt(match[1], 10) * 60 + parseInt(match[2], 10);
@@ -139,7 +139,8 @@ export default class HomeAssistantMiele {
     const elapsedTimeResult = entities.elapsedTime ? results[idx++] : null;
     const remainingTimeResult = entities.remainingTime ? results[idx++] : null;
 
-    // Status
+    // Status — normalize to lowercase/underscore to match STATUS_MAP keys
+    // (HA Miele integration reports states like "running", "not_connected", etc.)
     const rawStatus = (statusResult?.state || 'off').toLowerCase().replace(/\s+/g, '_');
     const status = STATUS_MAP[rawStatus] || statusResult?.state || 'Off';
     const inUse = status !== 'Off' && status !== 'Not Connected';
