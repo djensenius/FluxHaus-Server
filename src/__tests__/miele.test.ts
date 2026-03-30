@@ -40,6 +40,7 @@ describe('Miele', () => {
       expires_in: 3600,
     };
     (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
       json: jest.fn().mockResolvedValue(mockResponse),
     });
     (saveToken as jest.Mock).mockResolvedValue(undefined);
@@ -69,6 +70,7 @@ describe('Miele', () => {
       expires_in: 3600,
     };
     (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
       json: jest.fn().mockResolvedValue(mockResponse),
     });
     (saveToken as jest.Mock).mockResolvedValue(undefined);
@@ -147,6 +149,7 @@ describe('Miele', () => {
     };
 
     (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
       json: jest.fn().mockResolvedValue(mockDevices),
     });
 
@@ -183,9 +186,11 @@ describe('Miele', () => {
 
     (global.fetch as jest.Mock)
       .mockResolvedValueOnce({
+        ok: true,
         json: jest.fn().mockResolvedValue({ access_token: 'new-token' }),
       })
       .mockResolvedValueOnce({
+        ok: true,
         json: jest.fn().mockResolvedValue({}),
       });
 

@@ -52,13 +52,13 @@ async function makeChannelRequest(
   method: string,
   path: string,
   body?: Record<string, unknown>,
-): Promise<{ status: number; data: Record<string, unknown> }> {
+  extraHeaders?: Record<string, string>,
+): Promise<{ status: number; headers: Record<string, string>; data: Record<string, unknown> }> {
   const token = await generateApnsJwt();
   if (!token) {
     throw new Error('Cannot generate APNs JWT — missing config');
   }
 
-  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
   const host = getApnsChannelHost();
 
   return new Promise((resolve, reject) => {
@@ -71,19 +71,24 @@ async function makeChannelRequest(
     const headers: Record<string, string> = {
       ':method': method,
       ':path': path,
-      'apns-topic': bundleId,
-      'apns-push-type': 'channel-management',
       authorization: `bearer ${token}`,
-      'content-type': 'application/json',
+      ...(body ? { 'content-type': 'application/json' } : {}),
+      ...extraHeaders,
     };
 
     const req = client.request(headers);
 
     let responseData = '';
     let status = 0;
+    const responseHeaders: Record<string, string> = {};
 
     req.on('response', (hdrs) => {
       status = hdrs[':status'] as number || 0;
+      Object.entries(hdrs).forEach(([key, value]) => {
+        if (typeof value === 'string') {
+          responseHeaders[key] = value;
+        }
+      });
     });
 
     req.on('data', (chunk: Buffer) => {
@@ -94,9 +99,9 @@ async function makeChannelRequest(
       client.close();
       try {
         const data = responseData ? JSON.parse(responseData) : {};
-        resolve({ status, data });
+        resolve({ status, headers: responseHeaders, data });
       } catch {
-        resolve({ status, data: { raw: responseData } });
+        resolve({ status, headers: responseHeaders, data: { raw: responseData } });
       }
     });
 
@@ -113,21 +118,18 @@ async function makeChannelRequest(
 }
 
 /**
- * List all existing broadcast channels from Apple's API.
+ * List all existing broadcast channel IDs from Apple's API.
  */
-async function listRemoteChannels(): Promise<Array<{ channelId: string; name: string }>> {
+async function listRemoteChannels(): Promise<string[]> {
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-  const path = `/1/apps/${bundleId}/channels`;
+  const path = `/1/apps/${bundleId}/all-channels`;
 
   try {
     const { status, data } = await makeChannelRequest('GET', path);
     if (status === 200 && Array.isArray(data.channels)) {
-      const channels = data.channels as Array<{ channelId: string; name?: string }>;
+      const channels = data.channels as string[];
       channelLogger.info({ count: channels.length }, 'Listed remote channels');
-      return channels.map((ch) => ({
-        channelId: ch.channelId,
-        name: ch.name ?? '',
-      }));
+      return channels;
     }
     channelLogger.warn({ status, data }, 'Unexpected response listing channels');
     return [];
@@ -143,14 +145,19 @@ async function createChannel(activityType: string): Promise<string | null> {
   const path = `/1/apps/${bundleId}/channels`;
 
   try {
-    const { status, data } = await makeChannelRequest('POST', path, {
-      messageStoragePolicy: 'short_term',
+    const { status, headers, data } = await makeChannelRequest('POST', path, {
+      'message-storage-policy': 1,
+      'push-type': 'LiveActivity',
     });
 
     if (status === 200 || status === 201) {
-      const channelId = data.channelId as string;
+      const channelId = headers['apns-channel-id'];
+      if (!channelId) {
+        channelLogger.error({ activityType }, 'Channel created but no apns-channel-id in response');
+        return null;
+      }
       channelLogger.info(
-        { activityType, channelId: channelId?.substring(0, 16) },
+        { activityType, channelId: channelId.substring(0, 16) },
         'Channel created',
       );
       return channelId;
@@ -248,7 +255,6 @@ export async function ensureAllChannels(): Promise<void> {
 
   let created = 0;
   let existing = 0;
-  let synced = 0;
 
   // Check which types already exist in DB
   const dbResults = await Promise.all(
@@ -268,27 +274,15 @@ export async function ensureAllChannels(): Promise<void> {
     }
   });
 
-  // If any are missing, try listing existing channels from Apple to resync
+  // If any are missing, log how many remote channels exist (can't map back by name)
   if (missingTypes.length > 0) {
     const remoteChannels = await listRemoteChannels();
-
-    await Promise.all(
-      remoteChannels
-        .map((remote) => {
-          const matched = missingTypes.find((actType) => {
-            const expected = `FluxHaus ${DISPLAY_NAMES[actType] || actType}`;
-            return remote.name === expected;
-          });
-          if (!matched) return null;
-          return (async () => {
-            await storeChannelId(matched, remote.channelId, remote.name);
-            channelCache.set(matched, remote.channelId);
-            synced += 1;
-            missingTypes.splice(missingTypes.indexOf(matched), 1);
-          })();
-        })
-        .filter(Boolean),
-    );
+    if (remoteChannels.length > 0) {
+      channelLogger.info(
+        { remoteCount: remoteChannels.length, missingTypes },
+        'Remote channels exist but cannot map to activity types — creating new ones',
+      );
+    }
   }
 
   // Create any that are truly missing (not on Apple's side either)
@@ -314,7 +308,7 @@ export async function ensureAllChannels(): Promise<void> {
 
   channelLogger.info(
     {
-      created, existing, synced, total: ACTIVITY_TYPES.length,
+      created, existing, total: ACTIVITY_TYPES.length,
     },
     'Broadcast channels ready',
   );

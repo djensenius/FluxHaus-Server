@@ -1354,12 +1354,20 @@ export const fetchSchedule = () => {
       'Sec-Fetch-Dest': 'empty',
       Priority: 'u=3, i',
     },
-  }).then((response) => response.json())
+  }).then((response) => {
+    if (!response.ok) {
+      throw new Error(`fetchSchedule: HTTP ${response.status}`);
+    }
+    return response.json();
+  })
     .then((json) => {
       fs.writeFileSync(
         'cache/rhizome.json',
         JSON.stringify({ timestamp: new Date(), ...json }, null, 2),
       );
+    })
+    .catch((err) => {
+      serverLogger.error({ err: err.message }, 'Failed to fetch schedule');
     });
 };
 
@@ -1379,13 +1387,21 @@ interface GitHubFile {
 
 export const fetchRhizomePhotos = () => {
   fetch('https://api.github.com/repos/djensenius/Rhizome-Data/contents/photos?ref=main')
-    .then((response) => response.json())
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error(`fetchRhizomePhotos: HTTP ${response.status}`);
+      }
+      return response.json();
+    })
     .then((json) => {
       const photos = json.map((file: GitHubFile) => file.download_url);
       fs.writeFileSync(
         'cache/rhizomePhotos.json',
         JSON.stringify({ timestamp: new Date(), news: newsURL, photos: [...photos] }, null, 2),
       );
+    })
+    .catch((err) => {
+      serverLogger.error({ err: err.message }, 'Failed to fetch Rhizome photos');
     });
 };
 
