@@ -103,9 +103,13 @@ export default class HomeAssistantRobot {
 
     if (running) {
       if (cleaningTime !== undefined) {
+        // Most accurate: back-calculate from elapsed cleaning time
         timeStarted = new Date(Date.now() - cleaningTime * 1000);
+      } else if (state.last_changed) {
+        // Reliable fallback: HA records exactly when state changed to 'cleaning'
+        timeStarted = new Date(state.last_changed);
       } else if (!this.cachedStatus.running) {
-        // Just started running and no cleaning_time available
+        // Last resort: just started and no timing info available
         timeStarted = new Date(Date.now());
       }
     }
