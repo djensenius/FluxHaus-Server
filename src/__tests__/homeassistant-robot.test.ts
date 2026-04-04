@@ -369,4 +369,27 @@ describe('HomeAssistantRobot', () => {
 
     jest.restoreAllMocks();
   });
+
+  it('should use last_changed for timeStarted on server restart while already running', async () => {
+    const lastChanged = new Date('2026-04-04T15:00:00Z').toISOString();
+
+    // Server restart: cachedStatus is EMPTY_STATUS, robot is already running
+    mockClient.getState.mockResolvedValueOnce({
+      state: 'cleaning',
+      attributes: { battery_level: 72 },
+      last_changed: lastChanged,
+    });
+
+    robot = new HomeAssistantRobot({
+      name: 'Test Robot',
+      entityId,
+      client: mockClient,
+    });
+
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+
+    expect(robot.cachedStatus.running).toBe(true);
+    expect(robot.cachedStatus.timeStarted).toBeDefined();
+    expect(robot.cachedStatus.timeStarted?.toISOString()).toBe(lastChanged);
+  });
 });
