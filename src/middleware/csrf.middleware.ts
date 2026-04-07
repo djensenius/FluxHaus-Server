@@ -1,8 +1,33 @@
 import crypto from 'crypto';
 import { NextFunction, Request, Response } from 'express';
 
+export const CSRF_COOKIE_NAME = 'csrf_token';
+
 export function generateCsrfToken(): string {
   return crypto.randomBytes(32).toString('hex');
+}
+
+function csrfCookieOptions() {
+  return {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax' as const,
+    maxAge: 24 * 60 * 60 * 1000,
+    signed: true,
+  };
+}
+
+export function issueCsrfToken(req: Request, res: Response): string {
+  const cookieToken = typeof req.signedCookies?.[CSRF_COOKIE_NAME] === 'string'
+    ? req.signedCookies[CSRF_COOKIE_NAME]
+    : null;
+  const token = req.session?.csrfToken || cookieToken || generateCsrfToken();
+
+  if (req.session) {
+    req.session.csrfToken = token;
+  }
+  res.cookie(CSRF_COOKIE_NAME, token, csrfCookieOptions());
+  return token;
 }
 
 /**
@@ -12,7 +37,7 @@ export function generateCsrfToken(): string {
  * Requests authenticated via the Authorization header (Basic or Bearer) are
  * exempt — they are not cookie-based and therefore not susceptible to CSRF.
  * All other state-mutating requests must include an X-CSRF-Token header whose
- * value matches the token stored in the server-side session.
+ * value matches the token stored in the server-side session or signed cookie.
  *
  * Browser clients should obtain a token with:
  *   GET /auth/csrf-token  →  { csrfToken: "…" }
@@ -70,11 +95,13 @@ export function csrfMiddleware(req: Request, res: Response, next: NextFunction):
   // tokens in web contexts (network jitter dwarfs CPU timing differences).
   const tokenFromHeader = req.headers['x-csrf-token'];
   const sessionToken = req.session?.csrfToken;
+  const cookieToken = typeof req.signedCookies?.[CSRF_COOKIE_NAME] === 'string'
+    ? req.signedCookies[CSRF_COOKIE_NAME]
+    : null;
 
   if (
     typeof tokenFromHeader !== 'string'
-    || !sessionToken
-    || tokenFromHeader !== sessionToken
+    || (tokenFromHeader !== sessionToken && tokenFromHeader !== cookieToken)
   ) {
     res.status(403).json({ message: 'Invalid or missing CSRF token' });
     return;

@@ -12,7 +12,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import notFoundHandler from './middleware/not-found.middleware';
 import { authMiddleware, requireOidcForMutations } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
-import { csrfMiddleware, generateCsrfToken } from './middleware/csrf.middleware';
+import { csrfMiddleware, issueCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
 import createMcpOAuthRouter from './routes/mcp-oauth.routes';
 import {
@@ -202,10 +202,7 @@ export async function createServer(): Promise<Express> {
   // token for cookie-authenticated browser clients. API clients using the
   // Authorization header do not need this.
   app.get('/auth/csrf-token', (req, res) => {
-    if (!req.session.csrfToken) {
-      req.session.csrfToken = generateCsrfToken();
-    }
-    res.json({ csrfToken: req.session.csrfToken });
+    res.json({ csrfToken: issueCsrfToken(req, res) });
   });
 
   const homeAssistantClient = new HomeAssistantClient({

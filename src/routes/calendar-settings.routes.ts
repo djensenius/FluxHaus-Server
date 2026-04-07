@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { generateCsrfToken } from '../middleware/csrf.middleware';
+import { issueCsrfToken } from '../middleware/csrf.middleware';
 import { FluxHausServices } from '../services';
 
 const PAGE_HTML = /* html */ `<!DOCTYPE html>
@@ -404,10 +404,7 @@ export default function createCalendarSettingsRouter(services: FluxHausServices)
       res.status(403).json({ error: 'OIDC authentication required' });
       return;
     }
-    if (!req.session.csrfToken) {
-      req.session.csrfToken = generateCsrfToken();
-    }
-    res.type('html').send(PAGE_HTML.replace('%%CSRF_TOKEN%%', req.session.csrfToken));
+    res.type('html').send(PAGE_HTML.replace('%%CSRF_TOKEN%%', issueCsrfToken(req, res)));
   });
 
   router.get('/calendar-calendars', async (req, res) => {
