@@ -18,6 +18,7 @@ A Node.js server that acts as the central nervous system for the FluxHaus smart 
 *   **Graceful Shutdown**: Clean teardown of database connections, InfluxDB writes, and HTTP server on SIGTERM/SIGINT.
 *   **AI Command Endpoint**: Natural-language `POST /command` endpoint powered by Anthropic, OpenAI, GitHub Copilot, or Z.ai.
 *   **MCP Server**: Model Context Protocol server so AI assistants (Claude Desktop, etc.) can control your home directly.
+*   **Unified Calendars**: Aggregate calendars from Home Assistant, iCloud, Microsoft 365, and subscribed ICS feeds, with default calendar support for event creation.
 
 ## Prerequisites
 
@@ -178,6 +179,7 @@ The server uses PostgreSQL for:
 - **Audit logs** (`audit_logs` table) — every request and auth event
 - **Session storage** (`session` table) — browser login sessions
 - **OAuth tokens** (`oauth_tokens` table) — Miele and HomeConnect tokens
+- **User preferences** (`user_preferences` table) — includes memory preferences and default calendar selection
 
 ```
 POSTGRES_URL=postgresql://fluxhaus:password@localhost:5432/fluxhaus
@@ -200,6 +202,106 @@ INFLUXDB_BUCKET=fluxhaus
 ```
 
 If not configured, InfluxDB integration is silently disabled. Connect to an existing InfluxDB instance — no need to run one in docker-compose.
+
+## Calendar setup
+
+Calendars are available in both the MCP server and the AI command endpoint. The server keeps the existing Home Assistant calendar access and adds optional providers for iCloud, Microsoft 365, and subscribed ICS feeds.
+
+You can configure calendar sources in two ways:
+
+1. **Per-user stored sources** via the authenticated `/calendar-sources` API
+2. **Environment-based fallback sources** via `.env`
+
+If you want a browser UI instead of raw API calls, open **`/calendar-settings`** after signing in. It lets each user:
+
+- add iCloud, Microsoft 365, or ICS sources
+- review saved sources
+- delete sources
+- choose the default calendar for new events
+
+### Default calendar
+
+The server supports a per-user `defaultCalendarId` preference. Calendar creation tools use it when no `calendar_id` is provided.
+
+- `GET /preferences` returns the current `defaultCalendarId`
+- `PATCH /preferences` accepts `defaultCalendarId` as a string or `null`
+
+Use `list_calendars` first, then copy the returned `id` into `defaultCalendarId`.
+
+### Managing stored calendar sources
+
+Authenticated users can manage their own providers with:
+
+- `GET /calendar-sources`
+- `POST /calendar-sources`
+- `PATCH /calendar-sources/:id`
+- `DELETE /calendar-sources/:id`
+
+Secrets are stored encrypted in PostgreSQL and are not returned in plaintext from these routes.
+
+### iCloud
+
+Use an Apple app-specific password.
+
+```env
+ICLOUD_CALDAV_URL=https://caldav.icloud.com
+ICLOUD_APPLE_ID=you@example.com
+ICLOUD_APP_SPECIFIC_PASSWORD=abcd-efgh-ijkl-mnop
+```
+
+### Microsoft 365
+
+Create an Azure app registration with:
+
+- redirect URI: `http://localhost:8787/auth/m365/callback`
+- delegated scopes: `offline_access`, `User.Read`, `Calendars.Read`, `Calendars.ReadWrite`
+
+Then bootstrap the refresh token:
+
+```bash
+npm run login-m365
+```
+
+Add the printed refresh token to `.env`:
+
+```env
+M365_TENANT_ID=...
+M365_CLIENT_ID=...
+M365_CLIENT_SECRET=...
+M365_REFRESH_TOKEN=...
+M365_USER_ID=me
+```
+
+### Subscribed calendars
+
+For a single ICS feed:
+
+```env
+SUBSCRIBED_CALENDAR_NAME=Subscribed Calendar
+SUBSCRIBED_CALENDAR_URL=https://example.com/calendar.ics
+```
+
+For multiple ICS feeds:
+
+```env
+SUBSCRIBED_CALENDARS_JSON=[{"id":"school","name":"School Calendar","url":"https://example.com/calendar.ics"}]
+```
+
+Subscribed calendars are always read-only.
+
+These `.env` calendar settings remain useful as server-wide fallback sources, but the preferred setup for personal providers is the per-user `/calendar-sources` API.
+
+### Calendar tools
+
+The MCP server and AI command endpoint expose:
+
+- `list_calendars`
+- `get_calendar_events`
+- `list_events`
+- `get_today_agenda`
+- `create_calendar_event`
+- `update_calendar_event`
+- `delete_calendar_event`
 
 ## Health Check
 

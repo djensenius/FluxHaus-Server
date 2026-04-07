@@ -64,7 +64,10 @@ const DANGEROUS_TEMPLATE_PATTERNS = [
 ];
 const MAX_TEMPLATE_LENGTH = 4000;
 
-export default function createMcpServer(services: FluxHausServices): McpServer {
+export default function createMcpServer(
+  services: FluxHausServices,
+  options: { userSub?: string } = {},
+): McpServer {
   const {
     homeAssistantClient,
     broombot,
@@ -72,6 +75,7 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
     car,
     cameraURL,
   } = services;
+  const { userSub } = options;
 
   const server = new McpServer(
     { name: 'fluxhaus', version },
@@ -484,16 +488,18 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
 
   server.tool(
     'get_calendar_events',
-    'Get events from a Home Assistant calendar for a date range',
+    'Get events from a calendar for a date range',
     {
-      calendar_id: z.string().describe('Calendar entity ID (e.g. calendar.family)'), // eslint-disable-line camelcase
+      // eslint-disable-next-line camelcase
+      calendar_id: z.string().describe(
+        'Calendar ID from list_calendars (Home Assistant IDs remain valid)',
+      ),
       start: z.string().describe('Start time as ISO 8601 timestamp'),
       end: z.string().describe('End time as ISO 8601 timestamp'),
     },
     // eslint-disable-next-line camelcase
     async ({ calendar_id, start, end }) => {
-      // eslint-disable-next-line camelcase
-      const events = await homeAssistantClient.getCalendarEvents(calendar_id, start, end);
+      const events = await services.calendar?.listEvents(start, end, calendar_id, userSub) || [];
       return {
         content: [{
           type: 'text' as const,
@@ -505,13 +511,156 @@ export default function createMcpServer(services: FluxHausServices): McpServer {
 
   server.tool(
     'list_calendars',
-    'List all available Home Assistant calendars',
+    'List all available calendars across Home Assistant, iCloud, Microsoft 365, and subscriptions',
     async () => {
-      const calendars = await homeAssistantClient.getCalendars();
+      const calendars = await services.calendar?.listCalendars(userSub) || [];
       return {
         content: [{
           type: 'text' as const,
           text: JSON.stringify(calendars, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'list_events',
+    'List calendar events for a date range, optionally filtering to one calendar',
+    {
+      start: z.string().describe('Start time as ISO 8601 timestamp'),
+      end: z.string().describe('End time as ISO 8601 timestamp'),
+      calendarId: z.string().optional().describe('Optional calendar ID from list_calendars'),
+    },
+    async ({ start, end, calendarId }) => {
+      const events = await services.calendar?.listEvents(start, end, calendarId, userSub) || [];
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(events, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'get_today_agenda',
+    'Get today\'s agenda, using the default calendar when one is set',
+    async () => {
+      const events = await services.calendar?.getTodayAgenda(userSub) || [];
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(events, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'create_calendar_event',
+    'Create a calendar event in the chosen calendar or the user\'s default writable calendar',
+    {
+      title: z.string().describe('Event title'),
+      start: z.string().describe('Start time as ISO 8601 timestamp'),
+      end: z.string().describe('End time as ISO 8601 timestamp'),
+      calendarId: z.string().optional().describe('Optional calendar ID from list_calendars'),
+      allDay: z.boolean().optional().describe('Whether this is an all-day event'),
+      description: z.string().optional().describe('Optional event description'),
+      location: z.string().optional().describe('Optional event location'),
+      timezone: z.string().optional().describe('IANA timezone name, e.g. America/Toronto'),
+      url: z.string().optional().describe('Optional related URL'),
+    },
+    async ({
+      title,
+      start,
+      end,
+      calendarId,
+      allDay,
+      description,
+      location,
+      timezone,
+      url,
+    }) => {
+      const event = await services.calendar?.createEvent({
+        calendarId,
+        title,
+        start,
+        end,
+        allDay,
+        description,
+        location,
+        timezone,
+        url,
+      }, userSub);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(event, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'update_calendar_event',
+    'Update an existing calendar event by event ID',
+    {
+      eventId: z.string().describe(
+        'Event ID returned by list_events or create_calendar_event',
+      ),
+      title: z.string().optional().describe('Updated event title'),
+      start: z.string().optional().describe('Updated start time as ISO 8601 timestamp'),
+      end: z.string().optional().describe('Updated end time as ISO 8601 timestamp'),
+      allDay: z.boolean().optional().describe('Whether this is an all-day event'),
+      description: z.string().optional().describe('Updated event description'),
+      location: z.string().optional().describe('Updated event location'),
+      timezone: z.string().optional().describe('Updated timezone'),
+      url: z.string().optional().describe('Updated related URL'),
+    },
+    async ({
+      eventId,
+      title,
+      start,
+      end,
+      allDay,
+      description,
+      location,
+      timezone,
+      url,
+    }) => {
+      const event = await services.calendar?.updateEvent(eventId, {
+        title,
+        start,
+        end,
+        allDay,
+        description,
+        location,
+        timezone,
+        url,
+      }, userSub);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify(event, null, 2),
+        }],
+      };
+    },
+  );
+
+  server.tool(
+    'delete_calendar_event',
+    'Delete a calendar event by event ID',
+    {
+      eventId: z.string().describe(
+        'Event ID returned by list_events or create_calendar_event',
+      ),
+    },
+    async ({ eventId }) => {
+      await services.calendar?.deleteEvent(eventId, userSub);
+      return {
+        content: [{
+          type: 'text' as const,
+          text: `Deleted calendar event: ${eventId}`,
         }],
       };
     },

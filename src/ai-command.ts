@@ -222,20 +222,87 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'list_calendars',
-    description: 'List all available Home Assistant calendars',
+    description: 'List all available calendars across Home Assistant, iCloud, Microsoft 365, and subscriptions',
     parameters: { type: 'object', properties: {} },
   },
   {
     name: 'get_calendar_events',
-    description: 'Get events from a Home Assistant calendar for a date range',
+    description: 'Get events from a specific calendar for a date range',
     parameters: {
       type: 'object',
       properties: {
-        calendar_id: { type: 'string', description: 'Calendar entity ID' },
+        calendar_id: { type: 'string', description: 'Calendar ID from list_calendars' },
         start: { type: 'string', description: 'Start time (ISO 8601)' },
         end: { type: 'string', description: 'End time (ISO 8601)' },
       },
       required: ['calendar_id', 'start', 'end'],
+    },
+  },
+  {
+    name: 'list_events',
+    description: 'List calendar events for a date range, optionally across all configured calendars',
+    parameters: {
+      type: 'object',
+      properties: {
+        start: { type: 'string', description: 'Start time (ISO 8601)' },
+        end: { type: 'string', description: 'End time (ISO 8601)' },
+        calendarId: { type: 'string', description: 'Calendar ID from list_calendars (optional)' },
+      },
+      required: ['start', 'end'],
+    },
+  },
+  {
+    name: 'get_today_agenda',
+    description: 'Get today’s agenda, using the default calendar if one is configured',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'create_calendar_event',
+    description: 'Create a calendar event in the specified or default writable calendar',
+    parameters: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Event title' },
+        start: { type: 'string', description: 'Start time (ISO 8601)' },
+        end: { type: 'string', description: 'End time (ISO 8601)' },
+        calendarId: { type: 'string', description: 'Calendar ID from list_calendars (optional)' },
+        allDay: { type: 'boolean', description: 'Whether this is an all-day event' },
+        description: { type: 'string', description: 'Event description' },
+        location: { type: 'string', description: 'Event location' },
+        timezone: { type: 'string', description: 'IANA timezone name' },
+        url: { type: 'string', description: 'Related URL' },
+      },
+      required: ['title', 'start', 'end'],
+    },
+  },
+  {
+    name: 'update_calendar_event',
+    description: 'Update an existing calendar event by event ID',
+    parameters: {
+      type: 'object',
+      properties: {
+        eventId: { type: 'string', description: 'Event ID from list_events or create_calendar_event' },
+        title: { type: 'string', description: 'Updated event title' },
+        start: { type: 'string', description: 'Updated start time (ISO 8601)' },
+        end: { type: 'string', description: 'Updated end time (ISO 8601)' },
+        allDay: { type: 'boolean', description: 'Whether this is an all-day event' },
+        description: { type: 'string', description: 'Updated event description' },
+        location: { type: 'string', description: 'Updated event location' },
+        timezone: { type: 'string', description: 'Updated IANA timezone name' },
+        url: { type: 'string', description: 'Updated related URL' },
+      },
+      required: ['eventId'],
+    },
+  },
+  {
+    name: 'delete_calendar_event',
+    description: 'Delete a calendar event by event ID',
+    parameters: {
+      type: 'object',
+      properties: {
+        eventId: { type: 'string', description: 'Event ID from list_events or create_calendar_event' },
+      },
+      required: ['eventId'],
     },
   },
   {
@@ -1308,6 +1375,57 @@ async function executeToolInner(
       dryer: mieleClient.dryer,
       dishwasher: dishwasher.dishwasher,
     }, null, 2);
+
+  case 'list_calendars':
+    return JSON.stringify(await services.calendar?.listCalendars(userSub) || [], null, 2);
+  case 'get_calendar_events':
+    return JSON.stringify(
+      await services.calendar?.listEvents(args.start, args.end, args.calendar_id, userSub) || [],
+      null,
+      2,
+    );
+  case 'list_events':
+    return JSON.stringify(
+      await services.calendar?.listEvents(args.start, args.end, args.calendarId, userSub) || [],
+      null,
+      2,
+    );
+  case 'get_today_agenda':
+    return JSON.stringify(await services.calendar?.getTodayAgenda(userSub) || [], null, 2);
+  case 'create_calendar_event':
+    return JSON.stringify(
+      await services.calendar?.createEvent({
+        calendarId: args.calendarId,
+        title: args.title,
+        start: args.start,
+        end: args.end,
+        allDay: args.allDay,
+        description: args.description,
+        location: args.location,
+        timezone: args.timezone,
+        url: args.url,
+      }, userSub),
+      null,
+      2,
+    );
+  case 'update_calendar_event':
+    return JSON.stringify(
+      await services.calendar?.updateEvent(args.eventId, {
+        title: args.title,
+        start: args.start,
+        end: args.end,
+        allDay: args.allDay,
+        description: args.description,
+        location: args.location,
+        timezone: args.timezone,
+        url: args.url,
+      }, userSub),
+      null,
+      2,
+    );
+  case 'delete_calendar_event':
+    await services.calendar?.deleteEvent(args.eventId, userSub);
+    return `Deleted calendar event: ${args.eventId}`;
 
   // ── Plex ──
   case 'plex_get_sessions':

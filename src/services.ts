@@ -20,6 +20,7 @@ import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
 import { KagiClient } from './clients/kagi';
+import CalendarService, { createCalendarService } from './calendar';
 import logger from './logger';
 
 const servicesLogger = logger.child({ subsystem: 'services' });
@@ -48,6 +49,7 @@ export interface FluxHausServices {
   forgejo?: ForgejoClient;
   pihole?: PiHoleClient;
   kagi?: KagiClient;
+  calendar?: CalendarService;
 }
 
 export async function createServices(): Promise<FluxHausServices> {
@@ -88,6 +90,8 @@ export async function createServices(): Promise<FluxHausServices> {
     client: homeAssistantClient,
     pollInterval: 10_000,
   });
+
+  const calendar = createCalendarService(homeAssistantClient);
 
   return {
     homeAssistantClient,
@@ -170,5 +174,6 @@ export async function createServices(): Promise<FluxHausServices> {
     kagi: new KagiClient({
       apiKey: (process.env.KAGI_API_KEY || '').trim(),
     }),
+    calendar,
   };
 }
