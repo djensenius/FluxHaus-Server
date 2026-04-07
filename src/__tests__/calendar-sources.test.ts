@@ -144,4 +144,16 @@ describe('calendar-sources', () => {
 
     expect(mockPool.query).not.toHaveBeenCalled();
   });
+
+  it('rejects ICS URLs on IPv4-mapped loopback IPv6 addresses', async () => {
+    await expect(createCalendarSource('user-1', {
+      provider: 'ics',
+      displayName: 'Mapped Loopback Feed',
+      config: {
+        url: 'http://[::ffff:127.0.0.1]/calendar.ics',
+      },
+    })).rejects.toThrow('ICS source URL must not target a private or loopback address');
+
+    expect(mockPool.query).not.toHaveBeenCalled();
+  });
 });

@@ -77,6 +77,7 @@ export default function createMcpServer(
   } = services;
   const { userSub } = options;
   const calendarUnavailable = () => ({
+    isError: true,
     content: [{
       type: 'text' as const,
       text: 'Calendar service is not configured',

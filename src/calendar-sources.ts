@@ -100,7 +100,7 @@ function validateIcsUrl(rawUrl: string): void {
     throw new Error('ICS source URL must use http or https');
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
   if (
     !hostname
     || hostname === 'localhost'
@@ -111,7 +111,11 @@ function validateIcsUrl(rawUrl: string): void {
   }
 
   const ipVersion = net.isIP(hostname);
-  if ((ipVersion === 4 && isBlockedIPv4(hostname)) || (ipVersion === 6 && isBlockedIPv6(hostname))) {
+  if (
+    (ipVersion === 4 && isBlockedIPv4(hostname))
+    || (ipVersion === 6 && isBlockedIPv6(hostname))
+    || hostname.startsWith('::ffff:')
+  ) {
     throw new Error('ICS source URL must not target a private or loopback address');
   }
 }

@@ -454,6 +454,8 @@ describe('MCP Server', () => {
         eventId: 'm365:primary:event-1',
       }, {});
 
+      expect(createResult.isError).toBe(true);
+      expect(deleteResult.isError).toBe(true);
       expect(createResult.content[0].text).toBe('Calendar service is not configured');
       expect(deleteResult.content[0].text).toBe('Calendar service is not configured');
     });
