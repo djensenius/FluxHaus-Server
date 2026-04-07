@@ -32,6 +32,8 @@ import radarRouter from './routes/radar.routes';
 import createRoutinesRouter from './routes/routines.routes';
 import createWebhooksRouter from './routes/webhooks.routes';
 import preferencesRouter from './routes/preferences.routes';
+import calendarSourcesRouter from './routes/calendar-sources.routes';
+import createCalendarSettingsRouter from './routes/calendar-settings.routes';
 import memoryRouter from './routes/memory.routes';
 import conversationSearchRouter from './routes/conversation-search.routes';
 import createMcpServer from './mcp-server';
@@ -63,6 +65,7 @@ import { KagiClient } from './clients/kagi';
 import { closeApns, initApns } from './apns';
 import { ensureAllChannels } from './apns-channels';
 import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from './live-activity-hooks';
+import { createCalendarService } from './calendar';
 
 const serverLogger = logger.child({ subsystem: 'server' });
 
@@ -338,6 +341,7 @@ export async function createServer(): Promise<Express> {
   const kagi = new KagiClient({
     apiKey: (process.env.KAGI_API_KEY || '').trim(),
   });
+  const calendar = createCalendarService(homeAssistantClient);
 
   // Shared services object — used by MCP, /command, and /voice endpoints
   const allServices = {
@@ -364,6 +368,7 @@ export async function createServer(): Promise<Express> {
     forgejo,
     pihole,
     kagi,
+    calendar,
   };
 
   app.get('/', cors(corsOptions), (req, res) => {
@@ -1269,7 +1274,7 @@ export async function createServer(): Promise<Express> {
       const mcpTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
-      const mcpServer = createMcpServer(allServices);
+      const mcpServer = createMcpServer(allServices, { userSub: req.user.sub });
       res.on('close', () => {
         mcpTransport.close();
         mcpServer.close();
@@ -1309,6 +1314,8 @@ export async function createServer(): Promise<Express> {
   app.use(adminRouter);
   app.use(pushRouter);
   app.use(preferencesRouter);
+  app.use(calendarSourcesRouter);
+  app.use(createCalendarSettingsRouter(allServices));
   app.use(memoryRouter);
   app.use(liveActivityTestRouter);
   app.use(alertsRouter);

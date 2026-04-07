@@ -256,6 +256,36 @@ describe('MCP Server', () => {
       expect(getTools(server)).toHaveProperty('get_appliance_status');
     });
 
+    it('should have list_calendars tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('list_calendars');
+    });
+
+    it('should have list_events tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('list_events');
+    });
+
+    it('should have get_today_agenda tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('get_today_agenda');
+    });
+
+    it('should have create_calendar_event tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('create_calendar_event');
+    });
+
+    it('should have update_calendar_event tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('update_calendar_event');
+    });
+
+    it('should have delete_calendar_event tool registered', () => {
+      const server = createMcpServer(mockServices);
+      expect(getTools(server)).toHaveProperty('delete_calendar_event');
+    });
+
     it('lock_car tool calls car.lock()', async () => {
       jest.useFakeTimers();
       const server = createMcpServer(mockServices);

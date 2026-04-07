@@ -153,9 +153,25 @@ export async function initDatabase(): Promise<void> {
       CREATE TABLE IF NOT EXISTS user_preferences (
         user_sub TEXT PRIMARY KEY,
         memory_enabled BOOLEAN DEFAULT true,
+        default_calendar_id TEXT,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
+      ALTER TABLE user_preferences
+        ADD COLUMN IF NOT EXISTS default_calendar_id TEXT;
+
+      CREATE TABLE IF NOT EXISTS calendar_sources (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        enabled BOOLEAN DEFAULT true,
+        config_encrypted TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_calendar_sources_user
+        ON calendar_sources (user_sub, created_at);
 
       CREATE TABLE IF NOT EXISTS user_memories (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

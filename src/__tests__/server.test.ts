@@ -179,6 +179,16 @@ describe('Server', () => {
     expect(response.body).toHaveProperty('car');
   });
 
+  it('should serve the calendar settings page for authenticated users', async () => {
+    const response = await request(app)
+      .get('/calendar-settings')
+      .set('Authorization', oidcAuthHeader)
+      .expect(200);
+
+    expect(response.headers['content-type']).toContain('text/html');
+    expect(response.text).toContain('Calendar Settings');
+  });
+
   it('should omit missing robot status keys', async () => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     (HomeAssistantRobot as any).batteryLevelStatus = jest.fn().mockReturnValue(undefined);
