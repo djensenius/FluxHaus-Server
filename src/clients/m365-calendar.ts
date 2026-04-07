@@ -204,9 +204,11 @@ export class M365CalendarClient implements CalendarProvider {
       accessToken: data.access_token,
       expiresAt: now + (data.expires_in * 1000),
     };
-    if (data.refresh_token) {
+    if (data.refresh_token && data.refresh_token !== this.config.refreshToken) {
       this.config.refreshToken = data.refresh_token;
-      m365Logger.info('Microsoft 365 refresh token rotated in memory');
+      m365Logger.warn(
+        'Microsoft 365 refresh token rotated in memory; persisted sources still need an update',
+      );
     }
     return data.access_token;
   }

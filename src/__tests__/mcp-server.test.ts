@@ -441,6 +441,24 @@ describe('MCP Server', () => {
       expect(parsed).toHaveProperty('dryer');
       expect(parsed).toHaveProperty('dishwasher');
     });
+
+    it('calendar mutation tools report when calendar service is unavailable', async () => {
+      const server = createMcpServer(mockServices);
+
+      const createResult = await getTools(server).create_calendar_event.handler({
+        title: 'Lunch',
+        start: '2026-04-07T16:00:00.000Z',
+        end: '2026-04-07T17:00:00.000Z',
+      }, {});
+      const deleteResult = await getTools(server).delete_calendar_event.handler({
+        eventId: 'm365:primary:event-1',
+      }, {});
+
+      expect(createResult.isError).toBe(true);
+      expect(deleteResult.isError).toBe(true);
+      expect(createResult.content[0].text).toBe('Calendar service is not configured');
+      expect(deleteResult.content[0].text).toBe('Calendar service is not configured');
+    });
   });
 
   describe('Prompts', () => {

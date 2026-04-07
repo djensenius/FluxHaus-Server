@@ -238,6 +238,8 @@ Authenticated users can manage their own providers with:
 - `DELETE /calendar-sources/:id`
 
 Secrets are stored encrypted in PostgreSQL and are not returned in plaintext from these routes.
+ICS source URLs must use a public `http` or `https` endpoint; localhost and private-network
+addresses are rejected.
 
 ### iCloud
 

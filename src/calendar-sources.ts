@@ -1,3 +1,4 @@
+import net from 'net';
 import { getPool } from './db';
 import { decrypt, encrypt } from './encryption';
 import logger from './logger';
@@ -61,6 +62,62 @@ export interface CalendarSourceSummary {
   config: Record<string, unknown>;
   createdAt?: string;
   updatedAt?: string;
+}
+
+function isBlockedIPv4(hostname: string): boolean {
+  const octets = hostname.split('.').map((part) => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some((part) => Number.isNaN(part))) return false;
+  const [first, second] = octets;
+  return first === 0
+    || first === 10
+    || first === 127
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && second === 168);
+}
+
+function isBlockedIPv6(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === '::1'
+    || normalized === '::'
+    || normalized.startsWith('fc')
+    || normalized.startsWith('fd')
+    || normalized.startsWith('fe8')
+    || normalized.startsWith('fe9')
+    || normalized.startsWith('fea')
+    || normalized.startsWith('feb');
+}
+
+function validateIcsUrl(rawUrl: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('ICS source URL must be a valid absolute URL');
+  }
+
+  if (!['https:', 'http:'].includes(parsed.protocol)) {
+    throw new Error('ICS source URL must use http or https');
+  }
+
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    !hostname
+    || hostname === 'localhost'
+    || hostname.endsWith('.localhost')
+    || hostname.endsWith('.local')
+  ) {
+    throw new Error('ICS source URL must use a public hostname');
+  }
+
+  const ipVersion = net.isIP(hostname);
+  if (
+    (ipVersion === 4 && isBlockedIPv4(hostname))
+    || (ipVersion === 6 && isBlockedIPv6(hostname))
+    || hostname.startsWith('::ffff:')
+  ) {
+    throw new Error('ICS source URL must not target a private or loopback address');
+  }
 }
 
 function rowToSource(
@@ -139,6 +196,7 @@ function validateCalendarSourceInput(
     if (!value.url) {
       throw new Error('ICS sources require url');
     }
+    validateIcsUrl(value.url);
     return;
   }
   default:

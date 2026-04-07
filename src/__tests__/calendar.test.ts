@@ -99,4 +99,61 @@ describe('CalendarService', () => {
       end: '2026-04-07T17:00:00.000Z',
     }, 'user-1')).rejects.toThrow('No default writable calendar is set');
   });
+
+  it('rejects a read-only default calendar', async () => {
+    getUserPreferences.mockResolvedValue({ memoryEnabled: true, defaultCalendarId: 'ics:subscription' });
+    const writableProvider = makeProvider();
+    const readOnlyProvider = makeProvider({
+      provider: 'ics',
+      sourceId: 'ics',
+      listCalendars: jest.fn().mockResolvedValue([{
+        id: 'ics:subscription',
+        provider: 'ics',
+        sourceId: 'ics',
+        name: 'Subscription',
+        writable: false,
+        externalId: 'subscription',
+      }]),
+      createEvent: undefined,
+      updateEvent: undefined,
+      deleteEvent: undefined,
+    });
+    const service = new CalendarService([writableProvider, readOnlyProvider]);
+
+    await expect(service.createEvent({
+      title: 'Lunch',
+      start: '2026-04-07T16:00:00.000Z',
+      end: '2026-04-07T17:00:00.000Z',
+    }, 'user-1')).rejects.toThrow('Default calendar is read-only; choose a writable calendar');
+  });
+
+  it('lists calendars once per provider when aggregating events', async () => {
+    getUserPreferences.mockResolvedValue({ memoryEnabled: true, defaultCalendarId: null });
+    const provider = makeProvider({
+      listCalendars: jest.fn().mockResolvedValue([
+        {
+          id: 'm365:primary',
+          provider: 'm365',
+          sourceId: 'm365',
+          name: 'Primary',
+          writable: true,
+          externalId: 'primary',
+        },
+        {
+          id: 'm365:secondary',
+          provider: 'm365',
+          sourceId: 'm365',
+          name: 'Secondary',
+          writable: true,
+          externalId: 'secondary',
+        },
+      ]),
+    });
+    const service = new CalendarService([provider]);
+
+    await service.listEvents('2026-04-07T00:00:00.000Z', '2026-04-08T00:00:00.000Z', undefined, 'user-1');
+
+    expect(provider.listCalendars).toHaveBeenCalledTimes(1);
+    expect(provider.listEvents).toHaveBeenCalledTimes(2);
+  });
 });

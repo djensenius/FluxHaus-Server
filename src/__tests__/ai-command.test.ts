@@ -191,6 +191,18 @@ describe('executeTool', () => {
     expect(parsed.dishwasher.programProgress).toBe(50);
   });
 
+  it('calendar mutation tools report when calendar service is unavailable', async () => {
+    await expect(executeTool('create_calendar_event', {
+      title: 'Lunch',
+      start: '2026-04-07T16:00:00.000Z',
+      end: '2026-04-07T17:00:00.000Z',
+    }, mockServices)).resolves.toBe('Calendar service is not configured');
+
+    await expect(executeTool('delete_calendar_event', {
+      eventId: 'm365:primary:event-1',
+    }, mockServices)).resolves.toBe('Calendar service is not configured');
+  });
+
   it('unknown tool returns error message', async () => {
     const result = await executeTool('nonexistent', {}, mockServices);
     expect(result).toContain('Unknown tool');

@@ -1393,6 +1393,7 @@ async function executeToolInner(
   case 'get_today_agenda':
     return JSON.stringify(await services.calendar?.getTodayAgenda(userSub) || [], null, 2);
   case 'create_calendar_event':
+    if (!services.calendar) return 'Calendar service is not configured';
     return JSON.stringify(
       await services.calendar?.createEvent({
         calendarId: args.calendarId,
@@ -1409,6 +1410,7 @@ async function executeToolInner(
       2,
     );
   case 'update_calendar_event':
+    if (!services.calendar) return 'Calendar service is not configured';
     return JSON.stringify(
       await services.calendar?.updateEvent(args.eventId, {
         title: args.title,
@@ -1424,6 +1426,7 @@ async function executeToolInner(
       2,
     );
   case 'delete_calendar_event':
+    if (!services.calendar) return 'Calendar service is not configured';
     await services.calendar?.deleteEvent(args.eventId, userSub);
     return `Deleted calendar event: ${args.eventId}`;
 
