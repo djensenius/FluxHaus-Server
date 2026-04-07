@@ -182,7 +182,10 @@ function renderProviderFields(provider, existing) {
     root.innerHTML = [
       field('serverUrl', 'Server URL', existing?.config?.serverUrl || 'https://caldav.icloud.com'),
       field('username', 'Apple ID', existing?.config?.username || ''),
-      field('password', existing ? 'App-Specific Password (enter to replace)' : 'App-Specific Password', '')
+      field('password', existing ? 'App-Specific Password (enter to replace)' : 'App-Specific Password', '', {
+        type: 'password',
+        autocomplete: 'new-password',
+      })
     ].join('');
     return;
   }
@@ -190,8 +193,14 @@ function renderProviderFields(provider, existing) {
     root.innerHTML = [
       field('tenantId', 'Tenant ID', existing?.config?.tenantId || ''),
       field('clientId', 'Client ID', existing?.config?.clientId || ''),
-      field('clientSecret', existing ? 'Client Secret (enter to replace)' : 'Client Secret', ''),
-      field('refreshToken', existing ? 'Refresh Token (enter to replace)' : 'Refresh Token', ''),
+      field('clientSecret', existing ? 'Client Secret (enter to replace)' : 'Client Secret', '', {
+        type: 'password',
+        autocomplete: 'new-password',
+      }),
+      field('refreshToken', existing ? 'Refresh Token (enter to replace)' : 'Refresh Token', '', {
+        type: 'password',
+        autocomplete: 'off',
+      }),
       field('userId', 'User ID', existing?.config?.userId || 'me')
     ].join('');
     return;
@@ -199,9 +208,12 @@ function renderProviderFields(provider, existing) {
   root.innerHTML = field('url', 'ICS URL', existing?.config?.url || '');
 }
 
-function field(id, label, value) {
+function field(id, label, value, options) {
+  const type = options?.type || 'text';
+  const autocomplete = options?.autocomplete ? ' autocomplete="' + options.autocomplete + '"' : '';
   return '<div class="field"><label for="' + id + '">' + label + '</label>'
-    + '<input id="' + id + '" value="' + escapeHtml(value) + '"></div>';
+    + '<input id="' + id + '" type="' + type + '"' + autocomplete
+    + ' value="' + escapeHtml(value) + '"></div>';
 }
 
 function getProviderConfig(provider, existing) {
@@ -226,11 +238,14 @@ function getProviderConfig(provider, existing) {
 
 function renderDefaultSelect() {
   const select = document.getElementById('defaultCalendarId');
+  const defaultCalendar = calendars.find((calendar) => calendar.id === preferences.defaultCalendarId);
+  const hasWritableDefault = !!(defaultCalendar && defaultCalendar.writable);
   const options = ['<option value="">No default calendar</option>'];
   calendars.forEach((calendar) => {
     const marker = calendar.writable ? '' : ' (read-only)';
-    const selected = preferences.defaultCalendarId === calendar.id ? ' selected' : '';
-    options.push('<option value="' + escapeHtml(calendar.id) + '"' + selected + '>'
+    const selected = hasWritableDefault && preferences.defaultCalendarId === calendar.id ? ' selected' : '';
+    const disabled = calendar.writable ? '' : ' disabled';
+    options.push('<option value="' + escapeHtml(calendar.id) + '"' + disabled + selected + '>'
       + escapeHtml(calendar.name + marker) + '</option>');
   });
   select.innerHTML = options.join('');
@@ -316,6 +331,10 @@ document.getElementById('provider').addEventListener('change', function () {
 document.getElementById('saveDefaultButton').addEventListener('click', async function () {
   try {
     const value = document.getElementById('defaultCalendarId').value || null;
+    const selectedCalendar = calendars.find((calendar) => calendar.id === value);
+    if (selectedCalendar && !selectedCalendar.writable) {
+      throw new Error('Choose a writable calendar as the default');
+    }
     await api('/preferences', {
       method: 'PATCH',
       body: JSON.stringify({ defaultCalendarId: value })

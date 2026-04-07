@@ -23,6 +23,20 @@ function sortEvents(events: CalendarEvent[]): CalendarEvent[] {
   return [...events].sort((a, b) => a.start.localeCompare(b.start));
 }
 
+interface ProviderCalendars {
+  provider: CalendarProvider;
+  calendars: CalendarDescriptor[];
+}
+
+function findProviderByCalendarId(
+  calendarId: string,
+  providers: CalendarProvider[],
+): CalendarProvider | undefined {
+  return providers.find((provider) => (
+    calendarId === provider.sourceId || calendarId.startsWith(`${provider.sourceId}:`)
+  ));
+}
+
 function parseSubscribedCalendars(): ICSCalendarFeedConfig[] {
   const json = (process.env.SUBSCRIBED_CALENDARS_JSON || '').trim();
   if (json) {
@@ -91,13 +105,12 @@ export default class CalendarService {
   }
 
   async listCalendars(userSub?: string): Promise<CalendarDescriptor[]> {
-    const providers = await this.getProviders(userSub);
-    const calendars = (await Promise.all(providers.map((provider) => provider.listCalendars()))).flat();
+    const providerCalendars = await this.getProvidersWithCalendars(userSub);
     const defaultCalendarId = await resolvePreferredCalendarId(userSub);
-    return calendars.map((calendar) => ({
+    return providerCalendars.flatMap(({ calendars }) => calendars.map((calendar) => ({
       ...calendar,
       isDefault: defaultCalendarId ? calendar.id === defaultCalendarId : calendar.isDefault,
-    }));
+    })));
   }
 
   async listEvents(
@@ -112,10 +125,10 @@ export default class CalendarService {
       return sortEvents(events);
     }
 
-    const calendars = await this.listCalendars(userSub);
     const events = (
-      await Promise.all(calendars.map((calendar) => this.findProviderForCalendar(calendar.id, userSub)
-        .then((provider) => provider.listEvents(calendar.id, start, end))))
+      await Promise.all((await this.getProvidersWithCalendars(userSub)).flatMap(({ provider, calendars }) => (
+        calendars.map((calendar) => provider.listEvents(calendar.id, start, end))
+      )))
     ).flat();
     return sortEvents(events);
   }
@@ -167,11 +180,12 @@ export default class CalendarService {
     calendarId: string,
     userSub?: string,
   ): Promise<CalendarProvider> {
-    const providers = await Promise.all((await this.getProviders(userSub)).map(async (provider) => ({
-      provider,
-      calendars: await provider.listCalendars(),
-    })));
-    const match = providers.find(({ calendars }) => calendars.some((calendar) => calendar.id === calendarId));
+    const providers = await this.getProviders(userSub);
+    const directMatch = findProviderByCalendarId(calendarId, providers);
+    if (directMatch) return directMatch;
+
+    const match = (await this.getProvidersWithCalendars(userSub, providers))
+      .find(({ calendars }) => calendars.some((calendar) => calendar.id === calendarId));
     if (!match) {
       throw new Error(`Calendar not found: ${calendarId}`);
     }
@@ -192,14 +206,34 @@ export default class CalendarService {
   ): Promise<string> {
     if (explicitCalendarId) return explicitCalendarId;
 
+    const calendars = await this.listCalendars(userSub);
     const preferred = await resolvePreferredCalendarId(userSub);
-    if (preferred) return preferred;
+    if (preferred) {
+      const preferredCalendar = calendars.find((calendar) => calendar.id === preferred);
+      if (preferredCalendar?.writable) {
+        return preferredCalendar.id;
+      }
+      if (preferredCalendar) {
+        throw new Error('Default calendar is read-only; choose a writable calendar');
+      }
+    }
 
-    const writableCalendars = (await this.listCalendars(userSub)).filter((calendar) => calendar.writable);
+    const writableCalendars = calendars.filter((calendar) => calendar.writable);
     if (writableCalendars.length === 1) {
       return writableCalendars[0].id;
     }
     throw new Error('No default writable calendar is set');
+  }
+
+  private async getProvidersWithCalendars(
+    userSub?: string,
+    providers?: CalendarProvider[],
+  ): Promise<ProviderCalendars[]> {
+    const availableProviders = providers ?? await this.getProviders(userSub);
+    return Promise.all(availableProviders.map(async (provider) => ({
+      provider,
+      calendars: await provider.listCalendars(),
+    })));
   }
 
   private async getProviders(userSub?: string): Promise<CalendarProvider[]> {

@@ -132,4 +132,16 @@ describe('calendar-sources', () => {
       },
     });
   });
+
+  it('rejects ICS URLs on localhost or private networks', async () => {
+    await expect(createCalendarSource('user-1', {
+      provider: 'ics',
+      displayName: 'Local Feed',
+      config: {
+        url: 'http://127.0.0.1/calendar.ics',
+      },
+    })).rejects.toThrow('ICS source URL must not target a private or loopback address');
+
+    expect(mockPool.query).not.toHaveBeenCalled();
+  });
 });

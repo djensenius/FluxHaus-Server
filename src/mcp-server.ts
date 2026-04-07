@@ -76,6 +76,12 @@ export default function createMcpServer(
     cameraURL,
   } = services;
   const { userSub } = options;
+  const calendarUnavailable = () => ({
+    content: [{
+      type: 'text' as const,
+      text: 'Calendar service is not configured',
+    }],
+  });
 
   const server = new McpServer(
     { name: 'fluxhaus', version },
@@ -581,6 +587,7 @@ export default function createMcpServer(
       timezone,
       url,
     }) => {
+      if (!services.calendar) return calendarUnavailable();
       const event = await services.calendar?.createEvent({
         calendarId,
         title,
@@ -628,6 +635,7 @@ export default function createMcpServer(
       timezone,
       url,
     }) => {
+      if (!services.calendar) return calendarUnavailable();
       const event = await services.calendar?.updateEvent(eventId, {
         title,
         start,
@@ -656,6 +664,7 @@ export default function createMcpServer(
       ),
     },
     async ({ eventId }) => {
+      if (!services.calendar) return calendarUnavailable();
       await services.calendar?.deleteEvent(eventId, userSub);
       return {
         content: [{
