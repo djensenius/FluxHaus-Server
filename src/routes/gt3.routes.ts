@@ -36,6 +36,13 @@ router.post('/telemetry', async (req, res) => {
         roughness_score: sample.roughnessScore ?? 0,
         heart_rate: sample.heartRate ?? 0,
       }, { scooter: 'GT3Pro' });
+
+      if (sample.heartRate && sample.heartRate > 0) {
+        writePoint('gt3_health', {
+          heart_rate: sample.heartRate,
+          calories_active: sample.caloriesActive ?? 0,
+        }, { scooter: 'GT3Pro' });
+      }
     });
     gt3Logger.info({ count: samples.length }, 'Wrote telemetry batch');
     return res.json({ ok: true, count: samples.length });
@@ -92,13 +99,18 @@ router.post('/ride', async (req, res) => {
         r.gpsTrack || null, r.healthData || null, r.metadata || null],
     );
     const rideId = result.rows[0]?.id;
-    writePoint('gt3_ride', {
+    const rideFields: Record<string, number> = {
       distance: r.distance ?? 0,
       max_speed: r.maxSpeed ?? 0,
       avg_speed: r.avgSpeed ?? 0,
       battery_used: r.batteryUsed ?? 0,
       duration: r.duration ?? 0,
-    }, { scooter: 'GT3Pro', ride_id: rideId || 'unknown' });
+    };
+    if (r.healthData) {
+      rideFields.avg_heart_rate = r.healthData.avgHeartRate ?? 0;
+      rideFields.total_calories = r.healthData.totalCalories ?? 0;
+    }
+    writePoint('gt3_ride', rideFields, { scooter: 'GT3Pro', ride_id: rideId || 'unknown' });
     gt3Logger.info({ rideId }, 'Stored ride');
     return res.json({ ok: true, id: rideId });
   } catch (err) {
