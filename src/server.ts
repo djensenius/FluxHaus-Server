@@ -36,6 +36,7 @@ import calendarSourcesRouter from './routes/calendar-sources.routes';
 import createCalendarSettingsRouter from './routes/calendar-settings.routes';
 import memoryRouter from './routes/memory.routes';
 import conversationSearchRouter from './routes/conversation-search.routes';
+import gt3Router from './routes/gt3.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import { loadAndScheduleAll } from './scheduler';
@@ -1319,6 +1320,7 @@ export async function createServer(): Promise<Express> {
   app.use(radarRouter);
   app.use(createRoutinesRouter(allServices));
   app.use(createWebhooksRouter(allServices));
+  app.use('/gt3', gt3Router);
 
   // Start background services
   loadAndScheduleAll(allServices).catch((err) => {

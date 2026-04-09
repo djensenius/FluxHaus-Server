@@ -210,6 +210,42 @@ export async function initDatabase(): Promise<void> {
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_activity_tokens_user ON activity_tokens (user_sub);
+
+      CREATE TABLE IF NOT EXISTS gt3_rides (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        start_time TIMESTAMPTZ NOT NULL,
+        end_time TIMESTAMPTZ,
+        distance DOUBLE PRECISION,
+        max_speed DOUBLE PRECISION,
+        avg_speed DOUBLE PRECISION,
+        battery_used INTEGER,
+        start_battery INTEGER,
+        end_battery INTEGER,
+        gps_track JSONB,
+        health_data JSONB,
+        metadata JSONB,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_gt3_rides_user ON gt3_rides (user_sub, start_time DESC);
+
+      CREATE TABLE IF NOT EXISTS gt3_snapshots (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_sub TEXT NOT NULL,
+        serial_number TEXT NOT NULL,
+        odometer DOUBLE PRECISION,
+        total_runtime INTEGER,
+        total_ride_time INTEGER,
+        bms1_cycle_count INTEGER,
+        bms2_cycle_count INTEGER,
+        bms1_energy_throughput INTEGER,
+        bms2_energy_throughput INTEGER,
+        firmware_versions JSONB,
+        settings JSONB,
+        timestamp TIMESTAMPTZ NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_gt3_snapshots_user ON gt3_snapshots (user_sub, timestamp DESC);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {
