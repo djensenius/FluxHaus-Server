@@ -83,6 +83,8 @@ describe('MCP Server', () => {
         dishwasher: {},
       } as any,
       cameraURL: 'http://camera.local/stream',
+      romperURL: '',
+      gymURL: '',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
 

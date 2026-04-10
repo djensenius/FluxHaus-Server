@@ -242,6 +242,8 @@ export async function createServer(): Promise<Express> {
   const car = new Car(carConfig);
   await car.setStatus();
   const cameraURL = process.env.CAMERA_URL || '';
+  const romperURL = process.env.CAMERA_ROMPER_URL || '';
+  const gymURL = process.env.CAMERA_GYM_URL || '';
   const mieleClient = new HomeAssistantMiele({
     client: homeAssistantClient,
     pollInterval: 10_000,
@@ -350,6 +352,8 @@ export async function createServer(): Promise<Express> {
     mieleClient,
     dishwasher,
     cameraURL,
+    romperURL,
+    gymURL,
     plex,
     overseerr,
     tautulli,
@@ -447,6 +451,8 @@ export async function createServer(): Promise<Express> {
         carEvStatus: evStatus,
         carOdometer: car.odometer,
         cameraURL,
+        romperURL,
+        gymURL,
         rhizomeSchedule,
         rhizomeData,
         miele,
@@ -459,6 +465,8 @@ export async function createServer(): Promise<Express> {
       data = {
         version,
         cameraURL,
+        romperURL,
+        gymURL,
         rhizomeSchedule,
         rhizomeData,
       };

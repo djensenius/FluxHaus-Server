@@ -58,6 +58,8 @@ describe('executeTool', () => {
       mieleClient: { washer: { status: 'Idle' }, dryer: { status: 'Running' } } as any,
       dishwasher: { dishwasher: { operationState: 'Run', programProgress: 50 } } as any,
       cameraURL: '',
+      romperURL: '',
+      gymURL: '',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
   });
@@ -241,6 +243,8 @@ describe('executeAICommand', () => {
       mieleClient: {} as any,
       dishwasher: {} as any,
       cameraURL: '',
+      romperURL: '',
+      gymURL: '',
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
   });
