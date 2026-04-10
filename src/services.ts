@@ -33,6 +33,8 @@ export interface FluxHausServices {
   mieleClient: HomeAssistantMiele;
   dishwasher: HomeAssistantDishwasher;
   cameraURL: string;
+  romperURL: string;
+  gymURL: string;
   plex?: PlexClient;
   overseerr?: OverseerrClient;
   tautulli?: TautulliClient;
@@ -101,6 +103,8 @@ export async function createServices(): Promise<FluxHausServices> {
     mieleClient,
     dishwasher,
     cameraURL: process.env.CAMERA_URL || '',
+    romperURL: process.env.CAMERA_ROMPER_URL || '',
+    gymURL: process.env.CAMERA_GYM_URL || '',
     plex: new PlexClient({
       url: (process.env.PLEX_URL || '').trim(),
       token: (process.env.PLEX_TOKEN || '').trim(),
