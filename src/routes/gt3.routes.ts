@@ -93,11 +93,17 @@ router.post('/ride', async (req, res) => {
     const userSub = req.user?.sub || 'unknown';
     const result = await pool.query(
       `INSERT INTO gt3_rides (user_sub, start_time, end_time, distance, max_speed, avg_speed,
-        battery_used, start_battery, end_battery, gear_mode, gps_track, health_data, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+        battery_used, start_battery, end_battery, gear_mode, gps_track, health_data, metadata,
+        weather_temp, weather_feels_like, weather_humidity, weather_wind_speed,
+        weather_wind_direction, weather_condition, weather_uv_index, weather_pressure)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
+       RETURNING id`,
       [userSub, r.startTime, r.endTime, r.distance ?? r.totalDistance, r.maxSpeed, r.avgSpeed,
         r.batteryUsed, r.startBattery, r.endBattery, r.primaryGearMode ?? r.gearMode ?? null,
-        r.gpsTrack || null, r.healthData || null, r.metadata || null],
+        r.gpsTrack || null, r.healthData || null, r.metadata || null,
+        r.weather?.temp ?? null, r.weather?.feelsLike ?? null, r.weather?.humidity ?? null,
+        r.weather?.windSpeed ?? null, r.weather?.windDirection ?? null,
+        r.weather?.condition ?? null, r.weather?.uvIndex ?? null, r.weather?.pressure ?? null],
     );
     const rideId = result.rows[0]?.id;
     const rideFields: Record<string, number> = {
@@ -111,6 +117,11 @@ router.post('/ride', async (req, res) => {
     if (r.healthData) {
       rideFields.avg_heart_rate = r.healthData.avgHeartRate ?? 0;
       rideFields.total_calories = r.healthData.totalCalories ?? 0;
+    }
+    if (r.weather) {
+      rideFields.weather_temp = r.weather.temp ?? 0;
+      rideFields.weather_humidity = r.weather.humidity ?? 0;
+      rideFields.weather_wind_speed = r.weather.windSpeed ?? 0;
     }
     writePoint('gt3_ride', rideFields, { scooter: 'GT3Pro', ride_id: rideId || 'unknown' });
     gt3Logger.info({ rideId }, 'Stored ride');
@@ -132,7 +143,10 @@ router.get('/rides', async (req, res) => {
     const offset = (page - 1) * limit;
     const result = await pool.query(
       `SELECT id, start_time, end_time, distance, max_speed, avg_speed,
-        battery_used, start_battery, end_battery, gear_mode, health_data, metadata, created_at
+        battery_used, start_battery, end_battery, gear_mode, health_data, metadata,
+        weather_temp, weather_feels_like, weather_humidity, weather_wind_speed,
+        weather_wind_direction, weather_condition, weather_uv_index, weather_pressure,
+        created_at
        FROM gt3_rides WHERE user_sub = $1
        ORDER BY start_time DESC LIMIT $2 OFFSET $3`,
       [userSub, limit, offset],

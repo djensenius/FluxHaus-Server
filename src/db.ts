@@ -233,6 +233,16 @@ export async function initDatabase(): Promise<void> {
       -- Add gear_mode column if missing (existing deployments)
       ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS gear_mode INTEGER;
 
+      -- Weather data for rides
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_temp DOUBLE PRECISION;
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_feels_like DOUBLE PRECISION;
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_humidity DOUBLE PRECISION;
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_wind_speed DOUBLE PRECISION;
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_wind_direction DOUBLE PRECISION;
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_condition TEXT;
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_uv_index DOUBLE PRECISION;
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS weather_pressure DOUBLE PRECISION;
+
       CREATE TABLE IF NOT EXISTS gt3_snapshots (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_sub TEXT NOT NULL,
