@@ -18,21 +18,22 @@ router.post('/telemetry', async (req, res) => {
       writePoint('gt3_telemetry', {
         speed: sample.speed ?? 0,
         battery: sample.battery ?? 0,
-        bms1_voltage: sample.bms1Voltage ?? 0,
-        bms1_current: sample.bms1Current ?? 0,
-        bms1_soc: sample.bms1SOC ?? 0,
-        bms1_temp: sample.bms1Temp ?? 0,
-        bms2_voltage: sample.bms2Voltage ?? 0,
-        bms2_current: sample.bms2Current ?? 0,
-        bms2_soc: sample.bms2SOC ?? 0,
-        bms2_temp: sample.bms2Temp ?? 0,
+        bms_voltage: sample.bmsVoltage ?? sample.bms2Voltage ?? 0,
+        bms_current: sample.bmsCurrent ?? sample.bms2Current ?? 0,
+        bms_soc: sample.bmsSOC ?? sample.bms2SOC ?? 0,
+        bms_temp: sample.bmsTemp ?? sample.bms2Temp ?? 0,
         body_temp: sample.bodyTemp ?? 0,
         gear_mode: sample.gearMode ?? 0,
         trip_distance: sample.tripDistance ?? 0,
+        trip_time: sample.tripTime ?? 0,
         range_estimate: sample.estimatedRange ?? 0,
+        error_code: sample.errorCode ?? 0,
+        warn_code: sample.warnCode ?? 0,
+        regen_level: sample.regenLevel ?? 0,
         latitude: sample.latitude ?? 0,
         longitude: sample.longitude ?? 0,
         altitude: sample.altitude ?? 0,
+        gps_speed: sample.gpsSpeed ?? 0,
         roughness_score: sample.roughnessScore ?? 0,
         heart_rate: sample.heartRate ?? 0,
       }, { scooter: 'GT3Pro' });
@@ -92,19 +93,20 @@ router.post('/ride', async (req, res) => {
     const userSub = req.user?.sub || 'unknown';
     const result = await pool.query(
       `INSERT INTO gt3_rides (user_sub, start_time, end_time, distance, max_speed, avg_speed,
-        battery_used, start_battery, end_battery, gps_track, health_data, metadata)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id`,
-      [userSub, r.startTime, r.endTime, r.distance, r.maxSpeed, r.avgSpeed,
-        r.batteryUsed, r.startBattery, r.endBattery,
+        battery_used, start_battery, end_battery, gear_mode, gps_track, health_data, metadata)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING id`,
+      [userSub, r.startTime, r.endTime, r.distance ?? r.totalDistance, r.maxSpeed, r.avgSpeed,
+        r.batteryUsed, r.startBattery, r.endBattery, r.primaryGearMode ?? r.gearMode ?? null,
         r.gpsTrack || null, r.healthData || null, r.metadata || null],
     );
     const rideId = result.rows[0]?.id;
     const rideFields: Record<string, number> = {
-      distance: r.distance ?? 0,
+      distance: r.distance ?? r.totalDistance ?? 0,
       max_speed: r.maxSpeed ?? 0,
       avg_speed: r.avgSpeed ?? 0,
       battery_used: r.batteryUsed ?? 0,
       duration: r.duration ?? 0,
+      gear_mode: r.primaryGearMode ?? r.gearMode ?? 0,
     };
     if (r.healthData) {
       rideFields.avg_heart_rate = r.healthData.avgHeartRate ?? 0;
@@ -130,7 +132,7 @@ router.get('/rides', async (req, res) => {
     const offset = (page - 1) * limit;
     const result = await pool.query(
       `SELECT id, start_time, end_time, distance, max_speed, avg_speed,
-        battery_used, start_battery, end_battery, health_data, metadata, created_at
+        battery_used, start_battery, end_battery, gear_mode, health_data, metadata, created_at
        FROM gt3_rides WHERE user_sub = $1
        ORDER BY start_time DESC LIMIT $2 OFFSET $3`,
       [userSub, limit, offset],

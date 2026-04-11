@@ -222,12 +222,16 @@ export async function initDatabase(): Promise<void> {
         battery_used INTEGER,
         start_battery INTEGER,
         end_battery INTEGER,
+        gear_mode INTEGER,
         gps_track JSONB,
         health_data JSONB,
         metadata JSONB,
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_gt3_rides_user ON gt3_rides (user_sub, start_time DESC);
+
+      -- Add gear_mode column if missing (existing deployments)
+      ALTER TABLE gt3_rides ADD COLUMN IF NOT EXISTS gear_mode INTEGER;
 
       CREATE TABLE IF NOT EXISTS gt3_snapshots (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
