@@ -1,7 +1,15 @@
 import { Router } from 'express';
 import { getPool } from '../db';
 import { writePoint } from '../influx';
+import { InfluxDBClient } from '../clients/influxdb';
 import logger from '../logger';
+
+const influxQuery = new InfluxDBClient({
+  url: (process.env.INFLUXDB_URL || '').trim(),
+  token: (process.env.INFLUXDB_TOKEN || '').trim(),
+  org: (process.env.INFLUXDB_ORG || 'fluxhaus').trim(),
+  bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+});
 
 const gt3Logger = logger.child({ subsystem: 'gt3' });
 
@@ -213,6 +221,98 @@ router.get('/status', async (req, res) => {
     return res.json(result.rows[0] || null);
   } catch (err) {
     gt3Logger.error({ err }, 'Failed to get status');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /gt3/rides/:id/samples — telemetry samples for charting
+router.get('/rides/:id/samples', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  try {
+    const userSub = req.user?.sub || 'unknown';
+    // Get the ride's time range from PostgreSQL
+    const rideResult = await pool.query(
+      'SELECT start_time, end_time FROM gt3_rides WHERE id = $1 AND user_sub = $2',
+      [req.params.id, userSub],
+    );
+    if (rideResult.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
+    const { start_time: startTime, end_time: endTime } = rideResult.rows[0];
+
+    if (!influxQuery.configured) {
+      return res.status(503).json({ error: 'InfluxDB not configured' });
+    }
+
+    const startISO = new Date(startTime).toISOString();
+    const endISO = endTime ? new Date(endTime).toISOString() : new Date().toISOString();
+
+    const flux = `from(bucket: "${(process.env.INFLUXDB_BUCKET || 'fluxhaus').trim()}")
+  |> range(start: ${startISO}, stop: ${endISO})
+  |> filter(fn: (r) => r._measurement == "gt3_telemetry")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> sort(columns: ["_time"])`;
+
+    const samples = await influxQuery.query(flux);
+    return res.json({ samples, rideId: req.params.id });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to get ride samples');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /gt3/stats — aggregate ride statistics
+router.get('/stats', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  try {
+    const userSub = req.user?.sub || 'unknown';
+    const result = await pool.query(
+      `SELECT
+        COUNT(*) as total_rides,
+        COALESCE(SUM(distance), 0) as total_distance,
+        COALESCE(AVG(avg_speed), 0) as overall_avg_speed,
+        COALESCE(MAX(max_speed), 0) as all_time_max_speed,
+        COALESCE(AVG(battery_used), 0) as avg_battery_per_ride,
+        COALESCE(AVG(CASE WHEN distance > 0
+          THEN battery_used::float / distance ELSE NULL END), 0) as avg_battery_per_km,
+        COALESCE(MIN(start_time), NOW()) as first_ride,
+        COALESCE(MAX(start_time), NOW()) as last_ride
+      FROM gt3_rides WHERE user_sub = $1`,
+      [userSub],
+    );
+    // Monthly breakdown
+    const monthly = await pool.query(
+      `SELECT
+        date_trunc('month', start_time) as month,
+        COUNT(*) as rides,
+        COALESCE(SUM(distance), 0) as distance,
+        COALESCE(AVG(avg_speed), 0) as avg_speed,
+        COALESCE(AVG(battery_used), 0) as avg_battery_used
+      FROM gt3_rides WHERE user_sub = $1
+      GROUP BY date_trunc('month', start_time)
+      ORDER BY month`,
+      [userSub],
+    );
+    // By gear mode
+    const byGear = await pool.query(
+      `SELECT
+        gear_mode,
+        COUNT(*) as rides,
+        COALESCE(AVG(avg_speed), 0) as avg_speed,
+        COALESCE(AVG(battery_used), 0) as avg_battery_used,
+        COALESCE(AVG(CASE WHEN distance > 0 THEN battery_used::float / distance ELSE NULL END), 0) as avg_battery_per_km
+      FROM gt3_rides WHERE user_sub = $1 AND gear_mode IS NOT NULL
+      GROUP BY gear_mode
+      ORDER BY gear_mode`,
+      [userSub],
+    );
+    return res.json({
+      summary: result.rows[0],
+      monthly: monthly.rows,
+      byGearMode: byGear.rows,
+    });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to get stats');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

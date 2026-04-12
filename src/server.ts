@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import fs from 'fs';
+import path from 'path';
 import express, { Express } from 'express';
 import cookieParser from 'cookie-parser';
 import session from 'express-session';
@@ -188,6 +189,9 @@ export async function createServer(): Promise<Express> {
     });
   });
 
+  // Serve static files (HTML/JS/CSS dashboards) — no auth required
+  app.use(express.static(path.join(__dirname, 'public')));
+
   // OIDC auth routes (login, callback, logout) — unauthenticated
   app.use(createAuthRouter());
 
@@ -373,10 +377,54 @@ export async function createServer(): Promise<Express> {
     calendar,
   };
 
-  app.get('/', cors(corsOptions), (req, res) => {
+  app.get('/', cors(corsOptions), async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     const evStatus = car.status?.evStatus ?? null;
     const role = req.user?.role;
+
+    let scooterSummary = null;
+    const dbPool = getPool();
+    if (dbPool) {
+      try {
+        const [snapshotResult, lastRideResult] = await Promise.all([
+          dbPool.query(
+            `SELECT odometer, total_ride_time, bms1_cycle_count, bms2_cycle_count, timestamp
+             FROM gt3_snapshots WHERE user_sub = $1 ORDER BY timestamp DESC LIMIT 1`,
+            [req.user?.sub || 'unknown'],
+          ),
+          dbPool.query(
+            `SELECT start_time, end_time, distance, max_speed, avg_speed,
+               battery_used, start_battery, end_battery, gear_mode
+             FROM gt3_rides WHERE user_sub = $1 ORDER BY start_time DESC LIMIT 1`,
+            [req.user?.sub || 'unknown'],
+          ),
+        ]);
+        const snapshot = snapshotResult.rows[0];
+        const lastRide = lastRideResult.rows[0];
+        if (snapshot || lastRide) {
+          scooterSummary = {
+            timestamp: snapshot?.timestamp || new Date().toISOString(),
+            odometer: snapshot?.odometer ?? null,
+            totalRideTime: snapshot?.total_ride_time ?? null,
+            batteryCycles: (snapshot?.bms1_cycle_count ?? 0) + (snapshot?.bms2_cycle_count ?? 0),
+            lastRide: lastRide ? {
+              date: lastRide.start_time,
+              endDate: lastRide.end_time,
+              distance: lastRide.distance,
+              maxSpeed: lastRide.max_speed,
+              avgSpeed: lastRide.avg_speed,
+              batteryUsed: lastRide.battery_used,
+              startBattery: lastRide.start_battery,
+              endBattery: lastRide.end_battery,
+              gearMode: lastRide.gear_mode,
+            } : null,
+          };
+        }
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      } catch (_err) {
+        // Non-fatal — just skip scooter data
+      }
+    }
 
     let rhizomeSchedule = null;
     if (fs.existsSync('cache/rhizome.json')) {
@@ -450,6 +498,7 @@ export async function createServer(): Promise<Express> {
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
+        scooter: scooterSummary,
         cameraURL,
         romperURL,
         gymURL,
@@ -512,6 +561,7 @@ export async function createServer(): Promise<Express> {
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
+        scooter: scooterSummary,
         miele,
         homeConnect,
         dishwasher: dishwasher.dishwasher,
