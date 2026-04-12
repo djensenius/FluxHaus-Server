@@ -3,6 +3,8 @@ import { getPool } from '../db';
 import { writePoint } from '../influx';
 import { InfluxDBClient } from '../clients/influxdb';
 import logger from '../logger';
+import { sendGT3PushToStart } from '../apns';
+import { getDeviceTokensByUserAndBundle } from '../push-token-store';
 
 const influxQuery = new InfluxDBClient({
   url: (process.env.INFLUXDB_URL || '').trim(),
@@ -314,6 +316,50 @@ router.get('/stats', async (req, res) => {
     });
   } catch (err) {
     gt3Logger.error({ err }, 'Failed to get stats');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// --- Live Activity push-to-start ---
+
+router.post('/activity/start', async (req, res) => {
+  const userSub = req.user?.sub;
+  if (!userSub) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const gt3BundleId = 'org.davidjensenius.GT3Companion';
+  try {
+    const tokens = await getDeviceTokensByUserAndBundle(userSub, gt3BundleId);
+    if (tokens.length === 0) {
+      gt3Logger.warn({ userSub }, 'No GT3 push-to-start tokens found');
+      return res.status(404).json({ error: 'No push-to-start token registered' });
+    }
+
+    const contentState = {
+      speed: 0,
+      battery: 0,
+      tripDistance: 0,
+      estimatedRange: 0,
+      gearMode: 0,
+      bmsTemp: 0,
+      isCharging: false,
+      isAwake: false,
+      isConnected: true,
+    };
+
+    const results = await Promise.allSettled(
+      tokens.map((t) => sendGT3PushToStart(t.pushToStartToken, contentState)),
+    );
+
+    const sent = results.filter(
+      (r) => r.status === 'fulfilled' && r.value === true,
+    ).length;
+
+    gt3Logger.info({ userSub, sent, total: tokens.length }, 'GT3 push-to-start dispatched');
+    return res.json({ success: sent > 0, sent, total: tokens.length });
+  } catch (err) {
+    gt3Logger.error({ err, userSub }, 'Failed to send GT3 push-to-start');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
