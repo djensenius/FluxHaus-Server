@@ -11,6 +11,8 @@ let oidcClient: Client | null = null;
 let oidcIssuer: Issuer<Client> | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
+// Additional trusted issuers (e.g. mobile app OIDC applications on same Authentik instance)
+let trustedIssuers: string[] = [];
 
 export async function initOidc(): Promise<void> {
   const issuerUrl = process.env.OIDC_ISSUER_URL;
@@ -38,6 +40,20 @@ export async function initOidc(): Promise<void> {
     }
 
     oidcLogger.info({ issuer: issuerUrl }, 'OIDC issuer discovered');
+
+    // Support additional issuers from the same Authentik instance (e.g. mobile apps).
+    // OIDC_ADDITIONAL_ISSUERS is a comma-separated list of issuer URLs.
+    const additionalRaw = process.env.OIDC_ADDITIONAL_ISSUERS;
+    if (additionalRaw) {
+      trustedIssuers = additionalRaw
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      oidcLogger.info(
+        { additionalIssuers: trustedIssuers },
+        'Configured additional trusted OIDC issuers',
+      );
+    }
   } catch (err) {
     oidcLogger.warn({ err }, 'Failed to discover OIDC issuer — OIDC disabled');
   }
@@ -58,27 +74,45 @@ export async function validateBearerToken(
 
   // Try local JWT validation via JWKS (fast, no network call per request)
   if (jwks) {
-    try {
-      const { payload } = await jwtVerify(token, jwks, {
-        issuer: oidcIssuer.metadata.issuer,
-      });
-      const jwtPayload = payload as JWTPayload & {
-        email?: string;
-        preferred_username?: string;
-      };
-      if (!jwtPayload.sub) return null;
-      return {
-        sub: jwtPayload.sub,
-        email: jwtPayload.email,
-        preferred_username: jwtPayload.preferred_username,
-      };
-    } catch (err) {
-      const jwtErr = err as Error;
-      oidcLogger.warn(
-        { err: jwtErr.message, route: 'validateBearerToken' },
-        'JWT validation failed, trying userinfo fallback',
-      );
-    }
+    // Try primary issuer first, then additional trusted issuers
+    const allIssuers = [
+      oidcIssuer.metadata.issuer,
+      ...trustedIssuers,
+    ].filter(Boolean) as string[];
+
+    const tryIssuer = async (issuer: string) => {
+      try {
+        const { payload } = await jwtVerify(token, jwks!, { issuer });
+        const jwtPayload = payload as JWTPayload & {
+          email?: string;
+          preferred_username?: string;
+        };
+        if (!jwtPayload.sub) return null;
+        return {
+          sub: jwtPayload.sub,
+          email: jwtPayload.email,
+          preferred_username: jwtPayload.preferred_username,
+        };
+      } catch {
+        return null;
+      }
+    };
+
+    // Try each issuer sequentially (short-circuit on first match)
+    const results = await allIssuers.reduce(
+      async (accP, issuer) => {
+        const acc = await accP;
+        if (acc) return acc;
+        return tryIssuer(issuer);
+      },
+      Promise.resolve(null as { sub: string; email?: string; preferred_username?: string } | null),
+    );
+    if (results) return results;
+
+    oidcLogger.warn(
+      { route: 'validateBearerToken', issuers: allIssuers },
+      'JWT validation failed for all issuers, trying userinfo fallback',
+    );
   }
 
   // Fallback to userinfo endpoint for opaque tokens
