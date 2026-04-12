@@ -190,7 +190,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // Serve static files (HTML/JS/CSS dashboards) — no auth required
-  app.use(express.static(path.join(__dirname, 'public')));
+  app.use('/gt3', express.static(path.join(__dirname, 'public', 'gt3')));
 
   // OIDC auth routes (login, callback, logout) — unauthenticated
   app.use(createAuthRouter());
