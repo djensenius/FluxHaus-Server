@@ -9,6 +9,7 @@ import { onPushToStartTokenRegistered } from '../live-activity-hooks';
 import {
   sendAlertNotification, sendGT3PushToStart, sendPushToStart,
 } from '../apns';
+import { requireRole } from '../middleware/auth.middleware';
 import logger from '../logger';
 
 const pushLogger = logger.child({ subsystem: 'push-routes' });
@@ -54,7 +55,7 @@ router.post('/push-tokens/device', async (req, res) => {
     return;
   }
 
-  const { pushToStartToken, deviceName } = req.body;
+  const { pushToStartToken, deviceName, bundleId } = req.body;
   if (!pushToStartToken) {
     res.status(400).json({ error: 'pushToStartToken is required' });
     return;
@@ -65,7 +66,7 @@ router.post('/push-tokens/device', async (req, res) => {
       userSub,
       pushToStartToken,
       deviceName,
-      bundleId: process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus',
+      bundleId: bundleId || process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus',
     });
     pushLogger.info({ userSub }, 'Device push-to-start token registered');
     res.json({ success: true });
@@ -196,9 +197,9 @@ router.post('/push-tokens/subscriptions', async (req, res) => {
   }
 });
 
-// --- Test push notification endpoints ---
+// --- Test push notification endpoints (admin only) ---
 
-router.get('/push-test/tokens', async (req, res) => {
+router.get('/push-test/tokens', requireRole('admin'), async (req, res) => {
   const userSub = req.user?.sub;
   if (!userSub) {
     res.status(401).json({ error: 'Unauthorized' });
@@ -228,7 +229,7 @@ router.get('/push-test/tokens', async (req, res) => {
   }
 });
 
-router.post('/push-test/alert', async (req, res) => {
+router.post('/push-test/alert', requireRole('admin'), async (req, res) => {
   const userSub = req.user?.sub;
   if (!userSub) {
     res.status(401).json({ error: 'Unauthorized' });
@@ -255,6 +256,8 @@ router.post('/push-test/alert', async (req, res) => {
         t.token,
         title || 'Test Notification',
         body || 'This is a test push from FluxHaus Server',
+        undefined,
+        t.bundleId,
       )),
     );
 
@@ -267,7 +270,7 @@ router.post('/push-test/alert', async (req, res) => {
   }
 });
 
-router.post('/push-test/push-to-start', async (req, res) => {
+router.post('/push-test/push-to-start', requireRole('admin'), async (req, res) => {
   const userSub = req.user?.sub;
   if (!userSub) {
     res.status(401).json({ error: 'Unauthorized' });

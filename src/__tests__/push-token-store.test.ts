@@ -3,6 +3,9 @@ import {
   deletePushToken,
   getAllActivePushTokens,
   getAllDeviceTokens,
+  getApnsTokensByUser,
+  getDeviceTokensByUser,
+  getDeviceTokensByUserAndBundle,
   getPushTokensByActivityType,
   saveDeviceToken,
   savePushToken,
@@ -168,6 +171,87 @@ describe('push-token-store', () => {
       (getPool as jest.Mock).mockReturnValueOnce(null);
       await deleteDeviceToken('device-tok-xyz');
       expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getDeviceTokensByUserAndBundle', () => {
+    it('returns device tokens filtered by user and bundle', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [
+          {
+            userSub: 'user-123',
+            deviceName: 'iPhone 15',
+            pushToStartToken: 'tok-1',
+            bundleId: 'org.davidjensenius.GT3Companion',
+          },
+        ],
+      });
+      const result = await getDeviceTokensByUserAndBundle(
+        'user-123',
+        'org.davidjensenius.GT3Companion',
+      );
+      expect(result).toHaveLength(1);
+      expect(result[0].pushToStartToken).toBe('tok-1');
+      expect(mockQuery.mock.calls[0][1]).toEqual([
+        'user-123',
+        'org.davidjensenius.GT3Companion',
+      ]);
+    });
+
+    it('returns empty array when pool is null', async () => {
+      (getPool as jest.Mock).mockReturnValueOnce(null);
+      const result = await getDeviceTokensByUserAndBundle('user-123', 'bundle');
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('getApnsTokensByUser', () => {
+    it('returns APNs tokens for a user', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [
+          {
+            userSub: 'user-123',
+            deviceName: 'iPhone 15',
+            token: 'apns-tok-1',
+            bundleId: 'org.davidjensenius.FluxHaus',
+          },
+        ],
+      });
+      const result = await getApnsTokensByUser('user-123');
+      expect(result).toHaveLength(1);
+      expect(result[0].token).toBe('apns-tok-1');
+      expect(mockQuery.mock.calls[0][1]).toEqual(['user-123']);
+    });
+
+    it('returns empty array when pool is null', async () => {
+      (getPool as jest.Mock).mockReturnValueOnce(null);
+      const result = await getApnsTokensByUser('user-123');
+      expect(result).toEqual([]);
+    });
+  });
+
+  describe('getDeviceTokensByUser', () => {
+    it('returns all device tokens for a user', async () => {
+      mockQuery.mockResolvedValue({
+        rows: [
+          {
+            userSub: 'user-123',
+            deviceName: 'iPhone 15',
+            pushToStartToken: 'dev-tok-1',
+            bundleId: 'org.davidjensenius.FluxHaus',
+          },
+        ],
+      });
+      const result = await getDeviceTokensByUser('user-123');
+      expect(result).toHaveLength(1);
+      expect(result[0].pushToStartToken).toBe('dev-tok-1');
+      expect(mockQuery.mock.calls[0][1]).toEqual(['user-123']);
+    });
+
+    it('returns empty array when pool is null', async () => {
+      (getPool as jest.Mock).mockReturnValueOnce(null);
+      const result = await getDeviceTokensByUser('user-123');
+      expect(result).toEqual([]);
     });
   });
 });

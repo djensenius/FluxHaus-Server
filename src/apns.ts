@@ -199,9 +199,6 @@ export async function sendPushToStart(
 }
 
 /**
- * @deprecated Use multiDevicePushToStartAll for the consolidated activity.
- */
-/**
  * Send a push-to-start notification to create a GT3 Companion Live Activity.
  * Uses the GT3 bundle ID and GT3RideAttributes type.
  */
@@ -586,10 +583,11 @@ export async function sendAlertNotification(
   title: string,
   body: string,
   category?: string,
+  topic?: string,
 ): Promise<boolean> {
   if (!provider) return false;
 
-  const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+  const bundleId = topic || process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
   const notification = new apn.Notification();
   notification.topic = bundleId;
   notification.sound = 'default';
