@@ -167,7 +167,7 @@ export async function authMiddleware(
     method: req.method,
     reason,
     hasBearer: hasBearerToken,
-    tokenHash: hasBearerToken
+    tokenHashPrefix: hasBearerToken
       ? createHash('sha256').update(authHeader.slice(7)).digest('hex').slice(0, 12)
       : undefined,
   };

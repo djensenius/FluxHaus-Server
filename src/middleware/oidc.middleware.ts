@@ -20,13 +20,16 @@ export async function initOidc(): Promise<void> {
   const clientSecret = process.env.OIDC_CLIENT_SECRET;
   const redirectUri = process.env.OIDC_REDIRECT_URI;
 
+  // Reset all OIDC state on re-init so config always reflects current env
+  oidcClient = null;
+  oidcIssuer = null;
+  jwks = null;
+  trustedIssuers = [];
+
   if (!issuerUrl || !clientId) {
     oidcLogger.warn('OIDC_ISSUER_URL or OIDC_CLIENT_ID not set — OIDC disabled');
     return;
   }
-
-  // Reset trusted issuers on re-init so config always reflects current env
-  trustedIssuers = [];
 
   try {
     oidcIssuer = await Issuer.discover(issuerUrl);
@@ -83,8 +86,7 @@ export async function validateBearerToken(
       ...trustedIssuers,
     ].filter(Boolean) as string[];
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let lastError: any = null;
+    const errorState = { last: null as Error | null };
     const tryIssuer = async (
       issuer: string,
     ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> => {
@@ -101,7 +103,7 @@ export async function validateBearerToken(
           preferred_username: jwtPayload.preferred_username,
         };
       } catch (err) {
-        lastError = err instanceof Error ? err : new Error(String(err));
+        errorState.last = err instanceof Error ? err : new Error(String(err));
         return null;
       }
     };
@@ -116,7 +118,7 @@ export async function validateBearerToken(
     if (results) return results;
 
     oidcLogger.warn(
-      { stage: 'validateBearerToken', issuers: allIssuers, err: lastError?.message },
+      { stage: 'validateBearerToken', issuers: allIssuers, err: errorState.last?.message },
       'JWT validation failed for all issuers, trying userinfo fallback',
     );
   }
