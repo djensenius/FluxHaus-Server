@@ -10,7 +10,11 @@ function log(msg, type) {
   const time = new Date().toLocaleTimeString();
   const entry = document.createElement('div');
   entry.className = 'log-entry ' + (type || '');
-  entry.innerHTML = '<span class="log-time">' + time + '</span> ' + msg;
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'log-time';
+  timeSpan.textContent = time;
+  entry.appendChild(timeSpan);
+  entry.appendChild(document.createTextNode(' ' + msg));
   el.prepend(entry);
 }
 
@@ -46,16 +50,25 @@ async function api(method, path, body) {
 
 function showResult(elementId, data, isError) {
   const el = document.getElementById(elementId);
-  const cls = isError ? 'result-error' : 'result-success';
-  el.innerHTML = '<div class="result-box ' + cls + '">' +
-    JSON.stringify(data, null, 2) + '</div>';
+  el.innerHTML = '';
+  const box = document.createElement('div');
+  box.className = 'result-box ' + (isError ? 'result-error' : 'result-success');
+  box.textContent = JSON.stringify(data, null, 2);
+  el.appendChild(box);
+}
+
+function createBadge(text, cls) {
+  const span = document.createElement('span');
+  span.className = 'badge ' + cls;
+  span.textContent = text;
+  return span;
 }
 
 function appBadge(bundleId) {
   if (bundleId && bundleId.includes('GT3')) {
-    return '<span class="badge badge-gt3">GT3</span>';
+    return createBadge('GT3', 'badge-gt3');
   }
-  return '<span class="badge badge-fluxhaus">FluxHaus</span>';
+  return createBadge('FluxHaus', 'badge-fluxhaus');
 }
 
 // ── Token Loading ─────────────────────────────────────────
@@ -65,37 +78,56 @@ async function loadTokens() {
   try {
     const data = await api('GET', '/push-test/tokens');
     if (data.alert.length === 0 && data.pushToStart.length === 0) {
-      el.innerHTML = '<div class="empty-state">No tokens registered. ' +
-        'Open an app on your phone to register push tokens.</div>';
+      el.innerHTML = '';
+      const empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.textContent = 'No tokens registered. Open an app on your phone to register push tokens.';
+      el.appendChild(empty);
       return;
     }
 
-    let html = '<div class="token-grid">';
+    el.innerHTML = '';
+    const grid = document.createElement('div');
+    grid.className = 'token-grid';
+
+    function addTokenCard(deviceName, tokenStr, typeName, typeCls, bundleId) {
+      const card = document.createElement('div');
+      card.className = 'token-card';
+
+      const name = document.createElement('div');
+      name.className = 'device-name';
+      name.textContent = deviceName || 'Unknown Device';
+      card.appendChild(name);
+
+      const meta = document.createElement('div');
+      meta.className = 'token-meta';
+      meta.appendChild(createBadge(typeName, typeCls));
+      meta.appendChild(document.createTextNode(' '));
+      meta.appendChild(appBadge(bundleId));
+      meta.appendChild(document.createTextNode(' '));
+      const tok = document.createElement('span');
+      tok.style.color = 'var(--overlay0)';
+      tok.textContent = tokenStr;
+      meta.appendChild(tok);
+      card.appendChild(meta);
+
+      grid.appendChild(card);
+    }
 
     data.alert.forEach(function(t) {
-      html += '<div class="token-card">' +
-        '<div class="device-name">' + (t.deviceName || 'Unknown Device') + '</div>' +
-        '<div class="token-meta">' +
-          '<span class="badge badge-alert">Alert</span> ' +
-          appBadge(t.bundleId) +
-          ' <span style="color:var(--overlay0)">' + t.token + '</span>' +
-        '</div></div>';
+      addTokenCard(t.deviceName, t.token, 'Alert', 'badge-alert', t.bundleId);
     });
-
     data.pushToStart.forEach(function(t) {
-      html += '<div class="token-card">' +
-        '<div class="device-name">' + (t.deviceName || 'Unknown Device') + '</div>' +
-        '<div class="token-meta">' +
-          '<span class="badge badge-pts">Push-to-Start</span> ' +
-          appBadge(t.bundleId) +
-          ' <span style="color:var(--overlay0)">' + t.token + '</span>' +
-        '</div></div>';
+      addTokenCard(t.deviceName, t.token, 'Push-to-Start', 'badge-pts', t.bundleId);
     });
 
-    html += '</div>';
-    el.innerHTML = html;
+    el.appendChild(grid);
   } catch (err) {
-    el.innerHTML = '<div class="error">' + err.message + '</div>';
+    el.innerHTML = '';
+    const errDiv = document.createElement('div');
+    errDiv.className = 'error';
+    errDiv.textContent = err.message;
+    el.appendChild(errDiv);
     log('Failed to load tokens: ' + err.message, 'error');
   }
 }

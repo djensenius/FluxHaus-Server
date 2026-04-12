@@ -11,7 +11,7 @@ import cors, { CorsOptions } from 'cors';
 // eslint-disable-next-line import/extensions
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import notFoundHandler from './middleware/not-found.middleware';
-import { authMiddleware, requireOidcForMutations } from './middleware/auth.middleware';
+import { authMiddleware, requireOidcForMutations, requireRole } from './middleware/auth.middleware';
 import auditMiddleware from './middleware/audit.middleware';
 import { csrfMiddleware, issueCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
@@ -1381,8 +1381,8 @@ export async function createServer(): Promise<Express> {
   app.use(createWebhooksRouter(allServices));
   app.use('/gt3', gt3Router);
 
-  // Push test GUI (served after auth middleware — requires login)
-  app.use('/push-test', express.static(path.join(__dirname, 'public', 'push-test')));
+  // Push test GUI (admin only)
+  app.use('/push-test', requireRole('admin'), express.static(path.join(__dirname, 'public', 'push-test')));
 
   // Start background services
   loadAndScheduleAll(allServices).catch((err) => {
