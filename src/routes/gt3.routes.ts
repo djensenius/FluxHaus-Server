@@ -70,14 +70,21 @@ router.post('/snapshot', async (req, res) => {
   try {
     const s = req.body;
     const userSub = req.user?.sub || 'unknown';
-    if (!s.serialNumber) {
-      return res.status(400).json({ error: 'serialNumber is required' });
+    if (typeof s.serialNumber !== 'string' || !s.serialNumber.trim()) {
+      return res.status(400).json({ error: 'serialNumber must be a non-empty string' });
     }
-    // firmwareVersions/settings may arrive as JSON strings from the app
-    const fwVersions = typeof s.firmwareVersions === 'string'
-      ? JSON.parse(s.firmwareVersions) : (s.firmwareVersions || {});
-    const settings = typeof s.settings === 'string'
-      ? JSON.parse(s.settings) : (s.settings || {});
+    let fwVersions;
+    let settings;
+    try {
+      fwVersions = typeof s.firmwareVersions === 'string'
+        ? JSON.parse(s.firmwareVersions) : (s.firmwareVersions || {});
+      settings = typeof s.settings === 'string'
+        ? JSON.parse(s.settings) : (s.settings || {});
+    } catch {
+      return res.status(400).json({
+        error: 'firmwareVersions and settings must be valid JSON when provided as strings',
+      });
+    }
     await pool.query(
       `INSERT INTO gt3_snapshots (user_sub, serial_number, odometer, total_runtime, total_ride_time,
         bms1_cycle_count, bms2_cycle_count, bms1_energy_throughput, bms2_energy_throughput,
