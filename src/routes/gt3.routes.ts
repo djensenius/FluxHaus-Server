@@ -70,6 +70,14 @@ router.post('/snapshot', async (req, res) => {
   try {
     const s = req.body;
     const userSub = req.user?.sub || 'unknown';
+    if (!s.serialNumber) {
+      return res.status(400).json({ error: 'serialNumber is required' });
+    }
+    // firmwareVersions/settings may arrive as JSON strings from the app
+    const fwVersions = typeof s.firmwareVersions === 'string'
+      ? JSON.parse(s.firmwareVersions) : (s.firmwareVersions || {});
+    const settings = typeof s.settings === 'string'
+      ? JSON.parse(s.settings) : (s.settings || {});
     await pool.query(
       `INSERT INTO gt3_snapshots (user_sub, serial_number, odometer, total_runtime, total_ride_time,
         bms1_cycle_count, bms2_cycle_count, bms1_energy_throughput, bms2_energy_throughput,
@@ -77,7 +85,7 @@ router.post('/snapshot', async (req, res) => {
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
       [userSub, s.serialNumber, s.odometer, s.totalRuntime, s.totalRideTime,
         s.bms1CycleCount, s.bms2CycleCount, s.bms1EnergyThroughput, s.bms2EnergyThroughput,
-        s.firmwareVersions || {}, s.settings || {}, s.timestamp || new Date()],
+        fwVersions, settings, s.timestamp || new Date()],
     );
     writePoint('gt3_snapshot', {
       odometer: s.odometer ?? 0,
