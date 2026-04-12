@@ -247,6 +247,8 @@ export async function initDatabase(): Promise<void> {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_sub TEXT NOT NULL,
         serial_number TEXT NOT NULL,
+        battery INTEGER,
+        estimated_range DOUBLE PRECISION,
         odometer DOUBLE PRECISION,
         total_runtime INTEGER,
         total_ride_time INTEGER,
@@ -260,6 +262,10 @@ export async function initDatabase(): Promise<void> {
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_gt3_snapshots_user ON gt3_snapshots (user_sub, timestamp DESC);
+
+      -- Add columns if missing (existing tables)
+      ALTER TABLE gt3_snapshots ADD COLUMN IF NOT EXISTS battery INTEGER;
+      ALTER TABLE gt3_snapshots ADD COLUMN IF NOT EXISTS estimated_range DOUBLE PRECISION;
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

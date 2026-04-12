@@ -389,7 +389,7 @@ export async function createServer(): Promise<Express> {
         const userSub = req.user.sub;
         const [snapshotResult, lastRideResult] = await Promise.all([
           dbPool.query(
-            `SELECT odometer, total_ride_time, bms1_cycle_count, bms2_cycle_count, timestamp
+            `SELECT battery, estimated_range, odometer, total_ride_time, bms1_cycle_count, bms2_cycle_count, timestamp
              FROM gt3_snapshots WHERE user_sub = $1 ORDER BY timestamp DESC LIMIT 1`,
             [userSub],
           ),
@@ -405,6 +405,8 @@ export async function createServer(): Promise<Express> {
         if (snapshot || lastRide) {
           scooterSummary = {
             timestamp: snapshot?.timestamp || new Date().toISOString(),
+            battery: snapshot?.battery ?? null,
+            estimatedRange: snapshot?.estimated_range ?? null,
             odometer: snapshot?.odometer ?? null,
             totalRideTime: snapshot?.total_ride_time ?? null,
             batteryCycles: (snapshot?.bms1_cycle_count ?? 0) + (snapshot?.bms2_cycle_count ?? 0),
