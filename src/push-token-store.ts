@@ -231,6 +231,43 @@ export async function deleteApnsToken(token: string): Promise<void> {
   }
 }
 
+export async function getApnsTokensByUser(userSub: string): Promise<ApnsTokenData[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT user_sub AS "userSub", device_name AS "deviceName",
+              token, bundle_id AS "bundleId"
+       FROM apns_tokens WHERE user_sub = $1`,
+      [userSub],
+    );
+    return result.rows;
+  } catch (err) {
+    pushLogger.error({ err, userSub }, 'Failed to get APNs tokens by user');
+    return [];
+  }
+}
+
+export async function getDeviceTokensByUser(userSub: string): Promise<DeviceTokenData[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT user_sub AS "userSub", device_name AS "deviceName",
+              push_to_start_token AS "pushToStartToken",
+              bundle_id AS "bundleId"
+       FROM device_tokens WHERE user_sub = $1`,
+      [userSub],
+    );
+    return result.rows;
+  } catch (err) {
+    pushLogger.error({ err, userSub }, 'Failed to get device tokens by user');
+    return [];
+  }
+}
+
 // --- Per-activity Live Activity push tokens (for direct token-based updates) ---
 
 export interface ActivityTokenData {
