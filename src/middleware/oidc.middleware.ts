@@ -73,7 +73,11 @@ export async function validateBearerToken(
         preferred_username: jwtPayload.preferred_username,
       };
     } catch (err) {
-      oidcLogger.debug({ err }, 'JWT validation failed, trying userinfo fallback');
+      const jwtErr = err as Error;
+      oidcLogger.warn(
+        { err: jwtErr.message, route: 'validateBearerToken' },
+        'JWT validation failed, trying userinfo fallback',
+      );
     }
   }
 
@@ -88,7 +92,8 @@ export async function validateBearerToken(
         preferred_username: userinfo.preferred_username as string | undefined,
       };
     } catch (err) {
-      oidcLogger.debug({ err }, 'Bearer token validation failed');
+      const uiErr = err as Error;
+      oidcLogger.warn({ err: uiErr.message }, 'Bearer token userinfo validation also failed');
       return null;
     }
   }
