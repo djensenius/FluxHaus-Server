@@ -1381,6 +1381,9 @@ export async function createServer(): Promise<Express> {
   app.use(createWebhooksRouter(allServices));
   app.use('/gt3', gt3Router);
 
+  // Push test GUI (served after auth middleware — requires login)
+  app.use('/push-test', express.static(path.join(__dirname, 'public', 'push-test')));
+
   // Start background services
   loadAndScheduleAll(allServices).catch((err) => {
     serverLogger.error({ err }, 'Failed to load scheduled routines');
