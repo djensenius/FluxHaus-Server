@@ -25,6 +25,9 @@ export async function initOidc(): Promise<void> {
     return;
   }
 
+  // Reset trusted issuers on re-init so config always reflects current env
+  trustedIssuers = [];
+
   try {
     oidcIssuer = await Issuer.discover(issuerUrl);
     oidcClient = new oidcIssuer.Client({
@@ -80,7 +83,11 @@ export async function validateBearerToken(
       ...trustedIssuers,
     ].filter(Boolean) as string[];
 
-    const tryIssuer = async (issuer: string) => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let lastError: any = null;
+    const tryIssuer = async (
+      issuer: string,
+    ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> => {
       try {
         const { payload } = await jwtVerify(token, jwks!, { issuer });
         const jwtPayload = payload as JWTPayload & {
@@ -93,24 +100,23 @@ export async function validateBearerToken(
           email: jwtPayload.email,
           preferred_username: jwtPayload.preferred_username,
         };
-      } catch {
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
         return null;
       }
     };
 
-    // Try each issuer sequentially (short-circuit on first match)
+    // Try each issuer sequentially, short-circuit on first match
     const results = await allIssuers.reduce(
-      async (accP, issuer) => {
-        const acc = await accP;
-        if (acc) return acc;
-        return tryIssuer(issuer);
-      },
-      Promise.resolve(null as { sub: string; email?: string; preferred_username?: string } | null),
+      async (accP, issuer) => (await accP) ?? tryIssuer(issuer),
+      Promise.resolve(
+        null as { sub: string; email?: string; preferred_username?: string } | null,
+      ),
     );
     if (results) return results;
 
     oidcLogger.warn(
-      { route: 'validateBearerToken', issuers: allIssuers },
+      { stage: 'validateBearerToken', issuers: allIssuers, err: lastError?.message },
       'JWT validation failed for all issuers, trying userinfo fallback',
     );
   }
@@ -126,7 +132,7 @@ export async function validateBearerToken(
         preferred_username: userinfo.preferred_username as string | undefined,
       };
     } catch (err) {
-      const uiErr = err as Error;
+      const uiErr = err instanceof Error ? err : new Error(String(err));
       oidcLogger.warn({ err: uiErr.message }, 'Bearer token userinfo validation also failed');
       return null;
     }
