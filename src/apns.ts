@@ -228,7 +228,7 @@ export async function sendGT3PushToStart(
       'attributes-type': 'GT3RideAttributes',
       attributes: {
         scooterName: 'GT3 Pro',
-        startTime: new Date().toISOString(),
+        startTime: (Date.now() / 1000) - 978307200,
       },
       alert: {
         title: 'GT3 Pro Connected',
