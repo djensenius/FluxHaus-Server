@@ -16,6 +16,10 @@ let provider: apn.Provider | null = null;
 const lastPushTimestamps = new Map<string, number>();
 const THROTTLE_INTERVAL_MS = 15_000;
 
+// Seconds between Unix epoch (1970) and Apple/Swift reference date (Jan 1, 2001).
+// Swift's default Date Codable encoding uses timeIntervalSinceReferenceDate.
+const APPLE_REFERENCE_DATE_OFFSET = 978_307_200;
+
 export function initApns(): void {
   const {
     APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID, APNS_ENVIRONMENT,
@@ -228,7 +232,7 @@ export async function sendGT3PushToStart(
       'attributes-type': 'GT3RideAttributes',
       attributes: {
         scooterName: 'GT3 Pro',
-        startTime: new Date().toISOString(),
+        startTime: (Date.now() / 1000) - APPLE_REFERENCE_DATE_OFFSET,
       },
       alert: {
         title: 'GT3 Pro Connected',
