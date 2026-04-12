@@ -86,11 +86,11 @@ router.post('/snapshot', async (req, res) => {
       });
     }
     await pool.query(
-      `INSERT INTO gt3_snapshots (user_sub, serial_number, odometer, total_runtime, total_ride_time,
+      `INSERT INTO gt3_snapshots (user_sub, serial_number, battery, odometer, total_runtime, total_ride_time,
         bms1_cycle_count, bms2_cycle_count, bms1_energy_throughput, bms2_energy_throughput,
         firmware_versions, settings, timestamp)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [userSub, s.serialNumber, s.odometer, s.totalRuntime, s.totalRideTime,
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [userSub, s.serialNumber, s.battery ?? null, s.odometer, s.totalRuntime, s.totalRideTime,
         s.bms1CycleCount, s.bms2CycleCount, s.bms1EnergyThroughput, s.bms2EnergyThroughput,
         fwVersions, settings, s.timestamp || new Date()],
     );
@@ -100,6 +100,7 @@ router.post('/snapshot', async (req, res) => {
       total_ride_time: s.totalRideTime ?? 0,
       bms1_cycles: s.bms1CycleCount ?? 0,
       bms2_cycles: s.bms2CycleCount ?? 0,
+      battery: s.battery ?? 0,
     }, { scooter: s.serialNumber || 'GT3Pro' });
     gt3Logger.info('Stored snapshot');
     return res.json({ ok: true });
