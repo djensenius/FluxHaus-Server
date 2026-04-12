@@ -74,7 +74,10 @@ export async function validateBearerToken(
       };
     } catch (err) {
       const jwtErr = err as Error;
-      oidcLogger.warn({ err: jwtErr.message, route: 'validateBearerToken' }, 'JWT validation failed, trying userinfo fallback');
+      oidcLogger.warn(
+        { err: jwtErr.message, route: 'validateBearerToken' },
+        'JWT validation failed, trying userinfo fallback',
+      );
     }
   }
 
