@@ -22,14 +22,17 @@ Chart.defaults.color = CHART_COLORS.subtext;
 Chart.defaults.borderColor = CHART_COLORS.surface;
 
 const GEAR_NAMES = { 1: 'Eco', 2: 'Standard', 3: 'Sport', 4: 'Race' };
-function gearName(mode) { return GEAR_NAMES[mode] || `Mode ${mode}` || 'Unknown'; }
+function gearName(mode) {
+  if (mode == null) return 'Unknown';
+  return GEAR_NAMES[mode] || `Mode ${mode}`;
+}
 
 // ── Helpers ────────────────────────────────────────────────
 
 async function apiFetch(path) {
   const res = await fetch(API_BASE + path, { credentials: 'include' });
   if (res.status === 401) {
-    window.location.href = '/auth/login?redirect=' + encodeURIComponent(window.location.pathname);
+    window.location.href = '/auth/login?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
     return null;
   }
   if (!res.ok) throw new Error(`API error: ${res.status}`);
@@ -124,8 +127,8 @@ async function loadRide() {
     // gps_track: array of [lng, lat, alt?] (GeoJSON order) or {lat, lng} objects
     const latLngs = ride.gps_track.map(coord => {
       if (Array.isArray(coord)) return [coord[1], coord[0]];
-      return [coord.latitude || coord.lat, coord.longitude || coord.lng];
-    }).filter(c => c[0] && c[1]);
+      return [coord.latitude ?? coord.lat, coord.longitude ?? coord.lng];
+    }).filter(c => Number.isFinite(c[0]) && Number.isFinite(c[1]));
 
     if (latLngs.length > 0) {
       const polyline = L.polyline(latLngs, {

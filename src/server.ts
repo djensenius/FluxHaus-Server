@@ -384,19 +384,20 @@ export async function createServer(): Promise<Express> {
 
     let scooterSummary = null;
     const dbPool = getPool();
-    if (dbPool) {
+    if (dbPool && req.user?.sub) {
       try {
+        const userSub = req.user.sub;
         const [snapshotResult, lastRideResult] = await Promise.all([
           dbPool.query(
             `SELECT odometer, total_ride_time, bms1_cycle_count, bms2_cycle_count, timestamp
              FROM gt3_snapshots WHERE user_sub = $1 ORDER BY timestamp DESC LIMIT 1`,
-            [req.user?.sub || 'unknown'],
+            [userSub],
           ),
           dbPool.query(
             `SELECT start_time, end_time, distance, max_speed, avg_speed,
                battery_used, start_battery, end_battery, gear_mode
              FROM gt3_rides WHERE user_sub = $1 ORDER BY start_time DESC LIMIT 1`,
-            [req.user?.sub || 'unknown'],
+            [userSub],
           ),
         ]);
         const snapshot = snapshotResult.rows[0];

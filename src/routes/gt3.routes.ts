@@ -249,6 +249,7 @@ router.get('/rides/:id/samples', async (req, res) => {
     const flux = `from(bucket: "${(process.env.INFLUXDB_BUCKET || 'fluxhaus').trim()}")
   |> range(start: ${startISO}, stop: ${endISO})
   |> filter(fn: (r) => r._measurement == "gt3_telemetry")
+  |> filter(fn: (r) => r.scooter == "GT3Pro")
   |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
   |> sort(columns: ["_time"])`;
 

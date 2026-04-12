@@ -39,7 +39,10 @@ async function apiFetch(path) {
 }
 
 const GEAR_NAMES = { 1: 'Eco', 2: 'Standard', 3: 'Sport', 4: 'Race' };
-function gearName(mode) { return GEAR_NAMES[mode] || `Mode ${mode}` || 'Unknown'; }
+function gearName(mode) {
+  if (mode == null) return 'Unknown';
+  return GEAR_NAMES[mode] || `Mode ${mode}`;
+}
 
 function formatDistance(km) {
   if (km == null) return '—';
