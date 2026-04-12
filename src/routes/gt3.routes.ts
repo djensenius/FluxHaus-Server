@@ -86,9 +86,10 @@ router.post('/snapshot', async (req, res) => {
       });
     }
     await pool.query(
-      `INSERT INTO gt3_snapshots (user_sub, serial_number, battery, estimated_range, odometer, total_runtime, total_ride_time,
-        bms1_cycle_count, bms2_cycle_count, bms1_energy_throughput, bms2_energy_throughput,
-        firmware_versions, settings, timestamp)
+      `INSERT INTO gt3_snapshots (user_sub, serial_number, battery,
+        estimated_range, odometer, total_runtime, total_ride_time,
+        bms1_cycle_count, bms2_cycle_count, bms1_energy_throughput,
+        bms2_energy_throughput, firmware_versions, settings, timestamp)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [userSub, s.serialNumber, s.battery ?? null, s.estimatedRange ?? null,
         s.odometer, s.totalRuntime, s.totalRideTime,
