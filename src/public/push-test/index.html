@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Push Notification Tester — FluxHaus</title>
+  <link rel="stylesheet" href="/gt3/style.css">
+  <style>
+    .section-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--subtext0);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 0.75rem;
+    }
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.4rem;
+      margin-bottom: 1rem;
+    }
+    .form-group label {
+      font-size: 0.8rem;
+      color: var(--subtext0);
+      font-weight: 500;
+    }
+    .form-row {
+      display: flex;
+      gap: 0.75rem;
+      align-items: flex-end;
+      flex-wrap: wrap;
+    }
+    .form-row .form-group { flex: 1; min-width: 150px; }
+    .token-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 0.75rem;
+    }
+    .token-card {
+      background: var(--surface0);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .token-card .device-name {
+      font-weight: 600;
+      color: var(--text);
+      font-size: 0.95rem;
+    }
+    .token-card .token-meta {
+      font-size: 0.8rem;
+      color: var(--subtext0);
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+    }
+    .badge {
+      display: inline-block;
+      padding: 0.1rem 0.5rem;
+      font-size: 0.7rem;
+      font-weight: 700;
+      border-radius: 999px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    .badge-gt3 { background: var(--sky); color: var(--crust); }
+    .badge-fluxhaus { background: var(--mauve); color: var(--crust); }
+    .badge-alert { background: var(--peach); color: var(--crust); }
+    .badge-pts { background: var(--green); color: var(--crust); }
+    .tabs {
+      display: flex;
+      gap: 0.25rem;
+      border-bottom: 2px solid var(--surface0);
+      margin-bottom: 1.25rem;
+    }
+    .tab {
+      padding: 0.5rem 1rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--subtext0);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -2px;
+      transition: color var(--transition), border-color var(--transition);
+      background: none;
+      border-radius: 0;
+    }
+    .tab:hover { color: var(--text); }
+    .tab.active {
+      color: var(--sky);
+      border-bottom-color: var(--sky);
+    }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+    .result-box {
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: var(--radius-sm);
+      font-size: 0.85rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .result-success {
+      background: rgba(166, 227, 161, 0.1);
+      border: 1px solid var(--green);
+      color: var(--green);
+    }
+    .result-error {
+      background: rgba(243, 139, 168, 0.1);
+      border: 1px solid var(--red);
+      color: var(--red);
+    }
+    .result-info {
+      background: rgba(137, 220, 235, 0.1);
+      border: 1px solid var(--sky);
+      color: var(--sky);
+    }
+    .log-panel {
+      background: var(--crust);
+      border: 1px solid var(--surface0);
+      border-radius: var(--radius-sm);
+      padding: 0.75rem 1rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      font-size: 0.8rem;
+      max-height: 250px;
+      overflow-y: auto;
+      line-height: 1.8;
+    }
+    .log-entry { color: var(--subtext0); }
+    .log-entry.success { color: var(--green); }
+    .log-entry.error { color: var(--red); }
+    .log-time { color: var(--overlay0); margin-right: 0.5rem; }
+    .slider-group {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+    .slider-group input[type="range"] {
+      flex: 1;
+      accent-color: var(--sky);
+      background: transparent;
+      border: none;
+      padding: 0;
+    }
+    .slider-value {
+      font-variant-numeric: tabular-nums;
+      font-weight: 600;
+      color: var(--sky);
+      min-width: 4ch;
+      text-align: right;
+    }
+    .gt3-preview {
+      background: var(--surface0);
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+      text-align: center;
+    }
+    .gt3-preview .preview-val {
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: var(--sky);
+    }
+    .gt3-preview .preview-label {
+      font-size: 0.7rem;
+      color: var(--subtext0);
+      text-transform: uppercase;
+    }
+    .btn-danger {
+      background: var(--red);
+      color: var(--crust);
+    }
+    .btn-danger:hover {
+      background: #e66d8a;
+    }
+    .btn-secondary {
+      background: var(--surface1);
+      color: var(--text);
+    }
+    .btn-secondary:hover {
+      background: var(--surface2);
+    }
+    .empty-state {
+      text-align: center;
+      padding: 2rem;
+      color: var(--overlay0);
+      font-size: 0.9rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🔔 Push Notification Tester</h1>
+    <nav>
+      <a href="/gt3/">GT3 Dashboard</a>
+      <a href="/admin/live-activity-test">Live Activity Sim</a>
+    </nav>
+  </header>
+
+  <main>
+    <!-- Token Overview -->
+    <div class="card" id="tokenCard">
+      <h3>📱 Registered Tokens</h3>
+      <div id="tokenList" class="loading"><div class="spinner"></div></div>
+    </div>
+
+    <!-- Notification Tabs -->
+    <div class="card">
+      <div class="tabs">
+        <button class="tab active" data-tab="alert">📣 Alert</button>
+        <button class="tab" data-tab="gt3-pts">🛴 GT3 Push-to-Start</button>
+        <button class="tab" data-tab="fluxhaus-pts">🏠 FluxHaus Push-to-Start</button>
+      </div>
+
+      <!-- Alert Tab -->
+      <div class="tab-panel active" id="tab-alert">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Title</label>
+            <input type="text" id="alert-title" placeholder="Test Notification" value="Test Notification">
+          </div>
+          <div class="form-group">
+            <label>Body</label>
+            <input type="text" id="alert-body" placeholder="Hello from FluxHaus!" value="Hello from FluxHaus Server 🚀">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Target App</label>
+            <select id="alert-bundle">
+              <option value="">All Apps</option>
+              <option value="org.davidjensenius.FluxHaus">FluxHaus</option>
+              <option value="org.davidjensenius.GT3Companion">GT3 Companion</option>
+            </select>
+          </div>
+          <div class="form-group" style="flex: 0">
+            <label>&nbsp;</label>
+            <button onclick="sendAlert()">Send Alert</button>
+          </div>
+        </div>
+        <div id="alert-result"></div>
+      </div>
+
+      <!-- GT3 Push-to-Start Tab -->
+      <div class="tab-panel" id="tab-gt3-pts">
+        <p class="section-title">Content State Preview</p>
+        <div class="gt3-preview" id="gt3-preview">
+          <div><div class="preview-val" id="pv-speed">0</div><div class="preview-label">km/h</div></div>
+          <div><div class="preview-val" id="pv-battery">85</div><div class="preview-label">Battery %</div></div>
+          <div><div class="preview-val" id="pv-range">42.0</div><div class="preview-label">Range km</div></div>
+          <div><div class="preview-val" id="pv-temp">25</div><div class="preview-label">BMS °C</div></div>
+        </div>
+
+        <div style="margin-top: 1rem">
+          <div class="form-group">
+            <label>Speed (km/h)</label>
+            <div class="slider-group">
+              <input type="range" id="gt3-speed" min="0" max="100" value="0" oninput="updateGT3Preview()">
+              <span class="slider-value" id="sv-speed">0</span>
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Battery (%)</label>
+            <div class="slider-group">
+              <input type="range" id="gt3-battery" min="0" max="100" value="85" oninput="updateGT3Preview()">
+              <span class="slider-value" id="sv-battery">85</span>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Est. Range (km)</label>
+              <input type="number" id="gt3-range" value="42.0" step="0.1" min="0" max="200" oninput="updateGT3Preview()">
+            </div>
+            <div class="form-group">
+              <label>Trip Distance (km)</label>
+              <input type="number" id="gt3-trip" value="0" step="0.1" min="0" max="500" oninput="updateGT3Preview()">
+            </div>
+            <div class="form-group">
+              <label>BMS Temp (°C)</label>
+              <input type="number" id="gt3-temp" value="25" step="1" min="-20" max="80" oninput="updateGT3Preview()">
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label>Gear Mode</label>
+              <select id="gt3-gear">
+                <option value="1">Eco</option>
+                <option value="2" selected>Standard</option>
+                <option value="3">Sport</option>
+                <option value="4">Race</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>State</label>
+              <select id="gt3-state">
+                <option value="connected">Connected &amp; Awake</option>
+                <option value="standby">Connected &amp; Standby</option>
+                <option value="charging">Charging</option>
+              </select>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top: 0.75rem">
+          <button onclick="sendGT3PushToStart()">🛴 Send GT3 Push-to-Start</button>
+        </div>
+        <div id="gt3-result"></div>
+      </div>
+
+      <!-- FluxHaus Push-to-Start Tab -->
+      <div class="tab-panel" id="tab-fluxhaus-pts">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Device Name</label>
+            <input type="text" id="flux-device-name" value="Test Device">
+          </div>
+          <div class="form-group">
+            <label>Icon</label>
+            <select id="flux-icon">
+              <option value="washer">🧺 Washer</option>
+              <option value="dryer">🌀 Dryer</option>
+              <option value="dishwasher">🍽️ Dishwasher</option>
+              <option value="broombot">🤖 BroomBot</option>
+              <option value="mopbot">🧹 MopBot</option>
+            </select>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Progress</label>
+            <div class="slider-group">
+              <input type="range" id="flux-progress" min="0" max="100" value="50" oninput="document.getElementById('sv-progress').textContent = this.value + '%'">
+              <span class="slider-value" id="sv-progress">50%</span>
+            </div>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Trailing Text</label>
+            <input type="text" id="flux-trailing" value="30 min remaining">
+          </div>
+          <div class="form-group">
+            <label>Short Text</label>
+            <input type="text" id="flux-short" value="30 min">
+          </div>
+        </div>
+        <div style="margin-top: 0.75rem">
+          <button onclick="sendFluxPushToStart()">🏠 Send FluxHaus Push-to-Start</button>
+        </div>
+        <div id="flux-result"></div>
+      </div>
+    </div>
+
+    <!-- Event Log -->
+    <div class="card">
+      <h3>📋 Event Log</h3>
+      <div class="log-panel" id="log">
+        <div class="log-entry" style="color: var(--overlay0)">Ready — send a test notification to get started.</div>
+      </div>
+    </div>
+  </main>
+
+  <script src="push-test.js"></script>
+</body>
+</html>
