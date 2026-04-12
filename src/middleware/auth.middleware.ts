@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from 'express';
+import { createHash } from 'crypto';
 import { AuthenticatedUser } from '../types/auth';
 import { isOidcEnabled, validateBearerToken } from './oidc.middleware';
 import { serverOrigin, verifyMcpToken } from '../mcp-auth';
@@ -161,25 +162,29 @@ export async function authMiddleware(
   } else if (authHeader) {
     reason = 'invalid_credentials';
   }
-  authLogger.warn(
-    {
-      route: req.path,
-      method: req.method,
-      reason,
-      hasBearer: hasBearerToken,
-      tokenPreview: hasBearerToken ? `${authHeader.slice(7, 17)}…` : undefined,
-    },
-    'Auth failed — returning 401',
-  );
+  const authFailureLog = {
+    route: req.path,
+    method: req.method,
+    reason,
+    hasBearer: hasBearerToken,
+    tokenHashPrefix: hasBearerToken
+      ? createHash('sha256').update(authHeader.slice(7)).digest('hex').slice(0, 12)
+      : undefined,
+  };
+  if (reason === 'token_rejected') {
+    authLogger.warn(authFailureLog, 'Auth failed — returning 401');
+  } else {
+    authLogger.info(authFailureLog, 'Auth failed — returning 401');
+  }
   logEvent({
     role: 'anonymous',
     action: 'auth_failed',
     route: req.path,
     method: req.method,
     ip: req.ip,
-    details: { reason: authHeader ? 'invalid_credentials' : 'no_credentials' },
+    details: { reason },
   }).catch(() => {});
-  writePoint('auth', { count: 1 }, { result: 'failed', reason: authHeader ? 'invalid_credentials' : 'no_credentials' });
+  writePoint('auth', { count: 1 }, { result: 'failed', reason });
 
   // RFC 9728 — include resource_metadata pointer for MCP clients
   const origin = serverOrigin(req);
