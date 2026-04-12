@@ -154,6 +154,17 @@ export async function authMiddleware(
   }
 
   // 5. No valid auth (API clients get 401)
+  const hasBearerToken = authHeader.startsWith('Bearer ');
+  authLogger.warn(
+    {
+      route: req.path,
+      method: req.method,
+      reason: hasBearerToken ? 'token_rejected' : (authHeader ? 'invalid_credentials' : 'no_credentials'),
+      hasBearer: hasBearerToken,
+      tokenPreview: hasBearerToken ? `${authHeader.slice(7, 17)}…` : undefined,
+    },
+    'Auth failed — returning 401',
+  );
   logEvent({
     role: 'anonymous',
     action: 'auth_failed',
