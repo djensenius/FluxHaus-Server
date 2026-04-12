@@ -1,6 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const path = require('path');
 const nodeExternals = require('webpack-node-externals');
+const CopyWebpackPlugin = require('copy-webpack-plugin');
 //
 // Host
 // const host = process.env.HOST || 'localhost';
@@ -32,6 +33,13 @@ module.exports = {
   resolve: {
     extensions: ['.tsx', '.ts', '.js'],
   },
+  plugins: [
+    new CopyWebpackPlugin({
+      patterns: [
+        { from: 'src/public', to: 'public' },
+      ],
+    }),
+  ],
   output: {
     publicPath: '/',
     filename: '[name].js',
