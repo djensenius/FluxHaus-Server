@@ -201,6 +201,76 @@ export async function sendPushToStart(
 /**
  * @deprecated Use multiDevicePushToStartAll for the consolidated activity.
  */
+/**
+ * Send a push-to-start notification to create a GT3 Companion Live Activity.
+ * Uses the GT3 bundle ID and GT3RideAttributes type.
+ */
+export async function sendGT3PushToStart(
+  deviceToken: string,
+  contentState: Record<string, unknown>,
+): Promise<boolean> {
+  if (!provider) {
+    apnsLogger.debug('APNs not initialized — skipping GT3 push-to-start');
+    return false;
+  }
+
+  const bundleId = 'org.davidjensenius.GT3Companion';
+
+  const notification = new apn.Notification();
+  notification.topic = `${bundleId}.push-type.liveactivity`;
+  notification.pushType = 'liveactivity';
+  notification.priority = 10;
+  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
+
+  notification.rawPayload = {
+    aps: {
+      timestamp: Math.floor(Date.now() / 1000),
+      event: 'start',
+      'content-state': contentState,
+      'stale-date': Math.floor(Date.now() / 1000) + 300,
+      'attributes-type': 'GT3RideAttributes',
+      attributes: {
+        scooterName: 'GT3 Pro',
+        startTime: new Date().toISOString(),
+      },
+      alert: {
+        title: 'GT3 Pro Connected',
+        body: 'Ride tracking active',
+      },
+    },
+  };
+
+  try {
+    const result = await provider.send(notification, deviceToken);
+    apnsLogger.info(
+      {
+        sent: result.sent?.length ?? 0,
+        failed: result.failed?.length ?? 0,
+        failureReasons: result.failed?.map(
+          (f: { response?: { reason?: string } }) => f.response?.reason,
+        ),
+      },
+      'GT3 push-to-start result',
+    );
+    if (result.failed.length > 0) {
+      const failure = result.failed[0];
+      const reason = failure.response?.reason || 'unknown';
+      apnsLogger.warn({ reason }, 'GT3 push-to-start failed');
+
+      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+        await deleteDeviceToken(deviceToken);
+        apnsLogger.info('Removed invalid GT3 push-to-start token');
+      }
+      return false;
+    }
+    apnsLogger.info('GT3 push-to-start sent successfully');
+    return true;
+  } catch (err) {
+    apnsLogger.error({ err }, 'GT3 push-to-start send error');
+    return false;
+  }
+}
+
 export async function pushToStartAll(
   deviceTokens: Array<{ pushToStartToken: string }>,
   contentState: LiveActivityContentState,

@@ -136,6 +136,29 @@ export async function getAllDeviceTokens(): Promise<DeviceTokenData[]> {
   }
 }
 
+export async function getDeviceTokensByUserAndBundle(
+  userSub: string,
+  bundleId: string,
+): Promise<DeviceTokenData[]> {
+  const pool = getPool();
+  if (!pool) return [];
+
+  try {
+    const result = await pool.query(
+      `SELECT user_sub AS "userSub", device_name AS "deviceName",
+              push_to_start_token AS "pushToStartToken",
+              bundle_id AS "bundleId"
+       FROM device_tokens
+       WHERE user_sub = $1 AND bundle_id = $2`,
+      [userSub, bundleId],
+    );
+    return result.rows;
+  } catch (err) {
+    pushLogger.error({ err, userSub, bundleId }, 'Failed to get device tokens by user/bundle');
+    return [];
+  }
+}
+
 export async function deleteDeviceToken(pushToStartToken: string): Promise<void> {
   const pool = getPool();
   if (!pool) return;
