@@ -6,3 +6,4 @@ scripts/
 docs/
 .eslintrs.js
 webpack.config.js
+src/public/
