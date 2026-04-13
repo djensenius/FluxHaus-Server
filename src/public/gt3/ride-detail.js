@@ -53,11 +53,59 @@ function formatDuration(startIso, endIso) {
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
+// Handle both InfluxDB (_time) and Postgres (timestamp) column names
+function sampleTime(s) {
+  return s._time || s.time || s.timestamp;
+}
+
 function formatTime(iso) {
   if (!iso) return '';
   return new Date(iso).toLocaleTimeString(undefined, {
     hour: '2-digit', minute: '2-digit', second: '2-digit',
   });
+}
+
+const defaultChartOptions = {
+  responsive: true,
+  plugins: { legend: { position: 'top' } },
+  scales: { x: { display: true, ticks: { maxTicksLimit: 10 } } },
+  elements: { point: { radius: 0 }, line: { borderWidth: 2 } },
+};
+
+function hideCard(canvasId) {
+  document.getElementById(canvasId).parentElement.style.display = 'none';
+}
+
+// ── GPX Export ────────────────────────────────────────────
+
+function buildGPX(samples, rideName) {
+  const points = samples
+    .filter(s => {
+      const lat = parseFloat(s.latitude);
+      const lon = parseFloat(s.longitude);
+      return lat && lon && lat !== 0 && lon !== 0;
+    })
+    .map(s => {
+      const time = sampleTime(s);
+      const ele = parseFloat(s.altitude) || 0;
+      return `      <trkpt lat="${s.latitude}" lon="${s.longitude}">
+        <ele>${ele}</ele>
+        ${time ? `<time>${new Date(time).toISOString()}</time>` : ''}
+      </trkpt>`;
+    });
+
+  if (points.length === 0) return null;
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<gpx version="1.1" creator="GT3 Pro Dashboard"
+  xmlns="http://www.topografix.com/GPX/1/1">
+  <trk>
+    <name>${rideName}</name>
+    <trkseg>
+${points.join('\n')}
+    </trkseg>
+  </trk>
+</gpx>`;
 }
 
 // ── Main ──────────────────────────────────────────────────
@@ -109,12 +157,44 @@ async function loadRide() {
       <div class="stat-value">${gearName(ride.gear_mode)}</div>
       <div class="stat-label">Gear Mode</div>
     </div>
-    ${ride.weather_temp != null ? `
-    <div class="stat-card">
-      <div class="stat-value">${ride.weather_temp.toFixed(0)}°C ${ride.weather_condition || ''}</div>
-      <div class="stat-label">Weather</div>
-    </div>` : ''}
   `;
+
+  // ── Weather ─────────────────────────────────────────────
+  if (ride.weather_temp != null) {
+    const ws = document.getElementById('weather-section');
+    ws.style.display = '';
+    document.getElementById('weather-detail').innerHTML = `
+      <div class="stat-card">
+        <div class="stat-value">${ride.weather_temp.toFixed(0)}°C</div>
+        <div class="stat-label">${ride.weather_condition || 'Temperature'}</div>
+      </div>
+      ${ride.weather_feels_like != null ? `
+      <div class="stat-card">
+        <div class="stat-value">${ride.weather_feels_like.toFixed(0)}°C</div>
+        <div class="stat-label">Feels Like</div>
+      </div>` : ''}
+      ${ride.weather_humidity != null ? `
+      <div class="stat-card">
+        <div class="stat-value">${ride.weather_humidity.toFixed(0)}%</div>
+        <div class="stat-label">Humidity</div>
+      </div>` : ''}
+      ${ride.weather_wind_speed != null ? `
+      <div class="stat-card">
+        <div class="stat-value">${ride.weather_wind_speed.toFixed(0)} km/h</div>
+        <div class="stat-label">Wind</div>
+      </div>` : ''}
+      ${ride.weather_uv_index != null ? `
+      <div class="stat-card">
+        <div class="stat-value">${ride.weather_uv_index.toFixed(0)}</div>
+        <div class="stat-label">UV Index</div>
+      </div>` : ''}
+      ${ride.weather_pressure != null ? `
+      <div class="stat-card">
+        <div class="stat-value">${ride.weather_pressure.toFixed(0)} hPa</div>
+        <div class="stat-label">Pressure</div>
+      </div>` : ''}
+    `;
+  }
 
   // ── Map ─────────────────────────────────────────────────
   if (ride.gps_track && Array.isArray(ride.gps_track) && ride.gps_track.length > 0) {
@@ -124,7 +204,6 @@ async function loadRide() {
       maxZoom: 19,
     }).addTo(map);
 
-    // gps_track: array of [lng, lat, alt?] (GeoJSON order) or {lat, lng} objects
     const latLngs = ride.gps_track.map(coord => {
       if (Array.isArray(coord)) return [coord[1], coord[0]];
       return [coord.latitude ?? coord.lat, coord.longitude ?? coord.lng];
@@ -154,14 +233,7 @@ async function loadRide() {
   // ── Telemetry charts ────────────────────────────────────
   if (samplesData && samplesData.samples && samplesData.samples.length > 0) {
     const samples = samplesData.samples;
-    const times = samples.map(s => formatTime(s._time || s.time));
-
-    const chartOptions = {
-      responsive: true,
-      plugins: { legend: { position: 'top' } },
-      scales: { x: { display: true, ticks: { maxTicksLimit: 10 } } },
-      elements: { point: { radius: 0 }, line: { borderWidth: 2 } },
-    };
+    const times = samples.map(s => formatTime(sampleTime(s)));
 
     // Speed
     new Chart(document.getElementById('speedChart'), {
@@ -176,13 +248,13 @@ async function loadRide() {
           fill: true, tension: 0.2,
         }, {
           label: 'GPS Speed (km/h)',
-          data: samples.map(s => parseFloat(s.gps_speed) || 0),
+          data: samples.map(s => parseFloat(s.gps_speed || s.gpsSpeed) || 0),
           borderColor: CHART_COLORS.sapphire,
           borderDash: [5, 5],
           fill: false, tension: 0.2,
         }],
       },
-      options: chartOptions,
+      options: defaultChartOptions,
     });
 
     // Battery & BMS
@@ -197,25 +269,55 @@ async function loadRide() {
           fill: false, tension: 0.2, yAxisID: 'y',
         }, {
           label: 'BMS Voltage (V)',
-          data: samples.map(s => parseFloat(s.bms_voltage) || 0),
+          data: samples.map(s => parseFloat(s.bms_voltage || s.bmsVoltage) || 0),
           borderColor: CHART_COLORS.yellow,
           fill: false, tension: 0.2, yAxisID: 'y1',
         }, {
           label: 'BMS Current (A)',
-          data: samples.map(s => parseFloat(s.bms_current) || 0),
+          data: samples.map(s => parseFloat(s.bms_current || s.bmsCurrent) || 0),
           borderColor: CHART_COLORS.peach,
           fill: false, tension: 0.2, yAxisID: 'y1',
         }],
       },
       options: {
-        ...chartOptions,
+        ...defaultChartOptions,
         scales: {
-          ...chartOptions.scales,
+          ...defaultChartOptions.scales,
           y: { position: 'left', title: { display: true, text: 'Battery %' }, min: 0, max: 100 },
           y1: { position: 'right', title: { display: true, text: 'V / A' }, grid: { drawOnChartArea: false } },
         },
       },
     });
+
+    // Temperature (BMS + Body)
+    const hasBmsTemp = samples.some(s => parseFloat(s.bms_temp || s.bmsTemp) > 0);
+    const hasBodyTemp = samples.some(s => parseFloat(s.body_temp || s.bodyTemp) > 0);
+    if (hasBmsTemp || hasBodyTemp) {
+      const datasets = [];
+      if (hasBmsTemp) {
+        datasets.push({
+          label: 'BMS Temp (°C)',
+          data: samples.map(s => parseFloat(s.bms_temp || s.bmsTemp) || null),
+          borderColor: CHART_COLORS.peach,
+          fill: false, tension: 0.3, spanGaps: true,
+        });
+      }
+      if (hasBodyTemp) {
+        datasets.push({
+          label: 'Body Temp (°C)',
+          data: samples.map(s => parseFloat(s.body_temp || s.bodyTemp) || null),
+          borderColor: CHART_COLORS.yellow,
+          fill: false, tension: 0.3, spanGaps: true,
+        });
+      }
+      new Chart(document.getElementById('tempChart'), {
+        type: 'line',
+        data: { labels: times, datasets },
+        options: defaultChartOptions,
+      });
+    } else {
+      hideCard('tempChart');
+    }
 
     // Altitude
     const hasAlt = samples.some(s => {
@@ -235,31 +337,74 @@ async function loadRide() {
             fill: true, tension: 0.3, spanGaps: true,
           }],
         },
-        options: chartOptions,
+        options: defaultChartOptions,
       });
     } else {
-      document.getElementById('altitudeChart').parentElement.style.display = 'none';
+      hideCard('altitudeChart');
     }
 
     // Heart rate
-    const hrSamples = samples.filter(s => parseFloat(s.heart_rate) > 0);
+    const hrSamples = samples.filter(s => parseFloat(s.heart_rate || s.heartRate) > 0);
     if (hrSamples.length > 0) {
       new Chart(document.getElementById('heartRateChart'), {
         type: 'line',
         data: {
-          labels: hrSamples.map(s => formatTime(s._time || s.time)),
+          labels: hrSamples.map(s => formatTime(sampleTime(s))),
           datasets: [{
             label: 'Heart Rate (bpm)',
-            data: hrSamples.map(s => parseFloat(s.heart_rate)),
+            data: hrSamples.map(s => parseFloat(s.heart_rate || s.heartRate)),
             borderColor: CHART_COLORS.red,
             backgroundColor: CHART_COLORS.red + '20',
             fill: true, tension: 0.3,
           }],
         },
-        options: chartOptions,
+        options: defaultChartOptions,
       });
     } else {
-      document.getElementById('heartRateChart').parentElement.style.display = 'none';
+      hideCard('heartRateChart');
+    }
+
+    // Surface roughness
+    const hasRoughness = samples.some(s => parseFloat(s.roughness_score || s.roughnessScore) > 0);
+    if (hasRoughness) {
+      new Chart(document.getElementById('roughnessChart'), {
+        type: 'line',
+        data: {
+          labels: times,
+          datasets: [{
+            label: 'Roughness Score',
+            data: samples.map(s => parseFloat(s.roughness_score || s.roughnessScore) || null),
+            borderColor: CHART_COLORS.mauve,
+            backgroundColor: CHART_COLORS.mauve + '20',
+            fill: true, tension: 0.3, spanGaps: true,
+          }, {
+            label: 'Max Acceleration (g)',
+            data: samples.map(s => parseFloat(s.max_acceleration || s.maxAcceleration) || null),
+            borderColor: CHART_COLORS.pink,
+            borderDash: [5, 5],
+            fill: false, tension: 0.3, spanGaps: true,
+          }],
+        },
+        options: defaultChartOptions,
+      });
+    } else {
+      hideCard('roughnessChart');
+    }
+
+    // GPX export button
+    const gpxData = buildGPX(samples, `Ride ${formatDate(ride.start_time)}`);
+    if (gpxData) {
+      const btn = document.getElementById('gpx-export');
+      btn.style.display = '';
+      btn.onclick = () => {
+        const blob = new Blob([gpxData], { type: 'application/gpx+xml' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `gt3-ride-${rideId.slice(0, 8)}.gpx`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
     }
   } else {
     document.querySelectorAll('.charts-grid .card').forEach(card => {

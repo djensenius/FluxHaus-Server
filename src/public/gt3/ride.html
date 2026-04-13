@@ -21,6 +21,11 @@
             <div class="stat-card"><div class="loading"><div class="spinner"></div></div></div>
         </section>
 
+        <section id="weather-section" class="card" style="display:none;">
+            <h3>🌤 Weather</h3>
+            <div id="weather-detail" class="stats-grid"></div>
+        </section>
+
         <section id="map-section" class="card">
             <h3>Route</h3>
             <div id="map" style="height: 400px; border-radius: 8px;"></div>
@@ -36,6 +41,10 @@
                 <canvas id="batteryChart"></canvas>
             </div>
             <div class="card">
+                <h3>Temperature</h3>
+                <canvas id="tempChart"></canvas>
+            </div>
+            <div class="card">
                 <h3>Altitude</h3>
                 <canvas id="altitudeChart"></canvas>
             </div>
@@ -43,6 +52,14 @@
                 <h3>Heart Rate</h3>
                 <canvas id="heartRateChart"></canvas>
             </div>
+            <div class="card">
+                <h3>Surface Roughness</h3>
+                <canvas id="roughnessChart"></canvas>
+            </div>
+        </section>
+
+        <section class="card" style="text-align:center; padding: 1.5rem;">
+            <button id="gpx-export" style="display:none;">📥 Export GPX</button>
         </section>
     </main>
     <script src="/gt3/ride-detail.js"></script>
