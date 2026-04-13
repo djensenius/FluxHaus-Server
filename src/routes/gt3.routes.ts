@@ -126,10 +126,14 @@ router.post('/snapshot', async (req, res) => {
 router.post('/ride', async (req, res) => {
   const pool = getPool();
   if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const client = await pool.connect();
   try {
     const r = req.body;
     const userSub = req.user?.sub || 'unknown';
-    const result = await pool.query(
+
+    await client.query('BEGIN');
+
+    const result = await client.query(
       `INSERT INTO gt3_rides (user_sub, start_time, end_time, distance, max_speed, avg_speed,
         battery_used, start_battery, end_battery, gear_mode, gps_track, health_data, metadata,
         weather_temp, weather_feels_like, weather_humidity, weather_wind_speed,
@@ -163,52 +167,67 @@ router.post('/ride', async (req, res) => {
     }
     writePoint('gt3_ride', rideFields, { scooter: 'GT3Pro', ride_id: rideId || 'unknown' });
 
-    // Insert per-ride samples into normalized Postgres table
+    // Insert per-ride samples into normalized Postgres table (batched)
     if (rideId && Array.isArray(r.samples) && r.samples.length > 0) {
-      const sampleValues: unknown[] = [];
-      const placeholders: string[] = [];
-      let paramIdx = 1;
-      for (const s of r.samples) {
-        placeholders.push(
-          `($${paramIdx},$${paramIdx + 1},$${paramIdx + 2},$${paramIdx + 3},$${paramIdx + 4},` +
-          `$${paramIdx + 5},$${paramIdx + 6},$${paramIdx + 7},$${paramIdx + 8},$${paramIdx + 9},` +
-          `$${paramIdx + 10},$${paramIdx + 11},$${paramIdx + 12},$${paramIdx + 13},$${paramIdx + 14},` +
-          `$${paramIdx + 15},$${paramIdx + 16},$${paramIdx + 17},$${paramIdx + 18},$${paramIdx + 19},` +
-          `$${paramIdx + 20},$${paramIdx + 21},$${paramIdx + 22},$${paramIdx + 23},$${paramIdx + 24},` +
-          `$${paramIdx + 25})`,
-        );
-        sampleValues.push(
-          rideId, s.timestamp, s.speed ?? 0, s.battery ?? 0,
-          s.bmsVoltage ?? 0, s.bmsCurrent ?? 0, s.bmsSOC ?? 0, s.bmsTemp ?? 0,
-          s.bodyTemp ?? 0, s.gearMode ?? 0, s.tripDistance ?? 0, s.tripTime ?? 0,
-          s.estimatedRange ?? 0, s.errorCode ?? 0, s.warnCode ?? 0,
-          s.regenLevel ?? 0, s.speedResponse ?? 0,
-          s.latitude ?? null, s.longitude ?? null, s.altitude ?? null,
-          s.gpsSpeed ?? null, s.gpsCourse ?? null, s.horizontalAccuracy ?? null,
-          s.roughnessScore ?? null, s.maxAcceleration ?? null, s.heartRate ?? null,
-        );
-        paramIdx += 26;
+      const BATCH_SIZE = 500;
+      const COLS_PER_ROW = 26;
+      for (let i = 0; i < r.samples.length; i += BATCH_SIZE) {
+        const batch = r.samples.slice(i, i + BATCH_SIZE);
+        const sampleValues: unknown[] = [];
+        const placeholders: string[] = [];
+        let paramIdx = 1;
+        for (const s of batch) {
+          // Validate timestamp
+          const ts = s.timestamp ? new Date(s.timestamp) : null;
+          if (!ts || isNaN(ts.getTime())) continue;
+
+          placeholders.push(
+            `($${paramIdx},$${paramIdx + 1},$${paramIdx + 2},$${paramIdx + 3},$${paramIdx + 4},` +
+            `$${paramIdx + 5},$${paramIdx + 6},$${paramIdx + 7},$${paramIdx + 8},$${paramIdx + 9},` +
+            `$${paramIdx + 10},$${paramIdx + 11},$${paramIdx + 12},$${paramIdx + 13},$${paramIdx + 14},` +
+            `$${paramIdx + 15},$${paramIdx + 16},$${paramIdx + 17},$${paramIdx + 18},$${paramIdx + 19},` +
+            `$${paramIdx + 20},$${paramIdx + 21},$${paramIdx + 22},$${paramIdx + 23},$${paramIdx + 24},` +
+            `$${paramIdx + 25})`,
+          );
+          sampleValues.push(
+            rideId, ts.toISOString(), s.speed ?? 0, s.battery ?? 0,
+            s.bmsVoltage ?? 0, s.bmsCurrent ?? 0, s.bmsSOC ?? 0, s.bmsTemp ?? 0,
+            s.bodyTemp ?? 0, s.gearMode ?? 0, s.tripDistance ?? 0, s.tripTime ?? 0,
+            s.estimatedRange ?? 0, s.errorCode ?? 0, s.warnCode ?? 0,
+            s.regenLevel ?? 0, s.speedResponse ?? 0,
+            s.latitude ?? null, s.longitude ?? null, s.altitude ?? null,
+            s.gpsSpeed ?? null, s.gpsCourse ?? null, s.horizontalAccuracy ?? null,
+            s.roughnessScore ?? null, s.maxAcceleration ?? null, s.heartRate ?? null,
+          );
+          paramIdx += COLS_PER_ROW;
+        }
+        if (placeholders.length > 0) {
+          await client.query(
+            `INSERT INTO gt3_samples (ride_id, timestamp, speed, battery,
+              bms_voltage, bms_current, bms_soc, bms_temp,
+              body_temp, gear_mode, trip_distance, trip_time,
+              range_estimate, error_code, warn_code,
+              regen_level, speed_response,
+              latitude, longitude, altitude,
+              gps_speed, gps_course, horizontal_accuracy,
+              roughness_score, max_acceleration, heart_rate)
+             VALUES ${placeholders.join(',')}`,
+            sampleValues,
+          );
+        }
       }
-      await pool.query(
-        `INSERT INTO gt3_samples (ride_id, timestamp, speed, battery,
-          bms_voltage, bms_current, bms_soc, bms_temp,
-          body_temp, gear_mode, trip_distance, trip_time,
-          range_estimate, error_code, warn_code,
-          regen_level, speed_response,
-          latitude, longitude, altitude,
-          gps_speed, gps_course, horizontal_accuracy,
-          roughness_score, max_acceleration, heart_rate)
-         VALUES ${placeholders.join(',')}`,
-        sampleValues,
-      );
       gt3Logger.info({ rideId, sampleCount: r.samples.length }, 'Stored ride samples');
     }
 
+    await client.query('COMMIT');
     gt3Logger.info({ rideId }, 'Stored ride');
     return res.json({ ok: true, id: rideId });
   } catch (err) {
+    await client.query('ROLLBACK');
     gt3Logger.error({ err }, 'Failed to store ride');
     return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -322,7 +341,35 @@ router.get('/rides/:id/samples', async (req, res) => {
     );
 
     if (pgSamples.rows.length > 0) {
-      return res.json({ samples: pgSamples.rows, rideId: req.params.id, source: 'postgres' });
+      // Normalize column names to match InfluxDB format for consistent client parsing
+      const normalized = pgSamples.rows.map((row: Record<string, unknown>) => ({
+        _time: row.timestamp,
+        speed: row.speed,
+        battery: row.battery,
+        bms_voltage: row.bms_voltage,
+        bms_current: row.bms_current,
+        bms_soc: row.bms_soc,
+        bms_temp: row.bms_temp,
+        body_temp: row.body_temp,
+        gear_mode: row.gear_mode,
+        trip_distance: row.trip_distance,
+        trip_time: row.trip_time,
+        range_estimate: row.range_estimate,
+        error_code: row.error_code,
+        warn_code: row.warn_code,
+        regen_level: row.regen_level,
+        speed_response: row.speed_response,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        altitude: row.altitude,
+        gps_speed: row.gps_speed,
+        gps_course: row.gps_course,
+        horizontal_accuracy: row.horizontal_accuracy,
+        roughness_score: row.roughness_score,
+        max_acceleration: row.max_acceleration,
+        heart_rate: row.heart_rate,
+      }));
+      return res.json({ samples: normalized, rideId: req.params.id, source: 'postgres' });
     }
 
     // Fallback to InfluxDB for older rides without Postgres samples
