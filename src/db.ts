@@ -266,6 +266,37 @@ export async function initDatabase(): Promise<void> {
       -- Add columns if missing (existing tables)
       ALTER TABLE gt3_snapshots ADD COLUMN IF NOT EXISTS battery INTEGER;
       ALTER TABLE gt3_snapshots ADD COLUMN IF NOT EXISTS estimated_range DOUBLE PRECISION;
+
+      CREATE TABLE IF NOT EXISTS gt3_samples (
+        id BIGSERIAL PRIMARY KEY,
+        ride_id UUID NOT NULL REFERENCES gt3_rides(id) ON DELETE CASCADE,
+        timestamp TIMESTAMPTZ NOT NULL,
+        speed DOUBLE PRECISION DEFAULT 0,
+        battery INTEGER DEFAULT 0,
+        bms_voltage DOUBLE PRECISION DEFAULT 0,
+        bms_current DOUBLE PRECISION DEFAULT 0,
+        bms_soc INTEGER DEFAULT 0,
+        bms_temp DOUBLE PRECISION DEFAULT 0,
+        body_temp DOUBLE PRECISION DEFAULT 0,
+        gear_mode INTEGER DEFAULT 0,
+        trip_distance DOUBLE PRECISION DEFAULT 0,
+        trip_time INTEGER DEFAULT 0,
+        range_estimate DOUBLE PRECISION DEFAULT 0,
+        error_code INTEGER DEFAULT 0,
+        warn_code INTEGER DEFAULT 0,
+        regen_level INTEGER DEFAULT 0,
+        speed_response INTEGER DEFAULT 0,
+        latitude DOUBLE PRECISION,
+        longitude DOUBLE PRECISION,
+        altitude DOUBLE PRECISION,
+        gps_speed DOUBLE PRECISION,
+        gps_course DOUBLE PRECISION,
+        horizontal_accuracy DOUBLE PRECISION,
+        roughness_score DOUBLE PRECISION,
+        max_acceleration DOUBLE PRECISION,
+        heart_rate INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_gt3_samples_ride ON gt3_samples (ride_id, timestamp);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

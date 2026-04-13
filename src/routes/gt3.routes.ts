@@ -40,11 +40,15 @@ router.post('/telemetry', async (req, res) => {
         error_code: sample.errorCode ?? 0,
         warn_code: sample.warnCode ?? 0,
         regen_level: sample.regenLevel ?? 0,
+        speed_response: sample.speedResponse ?? 0,
         latitude: sample.latitude ?? 0,
         longitude: sample.longitude ?? 0,
         altitude: sample.altitude ?? 0,
         gps_speed: sample.gpsSpeed ?? 0,
+        gps_course: sample.gpsCourse ?? 0,
+        horizontal_accuracy: sample.horizontalAccuracy ?? 0,
         roughness_score: sample.roughnessScore ?? 0,
+        max_acceleration: sample.maxAcceleration ?? 0,
         heart_rate: sample.heartRate ?? 0,
       }, { scooter: 'GT3Pro' });
 
@@ -122,10 +126,14 @@ router.post('/snapshot', async (req, res) => {
 router.post('/ride', async (req, res) => {
   const pool = getPool();
   if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const client = await pool.connect();
   try {
     const r = req.body;
     const userSub = req.user?.sub || 'unknown';
-    const result = await pool.query(
+
+    await client.query('BEGIN');
+
+    const result = await client.query(
       `INSERT INTO gt3_rides (user_sub, start_time, end_time, distance, max_speed, avg_speed,
         battery_used, start_battery, end_battery, gear_mode, gps_track, health_data, metadata,
         weather_temp, weather_feels_like, weather_humidity, weather_wind_speed,
@@ -158,11 +166,99 @@ router.post('/ride', async (req, res) => {
       rideFields.weather_wind_speed = r.weather.windSpeed ?? 0;
     }
     writePoint('gt3_ride', rideFields, { scooter: 'GT3Pro', ride_id: rideId || 'unknown' });
+
+    // Insert per-ride samples into normalized Postgres table (batched)
+    if (rideId && Array.isArray(r.samples) && r.samples.length > 0) {
+      const BATCH_SIZE = 500;
+      const COLS_PER_ROW = 26;
+
+      // Filter and validate samples
+      const validSamples = r.samples
+        .map((s: Record<string, unknown>) => {
+          const ts = s.timestamp ? new Date(s.timestamp as string) : null;
+          if (!ts || Number.isNaN(ts.getTime())) return null;
+          return { ...s, validTimestamp: ts.toISOString() };
+        })
+        .filter(Boolean) as Array<Record<string, unknown>>;
+
+      // Build batches
+      const batches: Array<{ placeholders: string[]; values: unknown[] }> = [];
+      let idx = 0;
+      while (idx < validSamples.length) {
+        const chunk = validSamples.slice(idx, idx + BATCH_SIZE);
+        const batchPlaceholders: string[] = [];
+        const batchValues: unknown[] = [];
+        chunk.forEach((s, rowIdx) => {
+          const p = rowIdx * COLS_PER_ROW + 1;
+          batchPlaceholders.push(
+            `($${p},$${p + 1},$${p + 2},$${p + 3},$${p + 4}`
+            + `,$${p + 5},$${p + 6},$${p + 7},$${p + 8},$${p + 9}`
+            + `,$${p + 10},$${p + 11},$${p + 12},$${p + 13},$${p + 14}`
+            + `,$${p + 15},$${p + 16},$${p + 17},$${p + 18},$${p + 19}`
+            + `,$${p + 20},$${p + 21},$${p + 22},$${p + 23},$${p + 24}`
+            + `,$${p + 25})`,
+          );
+          batchValues.push(
+            rideId,
+            s.validTimestamp,
+            s.speed ?? 0,
+            s.battery ?? 0,
+            s.bmsVoltage ?? 0,
+            s.bmsCurrent ?? 0,
+            s.bmsSOC ?? 0,
+            s.bmsTemp ?? 0,
+            s.bodyTemp ?? 0,
+            s.gearMode ?? 0,
+            s.tripDistance ?? 0,
+            s.tripTime ?? 0,
+            s.estimatedRange ?? 0,
+            s.errorCode ?? 0,
+            s.warnCode ?? 0,
+            s.regenLevel ?? 0,
+            s.speedResponse ?? 0,
+            s.latitude ?? null,
+            s.longitude ?? null,
+            s.altitude ?? null,
+            s.gpsSpeed ?? null,
+            s.gpsCourse ?? null,
+            s.horizontalAccuracy ?? null,
+            s.roughnessScore ?? null,
+            s.maxAcceleration ?? null,
+            s.heartRate ?? null,
+          );
+        });
+        batches.push({ placeholders: batchPlaceholders, values: batchValues });
+        idx += BATCH_SIZE;
+      }
+
+      // Execute batch inserts sequentially
+      await batches.reduce(
+        (chain, batch) => chain.then(() => client.query(
+          `INSERT INTO gt3_samples (ride_id, timestamp, speed, battery,
+            bms_voltage, bms_current, bms_soc, bms_temp,
+            body_temp, gear_mode, trip_distance, trip_time,
+            range_estimate, error_code, warn_code,
+            regen_level, speed_response,
+            latitude, longitude, altitude,
+            gps_speed, gps_course, horizontal_accuracy,
+            roughness_score, max_acceleration, heart_rate)
+           VALUES ${batch.placeholders.join(',')}`,
+          batch.values,
+        )),
+        Promise.resolve() as Promise<unknown>,
+      );
+      gt3Logger.info({ rideId, sampleCount: r.samples.length }, 'Stored ride samples');
+    }
+
+    await client.query('COMMIT');
     gt3Logger.info({ rideId }, 'Stored ride');
     return res.json({ ok: true, id: rideId });
   } catch (err) {
+    await client.query('ROLLBACK');
     gt3Logger.error({ err }, 'Failed to store ride');
     return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -257,16 +353,61 @@ router.get('/rides/:id/samples', async (req, res) => {
   if (!pool) return res.status(503).json({ error: 'Database unavailable' });
   try {
     const userSub = req.user?.sub || 'unknown';
-    // Get the ride's time range from PostgreSQL
+    // Verify ride belongs to user
     const rideResult = await pool.query(
       'SELECT start_time, end_time FROM gt3_rides WHERE id = $1 AND user_sub = $2',
       [req.params.id, userSub],
     );
     if (rideResult.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
+
+    // Try Postgres samples first (normalized table)
+    const pgSamples = await pool.query(
+      `SELECT timestamp, speed, battery, bms_voltage, bms_current, bms_soc, bms_temp,
+        body_temp, gear_mode, trip_distance, trip_time, range_estimate,
+        error_code, warn_code, regen_level, speed_response,
+        latitude, longitude, altitude, gps_speed, gps_course,
+        horizontal_accuracy, roughness_score, max_acceleration, heart_rate
+       FROM gt3_samples WHERE ride_id = $1 ORDER BY timestamp`,
+      [req.params.id],
+    );
+
+    if (pgSamples.rows.length > 0) {
+      // Normalize column names to match InfluxDB format for consistent client parsing
+      const normalized = pgSamples.rows.map((row: Record<string, unknown>) => ({
+        _time: row.timestamp,
+        speed: row.speed,
+        battery: row.battery,
+        bms_voltage: row.bms_voltage,
+        bms_current: row.bms_current,
+        bms_soc: row.bms_soc,
+        bms_temp: row.bms_temp,
+        body_temp: row.body_temp,
+        gear_mode: row.gear_mode,
+        trip_distance: row.trip_distance,
+        trip_time: row.trip_time,
+        range_estimate: row.range_estimate,
+        error_code: row.error_code,
+        warn_code: row.warn_code,
+        regen_level: row.regen_level,
+        speed_response: row.speed_response,
+        latitude: row.latitude,
+        longitude: row.longitude,
+        altitude: row.altitude,
+        gps_speed: row.gps_speed,
+        gps_course: row.gps_course,
+        horizontal_accuracy: row.horizontal_accuracy,
+        roughness_score: row.roughness_score,
+        max_acceleration: row.max_acceleration,
+        heart_rate: row.heart_rate,
+      }));
+      return res.json({ samples: normalized, rideId: req.params.id, source: 'postgres' });
+    }
+
+    // Fallback to InfluxDB for older rides without Postgres samples
     const { start_time: startTime, end_time: endTime } = rideResult.rows[0];
 
     if (!influxQuery.configured) {
-      return res.status(503).json({ error: 'InfluxDB not configured' });
+      return res.json({ samples: [], rideId: req.params.id, source: 'none' });
     }
 
     const startISO = new Date(startTime).toISOString();
@@ -280,7 +421,7 @@ router.get('/rides/:id/samples', async (req, res) => {
   |> sort(columns: ["_time"])`;
 
     const samples = await influxQuery.query(flux);
-    return res.json({ samples, rideId: req.params.id });
+    return res.json({ samples, rideId: req.params.id, source: 'influxdb' });
   } catch (err) {
     gt3Logger.error({ err }, 'Failed to get ride samples');
     return res.status(500).json({ error: 'Internal server error' });
