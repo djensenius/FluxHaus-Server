@@ -171,51 +171,82 @@ router.post('/ride', async (req, res) => {
     if (rideId && Array.isArray(r.samples) && r.samples.length > 0) {
       const BATCH_SIZE = 500;
       const COLS_PER_ROW = 26;
-      for (let i = 0; i < r.samples.length; i += BATCH_SIZE) {
-        const batch = r.samples.slice(i, i + BATCH_SIZE);
-        const sampleValues: unknown[] = [];
-        const placeholders: string[] = [];
-        let paramIdx = 1;
-        for (const s of batch) {
-          // Validate timestamp
-          const ts = s.timestamp ? new Date(s.timestamp) : null;
-          if (!ts || isNaN(ts.getTime())) continue;
 
-          placeholders.push(
-            `($${paramIdx},$${paramIdx + 1},$${paramIdx + 2},$${paramIdx + 3},$${paramIdx + 4},` +
-            `$${paramIdx + 5},$${paramIdx + 6},$${paramIdx + 7},$${paramIdx + 8},$${paramIdx + 9},` +
-            `$${paramIdx + 10},$${paramIdx + 11},$${paramIdx + 12},$${paramIdx + 13},$${paramIdx + 14},` +
-            `$${paramIdx + 15},$${paramIdx + 16},$${paramIdx + 17},$${paramIdx + 18},$${paramIdx + 19},` +
-            `$${paramIdx + 20},$${paramIdx + 21},$${paramIdx + 22},$${paramIdx + 23},$${paramIdx + 24},` +
-            `$${paramIdx + 25})`,
+      // Filter and validate samples
+      const validSamples = r.samples
+        .map((s: Record<string, unknown>) => {
+          const ts = s.timestamp ? new Date(s.timestamp as string) : null;
+          if (!ts || Number.isNaN(ts.getTime())) return null;
+          return { ...s, validTimestamp: ts.toISOString() };
+        })
+        .filter(Boolean) as Array<Record<string, unknown>>;
+
+      // Build batches
+      const batches: Array<{ placeholders: string[]; values: unknown[] }> = [];
+      let idx = 0;
+      while (idx < validSamples.length) {
+        const chunk = validSamples.slice(idx, idx + BATCH_SIZE);
+        const batchPlaceholders: string[] = [];
+        const batchValues: unknown[] = [];
+        chunk.forEach((s, rowIdx) => {
+          const p = rowIdx * COLS_PER_ROW + 1;
+          batchPlaceholders.push(
+            `($${p},$${p + 1},$${p + 2},$${p + 3},$${p + 4}`
+            + `,$${p + 5},$${p + 6},$${p + 7},$${p + 8},$${p + 9}`
+            + `,$${p + 10},$${p + 11},$${p + 12},$${p + 13},$${p + 14}`
+            + `,$${p + 15},$${p + 16},$${p + 17},$${p + 18},$${p + 19}`
+            + `,$${p + 20},$${p + 21},$${p + 22},$${p + 23},$${p + 24}`
+            + `,$${p + 25})`,
           );
-          sampleValues.push(
-            rideId, ts.toISOString(), s.speed ?? 0, s.battery ?? 0,
-            s.bmsVoltage ?? 0, s.bmsCurrent ?? 0, s.bmsSOC ?? 0, s.bmsTemp ?? 0,
-            s.bodyTemp ?? 0, s.gearMode ?? 0, s.tripDistance ?? 0, s.tripTime ?? 0,
-            s.estimatedRange ?? 0, s.errorCode ?? 0, s.warnCode ?? 0,
-            s.regenLevel ?? 0, s.speedResponse ?? 0,
-            s.latitude ?? null, s.longitude ?? null, s.altitude ?? null,
-            s.gpsSpeed ?? null, s.gpsCourse ?? null, s.horizontalAccuracy ?? null,
-            s.roughnessScore ?? null, s.maxAcceleration ?? null, s.heartRate ?? null,
+          batchValues.push(
+            rideId,
+            s.validTimestamp,
+            s.speed ?? 0,
+            s.battery ?? 0,
+            s.bmsVoltage ?? 0,
+            s.bmsCurrent ?? 0,
+            s.bmsSOC ?? 0,
+            s.bmsTemp ?? 0,
+            s.bodyTemp ?? 0,
+            s.gearMode ?? 0,
+            s.tripDistance ?? 0,
+            s.tripTime ?? 0,
+            s.estimatedRange ?? 0,
+            s.errorCode ?? 0,
+            s.warnCode ?? 0,
+            s.regenLevel ?? 0,
+            s.speedResponse ?? 0,
+            s.latitude ?? null,
+            s.longitude ?? null,
+            s.altitude ?? null,
+            s.gpsSpeed ?? null,
+            s.gpsCourse ?? null,
+            s.horizontalAccuracy ?? null,
+            s.roughnessScore ?? null,
+            s.maxAcceleration ?? null,
+            s.heartRate ?? null,
           );
-          paramIdx += COLS_PER_ROW;
-        }
-        if (placeholders.length > 0) {
-          await client.query(
-            `INSERT INTO gt3_samples (ride_id, timestamp, speed, battery,
-              bms_voltage, bms_current, bms_soc, bms_temp,
-              body_temp, gear_mode, trip_distance, trip_time,
-              range_estimate, error_code, warn_code,
-              regen_level, speed_response,
-              latitude, longitude, altitude,
-              gps_speed, gps_course, horizontal_accuracy,
-              roughness_score, max_acceleration, heart_rate)
-             VALUES ${placeholders.join(',')}`,
-            sampleValues,
-          );
-        }
+        });
+        batches.push({ placeholders: batchPlaceholders, values: batchValues });
+        idx += BATCH_SIZE;
       }
+
+      // Execute batch inserts sequentially
+      await batches.reduce(
+        (chain, batch) => chain.then(() => client.query(
+          `INSERT INTO gt3_samples (ride_id, timestamp, speed, battery,
+            bms_voltage, bms_current, bms_soc, bms_temp,
+            body_temp, gear_mode, trip_distance, trip_time,
+            range_estimate, error_code, warn_code,
+            regen_level, speed_response,
+            latitude, longitude, altitude,
+            gps_speed, gps_course, horizontal_accuracy,
+            roughness_score, max_acceleration, heart_rate)
+           VALUES ${batch.placeholders.join(',')}`,
+          batch.values,
+        )),
+        Promise.resolve() as Promise<unknown>,
+      );
       gt3Logger.info({ rideId, sampleCount: r.samples.length }, 'Stored ride samples');
     }
 
