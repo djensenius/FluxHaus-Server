@@ -22,9 +22,32 @@ Chart.defaults.color = CHART_COLORS.subtext;
 Chart.defaults.borderColor = CHART_COLORS.surface;
 
 const GEAR_NAMES = { 1: 'Eco', 2: 'Standard', 3: 'Sport', 4: 'Race' };
+const GEAR_COLORS = { 1: '#a6e3a1', 2: '#89b4fa', 3: '#fab387', 4: '#f38ba8' };
 function gearName(mode) {
   if (mode == null) return 'Unknown';
   return GEAR_NAMES[mode] || `Mode ${mode}`;
+}
+
+const WEATHER_EMOJI = {
+  clear: '☀️', sunny: '☀️',
+  'mostly clear': '🌤️', 'partly cloudy': '⛅',
+  cloudy: '☁️', overcast: '☁️', 'mostly cloudy': '🌥️',
+  rain: '🌧️', drizzle: '🌦️', showers: '🌦️', 'heavy rain': '🌧️',
+  thunderstorm: '⛈️', 'thunderstorms': '⛈️',
+  snow: '🌨️', sleet: '🌨️', 'freezing rain': '🌨️',
+  fog: '🌫️', haze: '🌫️', mist: '🌫️',
+  wind: '💨', windy: '💨', breezy: '💨',
+};
+
+function weatherEmoji(condition) {
+  if (!condition) return '';
+  const lower = condition.toLowerCase();
+  if (WEATHER_EMOJI[lower]) return WEATHER_EMOJI[lower];
+  const sortedKeys = Object.keys(WEATHER_EMOJI).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    if (lower.includes(key)) return WEATHER_EMOJI[key];
+  }
+  return '🌡️';
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -139,7 +162,7 @@ async function loadRide() {
     </div>
     <div class="stat-card">
       <div class="stat-value">${ride.distance != null ? ride.distance.toFixed(1) + ' km' : '—'}</div>
-      <div class="stat-label">Distance</div>
+      <div class="stat-label">Distance${ride.gps_distance != null ? ' (GPS)' : ''}</div>
     </div>
     <div class="stat-card">
       <div class="stat-value">${ride.max_speed != null ? ride.max_speed.toFixed(1) + ' km/h' : '—'}</div>
@@ -163,37 +186,30 @@ async function loadRide() {
   if (ride.weather_temp != null) {
     const ws = document.getElementById('weather-section');
     ws.style.display = '';
-    document.getElementById('weather-detail').innerHTML = `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_temp.toFixed(0)}°C</div>
-        <div class="stat-label">${ride.weather_condition || 'Temperature'}</div>
-      </div>
-      ${ride.weather_feels_like != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_feels_like.toFixed(0)}°C</div>
-        <div class="stat-label">Feels Like</div>
-      </div>` : ''}
-      ${ride.weather_humidity != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_humidity.toFixed(0)}%</div>
-        <div class="stat-label">Humidity</div>
-      </div>` : ''}
-      ${ride.weather_wind_speed != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_wind_speed.toFixed(0)} km/h</div>
-        <div class="stat-label">Wind</div>
-      </div>` : ''}
-      ${ride.weather_uv_index != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_uv_index.toFixed(0)}</div>
-        <div class="stat-label">UV Index</div>
-      </div>` : ''}
-      ${ride.weather_pressure != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_pressure.toFixed(0)} hPa</div>
-        <div class="stat-label">Pressure</div>
-      </div>` : ''}
-    `;
+    const emoji = weatherEmoji(ride.weather_condition);
+    const wd = document.getElementById('weather-detail');
+    wd.innerHTML = '';
+
+    function addStatCard(value, label) {
+      const card = document.createElement('div');
+      card.className = 'stat-card';
+      const valEl = document.createElement('div');
+      valEl.className = 'stat-value';
+      valEl.textContent = value;
+      const labEl = document.createElement('div');
+      labEl.className = 'stat-label';
+      labEl.textContent = label;
+      card.appendChild(valEl);
+      card.appendChild(labEl);
+      wd.appendChild(card);
+    }
+
+    addStatCard(`${emoji} ${ride.weather_temp.toFixed(0)}°C`, ride.weather_condition || 'Temperature');
+    if (ride.weather_feels_like != null) addStatCard(`${ride.weather_feels_like.toFixed(0)}°C`, 'Feels Like');
+    if (ride.weather_humidity != null) addStatCard(`${ride.weather_humidity.toFixed(0)}%`, 'Humidity');
+    if (ride.weather_wind_speed != null) addStatCard(`${ride.weather_wind_speed.toFixed(0)} km/h`, 'Wind');
+    if (ride.weather_uv_index != null) addStatCard(`${ride.weather_uv_index.toFixed(0)}`, 'UV Index');
+    if (ride.weather_pressure != null) addStatCard(`${ride.weather_pressure.toFixed(0)} hPa`, 'Pressure');
   }
 
   // ── Map ─────────────────────────────────────────────────
@@ -389,6 +405,38 @@ async function loadRide() {
       });
     } else {
       hideCard('roughnessChart');
+    }
+
+    // Gear mode breakdown — count samples per gear mode
+    const gearCounts = {};
+    samples.forEach(s => {
+      const mode = parseInt(s.gear_mode || s.gearMode) || 0;
+      if (mode > 0) gearCounts[mode] = (gearCounts[mode] || 0) + 1;
+    });
+    const gearModes = Object.keys(gearCounts).map(Number).sort();
+    if (gearModes.length > 0) {
+      const total = gearModes.reduce((sum, m) => sum + gearCounts[m], 0);
+      const gearSection = document.getElementById('gear-breakdown');
+      if (gearSection) {
+        gearSection.style.display = '';
+        gearSection.innerHTML = `
+          <h3>Gear Mode Breakdown</h3>
+          <div class="gear-bar" style="display:flex;border-radius:8px;overflow:hidden;height:32px;margin-bottom:1rem">
+            ${gearModes.map(m => {
+              const pct = (gearCounts[m] / total * 100).toFixed(1);
+              const color = GEAR_COLORS[m] || CHART_COLORS.overlay;
+              return `<div style="width:${pct}%;background:${color};display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#1e1e2e;font-weight:600" title="${gearName(m)}: ${pct}%">${pct > 8 ? gearName(m) : ''}</div>`;
+            }).join('')}
+          </div>
+          <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
+            ${gearModes.map(m => {
+              const pct = (gearCounts[m] / total * 100).toFixed(1);
+              const color = GEAR_COLORS[m] || CHART_COLORS.overlay;
+              return `<span style="display:flex;align-items:center;gap:0.4rem"><span style="width:12px;height:12px;border-radius:50%;background:${color};display:inline-block"></span>${gearName(m)}: ${pct}%</span>`;
+            }).join('')}
+          </div>
+        `;
+      }
     }
 
     // GPX export button

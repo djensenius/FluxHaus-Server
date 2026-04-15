@@ -44,6 +44,29 @@ function gearName(mode) {
   return GEAR_NAMES[mode] || `Mode ${mode}`;
 }
 
+// Weather condition → emoji mapping
+const WEATHER_EMOJI = {
+  clear: '☀️', sunny: '☀️',
+  'mostly clear': '🌤️', 'partly cloudy': '⛅',
+  cloudy: '☁️', overcast: '☁️', 'mostly cloudy': '🌥️',
+  rain: '🌧️', drizzle: '🌦️', showers: '🌦️', 'heavy rain': '🌧️',
+  thunderstorm: '⛈️', 'thunderstorms': '⛈️',
+  snow: '🌨️', sleet: '🌨️', 'freezing rain': '🌨️',
+  fog: '🌫️', haze: '🌫️', mist: '🌫️',
+  wind: '💨', windy: '💨', breezy: '💨',
+};
+
+function weatherEmoji(condition) {
+  if (!condition) return '';
+  const lower = condition.toLowerCase();
+  if (WEATHER_EMOJI[lower]) return WEATHER_EMOJI[lower];
+  const sortedKeys = Object.keys(WEATHER_EMOJI).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    if (lower.includes(key)) return WEATHER_EMOJI[key];
+  }
+  return '🌡️';
+}
+
 function formatDistance(km) {
   if (km == null) return '—';
   return km < 1 ? `${(km * 1000).toFixed(0)} m` : `${km.toFixed(1)} km`;
@@ -196,7 +219,7 @@ async function loadRides(page = 1) {
       <td>${formatSpeed(r.avg_speed)}</td>
       <td><span class="battery-badge">${r.start_battery ?? '?'}% → ${r.end_battery ?? '?'}%</span></td>
       <td><span class="gear-badge gear-${r.gear_mode}">${gearName(r.gear_mode)}</span></td>
-      <td>${r.weather_temp != null ? `${r.weather_temp.toFixed(0)}°C` : '—'}</td>
+      <td>${r.weather_temp != null ? `${weatherEmoji(r.weather_condition)} ${r.weather_temp.toFixed(0)}°C` : '—'}</td>
       <td><a href="/gt3/ride.html?id=${r.id}" class="btn-small">Details →</a></td>
     </tr>
   `).join('');
