@@ -38,7 +38,7 @@ function gpsDistanceFromTrack(track: number[][]): number {
   for (let i = 1; i < track.length; i++) {
     const [lon1, lat1] = track[i - 1];
     const [lon2, lat2] = track[i];
-    if (lat1 && lon1 && lat2 && lon2) {
+    if (Number.isFinite(lat1) && Number.isFinite(lon1) && Number.isFinite(lat2) && Number.isFinite(lon2)) {
       total += haversineKm(lat1, lon1, lat2, lon2);
     }
   }
@@ -307,7 +307,7 @@ router.get('/rides', async (req, res) => {
         battery_used, start_battery, end_battery, gear_mode, health_data, metadata,
         weather_temp, weather_feels_like, weather_humidity, weather_wind_speed,
         weather_wind_direction, weather_condition, weather_uv_index, weather_pressure,
-        gps_track, created_at
+        CASE WHEN distance IS NULL OR distance < 0.5 THEN gps_track ELSE NULL END AS gps_track, created_at
        FROM gt3_rides WHERE user_sub = $1
        ORDER BY start_time DESC LIMIT $2 OFFSET $3`,
       [userSub, limit, offset],
@@ -318,13 +318,13 @@ router.get('/rides', async (req, res) => {
       const gpsDistance = track && Array.isArray(track) && track.length > 1
         ? gpsDistanceFromTrack(track) : null;
       // Prefer GPS distance when the stored distance looks wrong (< 0.5 km)
-      const bestDistance = gpsDistance && (
-        !r.distance || (r.distance as number) < 0.5
+      const bestDistance = gpsDistance != null && (
+        r.distance == null || (r.distance as number) < 0.5
       ) ? gpsDistance : r.distance as number;
       return {
         ...r,
         gps_track: undefined, // Don't send full track in list response
-        gps_distance: gpsDistance ? parseFloat(gpsDistance.toFixed(2)) : null,
+        gps_distance: gpsDistance != null ? parseFloat(gpsDistance.toFixed(2)) : null,
         distance: bestDistance != null ? parseFloat((bestDistance as number).toFixed(2)) : null,
       };
     });

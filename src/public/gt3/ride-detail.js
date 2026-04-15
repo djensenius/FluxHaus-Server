@@ -42,8 +42,10 @@ const WEATHER_EMOJI = {
 function weatherEmoji(condition) {
   if (!condition) return '';
   const lower = condition.toLowerCase();
-  for (const [key, emoji] of Object.entries(WEATHER_EMOJI)) {
-    if (lower.includes(key)) return emoji;
+  if (WEATHER_EMOJI[lower]) return WEATHER_EMOJI[lower];
+  const sortedKeys = Object.keys(WEATHER_EMOJI).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    if (lower.includes(key)) return WEATHER_EMOJI[key];
   }
   return '🌡️';
 }
@@ -185,37 +187,29 @@ async function loadRide() {
     const ws = document.getElementById('weather-section');
     ws.style.display = '';
     const emoji = weatherEmoji(ride.weather_condition);
-    document.getElementById('weather-detail').innerHTML = `
-      <div class="stat-card">
-        <div class="stat-value">${emoji} ${ride.weather_temp.toFixed(0)}°C</div>
-        <div class="stat-label">${ride.weather_condition || 'Temperature'}</div>
-      </div>
-      ${ride.weather_feels_like != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_feels_like.toFixed(0)}°C</div>
-        <div class="stat-label">Feels Like</div>
-      </div>` : ''}
-      ${ride.weather_humidity != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_humidity.toFixed(0)}%</div>
-        <div class="stat-label">Humidity</div>
-      </div>` : ''}
-      ${ride.weather_wind_speed != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_wind_speed.toFixed(0)} km/h</div>
-        <div class="stat-label">Wind</div>
-      </div>` : ''}
-      ${ride.weather_uv_index != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_uv_index.toFixed(0)}</div>
-        <div class="stat-label">UV Index</div>
-      </div>` : ''}
-      ${ride.weather_pressure != null ? `
-      <div class="stat-card">
-        <div class="stat-value">${ride.weather_pressure.toFixed(0)} hPa</div>
-        <div class="stat-label">Pressure</div>
-      </div>` : ''}
-    `;
+    const wd = document.getElementById('weather-detail');
+    wd.innerHTML = '';
+
+    function addStatCard(value, label) {
+      const card = document.createElement('div');
+      card.className = 'stat-card';
+      const valEl = document.createElement('div');
+      valEl.className = 'stat-value';
+      valEl.textContent = value;
+      const labEl = document.createElement('div');
+      labEl.className = 'stat-label';
+      labEl.textContent = label;
+      card.appendChild(valEl);
+      card.appendChild(labEl);
+      wd.appendChild(card);
+    }
+
+    addStatCard(`${emoji} ${ride.weather_temp.toFixed(0)}°C`, ride.weather_condition || 'Temperature');
+    if (ride.weather_feels_like != null) addStatCard(`${ride.weather_feels_like.toFixed(0)}°C`, 'Feels Like');
+    if (ride.weather_humidity != null) addStatCard(`${ride.weather_humidity.toFixed(0)}%`, 'Humidity');
+    if (ride.weather_wind_speed != null) addStatCard(`${ride.weather_wind_speed.toFixed(0)} km/h`, 'Wind');
+    if (ride.weather_uv_index != null) addStatCard(`${ride.weather_uv_index.toFixed(0)}`, 'UV Index');
+    if (ride.weather_pressure != null) addStatCard(`${ride.weather_pressure.toFixed(0)} hPa`, 'Pressure');
   }
 
   // ── Map ─────────────────────────────────────────────────

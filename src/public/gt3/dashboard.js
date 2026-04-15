@@ -59,8 +59,10 @@ const WEATHER_EMOJI = {
 function weatherEmoji(condition) {
   if (!condition) return '';
   const lower = condition.toLowerCase();
-  for (const [key, emoji] of Object.entries(WEATHER_EMOJI)) {
-    if (lower.includes(key)) return emoji;
+  if (WEATHER_EMOJI[lower]) return WEATHER_EMOJI[lower];
+  const sortedKeys = Object.keys(WEATHER_EMOJI).sort((a, b) => b.length - a.length);
+  for (const key of sortedKeys) {
+    if (lower.includes(key)) return WEATHER_EMOJI[key];
   }
   return '🌡️';
 }
