@@ -142,7 +142,9 @@ router.post('/ride', async (req, res) => {
        RETURNING id`,
       [userSub, r.startTime, r.endTime, r.distance ?? r.totalDistance, r.maxSpeed, r.avgSpeed,
         r.batteryUsed, r.startBattery, r.endBattery, r.primaryGearMode ?? r.gearMode ?? null,
-        r.gpsTrack || null, r.healthData || null, r.metadata || null,
+        r.gpsTrack ? JSON.stringify(r.gpsTrack) : null,
+        r.healthData ? JSON.stringify(r.healthData) : null,
+        r.metadata ? JSON.stringify(r.metadata) : null,
         r.weather?.temp ?? null, r.weather?.feelsLike ?? null, r.weather?.humidity ?? null,
         r.weather?.windSpeed ?? null, r.weather?.windDirection ?? null,
         r.weather?.condition ?? null, r.weather?.uvIndex ?? null, r.weather?.pressure ?? null],
@@ -255,8 +257,9 @@ router.post('/ride', async (req, res) => {
     return res.json({ ok: true, id: rideId });
   } catch (err) {
     await client.query('ROLLBACK');
+    const detail = err instanceof Error ? err.message : String(err);
     gt3Logger.error({ err }, 'Failed to store ride');
-    return res.status(500).json({ error: 'Internal server error' });
+    return res.status(500).json({ error: 'Internal server error', detail });
   } finally {
     client.release();
   }
