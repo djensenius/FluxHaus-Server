@@ -22,9 +22,30 @@ Chart.defaults.color = CHART_COLORS.subtext;
 Chart.defaults.borderColor = CHART_COLORS.surface;
 
 const GEAR_NAMES = { 1: 'Eco', 2: 'Standard', 3: 'Sport', 4: 'Race' };
+const GEAR_COLORS = { 1: '#a6e3a1', 2: '#89b4fa', 3: '#fab387', 4: '#f38ba8' };
 function gearName(mode) {
   if (mode == null) return 'Unknown';
   return GEAR_NAMES[mode] || `Mode ${mode}`;
+}
+
+const WEATHER_EMOJI = {
+  clear: '☀️', sunny: '☀️',
+  'mostly clear': '🌤️', 'partly cloudy': '⛅',
+  cloudy: '☁️', overcast: '☁️', 'mostly cloudy': '🌥️',
+  rain: '🌧️', drizzle: '🌦️', showers: '🌦️', 'heavy rain': '🌧️',
+  thunderstorm: '⛈️', 'thunderstorms': '⛈️',
+  snow: '🌨️', sleet: '🌨️', 'freezing rain': '🌨️',
+  fog: '🌫️', haze: '🌫️', mist: '🌫️',
+  wind: '💨', windy: '💨', breezy: '💨',
+};
+
+function weatherEmoji(condition) {
+  if (!condition) return '';
+  const lower = condition.toLowerCase();
+  for (const [key, emoji] of Object.entries(WEATHER_EMOJI)) {
+    if (lower.includes(key)) return emoji;
+  }
+  return '🌡️';
 }
 
 // ── Helpers ────────────────────────────────────────────────
@@ -139,7 +160,7 @@ async function loadRide() {
     </div>
     <div class="stat-card">
       <div class="stat-value">${ride.distance != null ? ride.distance.toFixed(1) + ' km' : '—'}</div>
-      <div class="stat-label">Distance</div>
+      <div class="stat-label">Distance${ride.gps_distance != null ? ' (GPS)' : ''}</div>
     </div>
     <div class="stat-card">
       <div class="stat-value">${ride.max_speed != null ? ride.max_speed.toFixed(1) + ' km/h' : '—'}</div>
@@ -163,9 +184,10 @@ async function loadRide() {
   if (ride.weather_temp != null) {
     const ws = document.getElementById('weather-section');
     ws.style.display = '';
+    const emoji = weatherEmoji(ride.weather_condition);
     document.getElementById('weather-detail').innerHTML = `
       <div class="stat-card">
-        <div class="stat-value">${ride.weather_temp.toFixed(0)}°C</div>
+        <div class="stat-value">${emoji} ${ride.weather_temp.toFixed(0)}°C</div>
         <div class="stat-label">${ride.weather_condition || 'Temperature'}</div>
       </div>
       ${ride.weather_feels_like != null ? `
@@ -389,6 +411,38 @@ async function loadRide() {
       });
     } else {
       hideCard('roughnessChart');
+    }
+
+    // Gear mode breakdown — count samples per gear mode
+    const gearCounts = {};
+    samples.forEach(s => {
+      const mode = parseInt(s.gear_mode || s.gearMode) || 0;
+      if (mode > 0) gearCounts[mode] = (gearCounts[mode] || 0) + 1;
+    });
+    const gearModes = Object.keys(gearCounts).map(Number).sort();
+    if (gearModes.length > 0) {
+      const total = gearModes.reduce((sum, m) => sum + gearCounts[m], 0);
+      const gearSection = document.getElementById('gear-breakdown');
+      if (gearSection) {
+        gearSection.style.display = '';
+        gearSection.innerHTML = `
+          <h3>Gear Mode Breakdown</h3>
+          <div class="gear-bar" style="display:flex;border-radius:8px;overflow:hidden;height:32px;margin-bottom:1rem">
+            ${gearModes.map(m => {
+              const pct = (gearCounts[m] / total * 100).toFixed(1);
+              const color = GEAR_COLORS[m] || CHART_COLORS.overlay;
+              return `<div style="width:${pct}%;background:${color};display:flex;align-items:center;justify-content:center;font-size:0.75rem;color:#1e1e2e;font-weight:600" title="${gearName(m)}: ${pct}%">${pct > 8 ? gearName(m) : ''}</div>`;
+            }).join('')}
+          </div>
+          <div style="display:flex;gap:1.5rem;flex-wrap:wrap">
+            ${gearModes.map(m => {
+              const pct = (gearCounts[m] / total * 100).toFixed(1);
+              const color = GEAR_COLORS[m] || CHART_COLORS.overlay;
+              return `<span style="display:flex;align-items:center;gap:0.4rem"><span style="width:12px;height:12px;border-radius:50%;background:${color};display:inline-block"></span>${gearName(m)}: ${pct}%</span>`;
+            }).join('')}
+          </div>
+        `;
+      }
     }
 
     // GPX export button

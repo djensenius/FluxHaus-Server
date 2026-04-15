@@ -17,6 +17,34 @@ const gt3Logger = logger.child({ subsystem: 'gt3' });
 
 const router = Router();
 
+// ── Helpers ────────────────────────────────────────────────
+
+/** Haversine distance between two coordinates in km. */
+function haversineKm(
+  lat1: number, lon1: number, lat2: number, lon2: number,
+): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+    * Math.sin(dLon / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/** Compute total GPS distance from a GeoJSON-style coordinate array [[lon,lat,alt?],...]. */
+function gpsDistanceFromTrack(track: number[][]): number {
+  let total = 0;
+  for (let i = 1; i < track.length; i++) {
+    const [lon1, lat1] = track[i - 1];
+    const [lon2, lat2] = track[i];
+    if (lat1 && lon1 && lat2 && lon2) {
+      total += haversineKm(lat1, lon1, lat2, lon2);
+    }
+  }
+  return total;
+}
+
 // POST /gt3/telemetry — batch telemetry samples → InfluxDB
 router.post('/telemetry', async (req, res) => {
   try {
@@ -279,12 +307,28 @@ router.get('/rides', async (req, res) => {
         battery_used, start_battery, end_battery, gear_mode, health_data, metadata,
         weather_temp, weather_feels_like, weather_humidity, weather_wind_speed,
         weather_wind_direction, weather_condition, weather_uv_index, weather_pressure,
-        created_at
+        gps_track, created_at
        FROM gt3_rides WHERE user_sub = $1
        ORDER BY start_time DESC LIMIT $2 OFFSET $3`,
       [userSub, limit, offset],
     );
-    return res.json({ rides: result.rows, page, limit });
+    // Compute GPS distance for rides that have a GPS track
+    const rides = result.rows.map((r: Record<string, unknown>) => {
+      const track = r.gps_track as number[][] | null;
+      const gpsDistance = track && Array.isArray(track) && track.length > 1
+        ? gpsDistanceFromTrack(track) : null;
+      // Prefer GPS distance when the stored distance looks wrong (< 0.5 km)
+      const bestDistance = gpsDistance && (
+        !r.distance || (r.distance as number) < 0.5
+      ) ? gpsDistance : r.distance as number;
+      return {
+        ...r,
+        gps_track: undefined, // Don't send full track in list response
+        gps_distance: gpsDistance ? parseFloat(gpsDistance.toFixed(2)) : null,
+        distance: bestDistance != null ? parseFloat((bestDistance as number).toFixed(2)) : null,
+      };
+    });
+    return res.json({ rides, page, limit });
   } catch (err) {
     gt3Logger.error({ err }, 'Failed to list rides');
     return res.status(500).json({ error: 'Internal server error' });
@@ -302,7 +346,17 @@ router.get('/rides/:id', async (req, res) => {
       [req.params.id, userSub],
     );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
-    return res.json(result.rows[0]);
+    const ride = result.rows[0];
+    // Compute GPS distance from track if available
+    const track = ride.gps_track;
+    if (track && Array.isArray(track) && track.length > 1) {
+      ride.gps_distance = parseFloat(gpsDistanceFromTrack(track).toFixed(2));
+      // Replace bad scooter distance with GPS distance
+      if (!ride.distance || ride.distance < 0.5) {
+        ride.distance = ride.gps_distance;
+      }
+    }
+    return res.json(ride);
   } catch (err) {
     gt3Logger.error({ err }, 'Failed to get ride');
     return res.status(500).json({ error: 'Internal server error' });
