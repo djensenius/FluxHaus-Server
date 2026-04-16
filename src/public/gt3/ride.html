@@ -89,6 +89,14 @@
                 </label>
                 <input id="share-expiry-custom" type="datetime-local" style="display:none;" />
                 <button id="share-create" type="button">Create share link</button>
+                <div id="share-created" style="display:none;" class="share-created-box">
+                    <p style="margin: 0 0 0.4rem 0; font-weight: 600;">✅ Share link created</p>
+                    <p style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--subtext0, #a6adc8);">
+                        Copy this link now — it will not be shown again.
+                    </p>
+                    <input id="share-created-url" type="text" readonly class="share-url" />
+                    <button id="share-created-copy" type="button" style="margin-top: 0.4rem;">Copy link</button>
+                </div>
                 <h4 style="margin-top: 1.5rem;">Existing links</h4>
                 <div id="share-list"></div>
             </div>

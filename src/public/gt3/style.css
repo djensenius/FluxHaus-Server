@@ -548,3 +548,10 @@ textarea:focus {
   font-size: 0.85rem;
 }
 .share-row-actions .btn-revoke { background: #f38ba8; color: #1e1e2e; }
+.share-created-box {
+  margin-top: 1rem;
+  padding: 0.8rem;
+  border: 1px solid var(--surface1, #45475a);
+  border-radius: 6px;
+  background: var(--surface0, #313244);
+}

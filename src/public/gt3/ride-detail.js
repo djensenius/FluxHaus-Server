@@ -70,13 +70,14 @@ async function getCsrf() {
   }
 }
 
-async function apiFetch(path) {
+async function apiFetch(path, opts = {}) {
   const res = await fetch(API_BASE + path, { credentials: 'include' });
   if (res.status === 401) {
     if (IS_SHARE_MODE) return null;
     window.location.href = '/auth/login?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
     return null;
   }
+  if (res.status === 404 && opts.allow404) return null;
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
@@ -182,7 +183,7 @@ async function loadRide() {
   let shareInfo = null;
 
   if (IS_SHARE_MODE) {
-    const sharedResp = await apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}`);
+    const sharedResp = await apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}`, { allow404: true });
     if (!sharedResp || !sharedResp.ride) {
       document.querySelector('main').innerHTML =
         '<p class="error" style="margin:2rem">This share link is invalid, expired, or has been revoked.</p>';
@@ -191,7 +192,7 @@ async function loadRide() {
     ride = sharedResp.ride;
     shareInfo = sharedResp.share;
     effectiveRideId = ride.id;
-    samplesData = await apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}/samples`).catch(() => null);
+    samplesData = await apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}/samples`, { allow404: true }).catch(() => null);
 
     // Hide owner-only navigation ("Back to Dashboard") in share mode
     const nav = document.querySelector('header nav');
@@ -552,6 +553,8 @@ function initShareManager(rideId) {
   const listEl = document.getElementById('share-list');
 
   function openModal() {
+    const box = document.getElementById('share-created');
+    if (box) box.style.display = 'none';
     modal.style.display = 'flex';
     refreshShareList(rideId);
   }
@@ -578,7 +581,8 @@ function initShareManager(rideId) {
       } else {
         body.expiresIn = expirySelect.value;
       }
-      await apiMutate('POST', `/rides/${rideId}/shares`, body);
+      const created = await apiMutate('POST', `/rides/${rideId}/shares`, body);
+      showCreatedShare(created);
       await refreshShareList(rideId);
     } catch (err) {
       alert(`Failed to create share: ${err.message}`);
@@ -586,6 +590,30 @@ function initShareManager(rideId) {
       createBtn.disabled = false;
     }
   });
+}
+
+// Display the raw token/URL once after creation. The server does not store
+// the raw token, so this is the only opportunity to copy it.
+function showCreatedShare(created) {
+  if (!created || !created.token) return;
+  const box = document.getElementById('share-created');
+  const urlInput = document.getElementById('share-created-url');
+  if (!box || !urlInput) return;
+  const url = shareUrlFor(created.token);
+  urlInput.value = url;
+  box.style.display = '';
+  const copyBtn = document.getElementById('share-created-copy');
+  if (copyBtn) {
+    copyBtn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(url);
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1500);
+      } catch {
+        urlInput.select();
+      }
+    };
+  }
 }
 
 function shareUrlFor(token) {
@@ -607,37 +635,26 @@ async function refreshShareList(rideId) {
     for (const s of shares) {
       const row = document.createElement('div');
       row.className = 'share-row';
-      const url = shareUrlFor(s.token);
+      const created = s.createdAt ? `created ${formatDate(s.createdAt)}` : '';
       const expiry = s.expiresAt ? `expires ${formatDate(s.expiresAt)}` : 'never expires';
       const accessed = s.accessCount ? `${s.accessCount} view${s.accessCount === 1 ? '' : 's'}` : 'no views';
       row.innerHTML = `
         <div class="share-row-meta">
           <span class="share-status share-status-${s.status}">${s.status}</span>
           <span>${expiry}</span>
+          <span style="color: var(--subtext0);">· ${created}</span>
           <span style="color: var(--subtext0);">· ${accessed}</span>
         </div>
-        <input type="text" class="share-url" readonly value="${url}" />
         <div class="share-row-actions">
-          <button class="btn-copy">Copy link</button>
           ${s.status === 'active' ? '<button class="btn-revoke">Revoke</button>' : ''}
         </div>
       `;
-      const copyBtn = row.querySelector('.btn-copy');
-      copyBtn.addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(url);
-          copyBtn.textContent = 'Copied!';
-          setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1500);
-        } catch {
-          row.querySelector('.share-url').select();
-        }
-      });
       const revokeBtn = row.querySelector('.btn-revoke');
       if (revokeBtn) {
         revokeBtn.addEventListener('click', async () => {
           if (!confirm('Revoke this share link? Anyone with the link will lose access.')) return;
           try {
-            await apiMutate('DELETE', `/rides/${rideId}/shares/${encodeURIComponent(s.token)}`);
+            await apiMutate('DELETE', `/rides/${rideId}/shares/${encodeURIComponent(s.id)}`);
             await refreshShareList(rideId);
           } catch (err) {
             alert(`Failed to revoke: ${err.message}`);

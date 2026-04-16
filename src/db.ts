@@ -299,7 +299,8 @@ export async function initDatabase(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_gt3_samples_ride ON gt3_samples (ride_id, timestamp);
 
       CREATE TABLE IF NOT EXISTS gt3_ride_shares (
-        token TEXT PRIMARY KEY,
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        token_hash TEXT NOT NULL UNIQUE,
         ride_id UUID NOT NULL REFERENCES gt3_rides(id) ON DELETE CASCADE,
         user_sub TEXT NOT NULL,
         expires_at TIMESTAMPTZ,

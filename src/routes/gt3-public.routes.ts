@@ -1,35 +1,19 @@
 import { Router } from 'express';
+import { createHash } from 'crypto';
 import { getPool } from '../db';
 import logger from '../logger';
+import { gpsDistanceFromTrack } from '../gt3-geo';
 
 const gt3PublicLogger = logger.child({ subsystem: 'gt3-public' });
 
 const router = Router();
 
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180)
-    * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-function gpsDistanceFromTrack(track: number[][]): number {
-  let total = 0;
-  for (let i = 1; i < track.length; i += 1) {
-    const [lon1, lat1] = track[i - 1];
-    const [lon2, lat2] = track[i];
-    if (Number.isFinite(lat1) && Number.isFinite(lon1) && Number.isFinite(lat2) && Number.isFinite(lon2)) {
-      total += haversineKm(lat1, lon1, lat2, lon2);
-    }
-  }
-  return total;
+function hashShareToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
 }
 
 type ShareRow = {
-  token: string;
+  id: string;
   ride_id: string;
   expires_at: Date | null;
   revoked_at: Date | null;
@@ -38,28 +22,30 @@ type ShareRow = {
 async function resolveValidShare(token: string): Promise<ShareRow | null> {
   const pool = getPool();
   if (!pool) return null;
+  if (typeof token !== 'string' || token.length === 0) return null;
+  const tokenHash = hashShareToken(token);
   const result = await pool.query(
-    `SELECT token, ride_id, expires_at, revoked_at
+    `SELECT id, ride_id, expires_at, revoked_at
      FROM gt3_ride_shares
-     WHERE token = $1
+     WHERE token_hash = $1
        AND revoked_at IS NULL
        AND (expires_at IS NULL OR expires_at > NOW())`,
-    [token],
+    [tokenHash],
   );
   return result.rows[0] ?? null;
 }
 
-function bumpAccess(token: string): void {
+function bumpAccess(shareId: string): void {
   const pool = getPool();
   if (!pool) return;
   pool
     .query(
       `UPDATE gt3_ride_shares
        SET access_count = access_count + 1, last_accessed_at = NOW()
-       WHERE token = $1`,
-      [token],
+       WHERE id = $1`,
+      [shareId],
     )
-    .catch((err: unknown) => gt3PublicLogger.warn({ err, token }, 'Failed to bump share access stats'));
+    .catch((err: unknown) => gt3PublicLogger.warn({ err, shareId }, 'Failed to bump share access stats'));
 }
 
 // GET /gt3/shared/:token — public ride detail
@@ -91,12 +77,11 @@ router.get('/shared/:token', async (req, res) => {
       }
     }
 
-    bumpAccess(share.token);
+    bumpAccess(share.id);
     res.setHeader('Cache-Control', 'private, max-age=60');
     return res.json({
       ride,
       share: {
-        token: share.token,
         expiresAt: share.expires_at,
       },
     });
@@ -122,7 +107,7 @@ router.get('/shared/:token/geojson', async (req, res) => {
     const row = result.rows[0];
     if (!row.gps_track) return res.status(404).json({ error: 'No GPS data for this ride' });
 
-    bumpAccess(share.token);
+    bumpAccess(share.id);
     res.setHeader('Cache-Control', 'private, max-age=60');
     return res.json({
       type: 'Feature',
@@ -181,7 +166,7 @@ router.get('/shared/:token/samples', async (req, res) => {
       heart_rate: row.heart_rate,
     }));
 
-    bumpAccess(share.token);
+    bumpAccess(share.id);
     res.setHeader('Cache-Control', 'private, max-age=60');
     return res.json({ samples, rideId: share.ride_id, source: 'postgres' });
   } catch (err) {
