@@ -14,9 +14,11 @@
         <h1>🛴 GT3 Pro Dashboard</h1>
         <nav>
             <a href="/gt3/">← Back to Dashboard</a>
+            <button id="share-btn" type="button" style="display:none; margin-left: 1rem;">🔗 Share</button>
         </nav>
     </header>
     <main>
+        <div id="share-banner" class="share-banner" style="display:none;"></div>
         <section id="ride-info" class="stats-grid">
             <div class="stat-card"><div class="loading"><div class="spinner"></div></div></div>
         </section>
@@ -65,6 +67,42 @@
             <button id="gpx-export" style="display:none;">📥 Export GPX</button>
         </section>
     </main>
+
+    <!-- Share modal (owner only) -->
+    <div id="share-modal" class="share-modal" style="display:none;">
+        <div class="share-modal-content">
+            <div class="share-modal-header">
+                <h3>Share this ride</h3>
+                <button id="share-close" type="button" aria-label="Close">✕</button>
+            </div>
+            <div class="share-modal-body">
+                <label>
+                    Link expires
+                    <select id="share-expiry">
+                        <option value="1h">In 1 hour</option>
+                        <option value="24h" selected>In 24 hours</option>
+                        <option value="7d">In 7 days</option>
+                        <option value="30d">In 30 days</option>
+                        <option value="custom">Custom date/time…</option>
+                        <option value="never">Never</option>
+                    </select>
+                </label>
+                <input id="share-expiry-custom" type="datetime-local" style="display:none;" />
+                <button id="share-create" type="button">Create share link</button>
+                <div id="share-created" style="display:none;" class="share-created-box">
+                    <p style="margin: 0 0 0.4rem 0; font-weight: 600;">✅ Share link created</p>
+                    <p style="margin: 0 0 0.5rem 0; font-size: 0.85rem; color: var(--subtext0, #a6adc8);">
+                        Copy this link now — it will not be shown again.
+                    </p>
+                    <input id="share-created-url" type="text" readonly class="share-url" />
+                    <button id="share-created-copy" type="button" style="margin-top: 0.4rem;">Copy link</button>
+                </div>
+                <h4 style="margin-top: 1.5rem;">Existing links</h4>
+                <div id="share-list"></div>
+            </div>
+        </div>
+    </div>
+
     <script src="/gt3/ride-detail.js"></script>
 </body>
 </html>

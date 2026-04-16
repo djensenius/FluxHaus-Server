@@ -38,6 +38,7 @@ import createCalendarSettingsRouter from './routes/calendar-settings.routes';
 import memoryRouter from './routes/memory.routes';
 import conversationSearchRouter from './routes/conversation-search.routes';
 import gt3Router from './routes/gt3.routes';
+import gt3PublicRouter from './routes/gt3-public.routes';
 import createMcpServer from './mcp-server';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import { loadAndScheduleAll } from './scheduler';
@@ -191,6 +192,9 @@ export async function createServer(): Promise<Express> {
 
   // Serve static files (HTML/JS/CSS dashboards) — no auth required
   app.use('/gt3', express.static(path.join(__dirname, 'public', 'gt3')));
+
+  // Public GT3 share endpoints (no auth) — must be mounted before authMiddleware
+  app.use('/gt3', gt3PublicRouter);
 
   // OIDC auth routes (login, callback, logout) — unauthenticated
   app.use(createAuthRouter());

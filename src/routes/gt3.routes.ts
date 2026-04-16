@@ -1,10 +1,12 @@
 import { Router } from 'express';
+import { createHash, randomBytes } from 'crypto';
 import { getPool } from '../db';
 import { writePoint } from '../influx';
 import { InfluxDBClient } from '../clients/influxdb';
 import logger from '../logger';
 import { sendGT3PushToStart } from '../apns';
 import { getDeviceTokensByUserAndBundle } from '../push-token-store';
+import { gpsDistanceFromTrack } from '../gt3-geo';
 
 const influxQuery = new InfluxDBClient({
   url: (process.env.INFLUXDB_URL || '').trim(),
@@ -16,32 +18,6 @@ const influxQuery = new InfluxDBClient({
 const gt3Logger = logger.child({ subsystem: 'gt3' });
 
 const router = Router();
-
-// ── Helpers ────────────────────────────────────────────────
-
-/** Haversine distance between two coordinates in km. */
-function haversineKm(lat1: number, lon1: number, lat2: number, lon2: number): number {
-  const R = 6371;
-  const dLat = ((lat2 - lat1) * Math.PI) / 180;
-  const dLon = ((lon2 - lon1) * Math.PI) / 180;
-  const a = Math.sin(dLat / 2) ** 2
-    + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180)
-    * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-/** Compute total GPS distance from a GeoJSON-style coordinate array [[lon,lat,alt?],...]. */
-function gpsDistanceFromTrack(track: number[][]): number {
-  let total = 0;
-  for (let i = 1; i < track.length; i += 1) {
-    const [lon1, lat1] = track[i - 1];
-    const [lon2, lat2] = track[i];
-    if (Number.isFinite(lat1) && Number.isFinite(lon1) && Number.isFinite(lat2) && Number.isFinite(lon2)) {
-      total += haversineKm(lat1, lon1, lat2, lon2);
-    }
-  }
-  return total;
-}
 
 // POST /gt3/telemetry — batch telemetry samples → InfluxDB
 router.post('/telemetry', async (req, res) => {
@@ -580,6 +556,184 @@ router.post('/activity/start', async (req, res) => {
     return res.json({ success: sent > 0, sent, total: tokens.length });
   } catch (err) {
     gt3Logger.error({ err, userSub }, 'Failed to send GT3 push-to-start');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── Share links ────────────────────────────────────────────
+
+const EXPIRES_IN_PRESETS: Record<string, number> = {
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+};
+
+function generateShareToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+function hashShareToken(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
+function shareStatus(row: { expires_at: Date | null; revoked_at: Date | null }): 'active' | 'expired' | 'revoked' {
+  if (row.revoked_at) return 'revoked';
+  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) return 'expired';
+  return 'active';
+}
+
+/**
+ * Resolve the expiry argument into a Date or null.
+ * Requires exactly one of { expiresIn, expiresAt } to be provided.
+ * Returns { ok: false, error } on invalid input.
+ */
+function resolveExpiresAt(
+  expiresIn: unknown,
+  expiresAt: unknown,
+): { ok: true; value: Date | null } | { ok: false; error: string } {
+  const hasIn = expiresIn !== undefined && expiresIn !== null && expiresIn !== '';
+  const hasAt = expiresAt !== undefined && expiresAt !== null && expiresAt !== '';
+
+  if (hasIn && hasAt) {
+    return { ok: false, error: 'Provide exactly one of expiresIn or expiresAt' };
+  }
+  if (!hasIn && !hasAt) {
+    return { ok: false, error: 'Provide expiresIn (including "never") or expiresAt' };
+  }
+  if (hasIn) {
+    if (expiresIn === 'never') return { ok: true, value: null };
+    if (typeof expiresIn === 'string' && EXPIRES_IN_PRESETS[expiresIn] != null) {
+      return { ok: true, value: new Date(Date.now() + EXPIRES_IN_PRESETS[expiresIn]) };
+    }
+    return { ok: false, error: 'Invalid expiresIn' };
+  }
+  if (typeof expiresAt !== 'string') {
+    return { ok: false, error: 'Invalid expiresAt' };
+  }
+  const parsed = new Date(expiresAt);
+  if (Number.isNaN(parsed.getTime())) return { ok: false, error: 'Invalid expiresAt' };
+  if (parsed.getTime() <= Date.now()) return { ok: false, error: 'expiresAt must be in the future' };
+  return { ok: true, value: parsed };
+}
+
+// POST /gt3/rides/:id/shares — create a share link for a ride
+router.post('/rides/:id/shares', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { expiresIn, expiresAt } = req.body ?? {};
+  const expiry = resolveExpiresAt(expiresIn, expiresAt);
+  if (!expiry.ok) return res.status(400).json({ error: expiry.error });
+
+  try {
+    const rideCheck = await pool.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2',
+      [req.params.id, userSub],
+    );
+    if (rideCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    const maxAttempts = 5;
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const token = generateShareToken();
+      const tokenHash = hashShareToken(token);
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const result = await pool.query(
+          `INSERT INTO gt3_ride_shares (token_hash, ride_id, user_sub, expires_at)
+           VALUES ($1, $2, $3, $4)
+           RETURNING id, expires_at, created_at`,
+          [tokenHash, req.params.id, userSub, expiry.value],
+        );
+        const row = result.rows[0];
+        return res.json({
+          id: row.id,
+          token,
+          expiresAt: row.expires_at,
+          createdAt: row.created_at,
+          status: 'active',
+        });
+      } catch (err) {
+        lastErr = err;
+        const code = (err as { code?: string })?.code;
+        if (code !== '23505') throw err;
+        // token_hash collision — loop and regenerate
+      }
+    }
+
+    gt3Logger.error({ err: lastErr }, 'Failed to create ride share after repeated token collisions');
+    return res.status(500).json({ error: 'Internal server error' });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to create ride share');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /gt3/rides/:id/shares — list all share links for a ride
+router.get('/rides/:id/shares', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const rideCheck = await pool.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2',
+      [req.params.id, userSub],
+    );
+    if (rideCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    const result = await pool.query(
+      `SELECT id, expires_at, revoked_at, created_at, last_accessed_at, access_count
+       FROM gt3_ride_shares
+       WHERE ride_id = $1 AND user_sub = $2
+       ORDER BY created_at DESC`,
+      [req.params.id, userSub],
+    );
+    const shares = result.rows.map((row: Record<string, unknown>) => ({
+      id: row.id,
+      expiresAt: row.expires_at,
+      revokedAt: row.revoked_at,
+      createdAt: row.created_at,
+      lastAccessedAt: row.last_accessed_at,
+      accessCount: row.access_count,
+      status: shareStatus(row as { expires_at: Date | null; revoked_at: Date | null }),
+    }));
+    return res.json({ shares });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to list ride shares');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /gt3/rides/:id/shares/:shareId — revoke a share link
+router.delete('/rides/:id/shares/:shareId', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const result = await pool.query(
+      `UPDATE gt3_ride_shares
+       SET revoked_at = NOW()
+       WHERE id = $1 AND ride_id = $2 AND user_sub = $3 AND revoked_at IS NULL
+       RETURNING id`,
+      [req.params.shareId, req.params.id, userSub],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Share not found' });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to revoke ride share');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
