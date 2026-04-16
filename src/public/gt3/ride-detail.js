@@ -52,13 +52,51 @@ function weatherEmoji(condition) {
 
 // ── Helpers ────────────────────────────────────────────────
 
+// Detect share-mode (public, no-auth access) via ?share=<token>
+const SHARE_TOKEN = new URLSearchParams(window.location.search).get('share');
+const IS_SHARE_MODE = !!SHARE_TOKEN;
+
+let csrfTokenCache = null;
+async function getCsrf() {
+  if (csrfTokenCache) return csrfTokenCache;
+  try {
+    const res = await fetch('/auth/csrf-token', { credentials: 'include' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    csrfTokenCache = data.csrfToken;
+    return csrfTokenCache;
+  } catch {
+    return null;
+  }
+}
+
 async function apiFetch(path) {
   const res = await fetch(API_BASE + path, { credentials: 'include' });
   if (res.status === 401) {
+    if (IS_SHARE_MODE) return null;
     window.location.href = '/auth/login?redirect=' + encodeURIComponent(window.location.pathname + window.location.search);
     return null;
   }
   if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
+async function apiMutate(method, path, body) {
+  const csrf = await getCsrf();
+  const res = await fetch(API_BASE + path, {
+    method,
+    credentials: 'include',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(csrf ? { 'X-CSRF-Token': csrf } : {}),
+    },
+    body: body != null ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`API error: ${res.status} ${text}`);
+  }
+  if (res.status === 204) return null;
   return res.json();
 }
 
@@ -136,17 +174,40 @@ ${points.join('\n')}
 async function loadRide() {
   const params = new URLSearchParams(window.location.search);
   const rideId = params.get('id');
-  if (!rideId) {
-    document.querySelector('main').innerHTML =
-      '<p class="error" style="margin:2rem">No ride ID specified. <a href="/gt3/">Return to dashboard</a></p>';
-    return;
-  }
 
-  const [ride, samplesData] = await Promise.all([
-    apiFetch(`/rides/${rideId}`),
-    apiFetch(`/rides/${rideId}/samples`).catch(() => null),
-  ]);
-  if (!ride) return;
+  // Share-mode: fetch from /shared/:token endpoints. Ride id is embedded in response.
+  let ride;
+  let samplesData;
+  let effectiveRideId = rideId;
+  let shareInfo = null;
+
+  if (IS_SHARE_MODE) {
+    const sharedResp = await apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}`);
+    if (!sharedResp || !sharedResp.ride) {
+      document.querySelector('main').innerHTML =
+        '<p class="error" style="margin:2rem">This share link is invalid, expired, or has been revoked.</p>';
+      return;
+    }
+    ride = sharedResp.ride;
+    shareInfo = sharedResp.share;
+    effectiveRideId = ride.id;
+    samplesData = await apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}/samples`).catch(() => null);
+
+    // Hide owner-only navigation ("Back to Dashboard") in share mode
+    const nav = document.querySelector('header nav');
+    if (nav) nav.innerHTML = '<span style="color: var(--subtext0);">Shared ride</span>';
+  } else {
+    if (!rideId) {
+      document.querySelector('main').innerHTML =
+        '<p class="error" style="margin:2rem">No ride ID specified. <a href="/gt3/">Return to dashboard</a></p>';
+      return;
+    }
+    [ride, samplesData] = await Promise.all([
+      apiFetch(`/rides/${rideId}`),
+      apiFetch(`/rides/${rideId}/samples`).catch(() => null),
+    ]);
+    if (!ride) return;
+  }
 
   document.title = `Ride ${formatDate(ride.start_time)} — GT3 Pro`;
 
@@ -449,7 +510,7 @@ async function loadRide() {
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `gt3-ride-${rideId.slice(0, 8)}.gpx`;
+        a.download = `gt3-ride-${(effectiveRideId || '').slice(0, 8)}.gpx`;
         a.click();
         URL.revokeObjectURL(url);
       };
@@ -458,6 +519,135 @@ async function loadRide() {
     document.querySelectorAll('.charts-grid .card').forEach(card => {
       card.innerHTML = '<p style="color: var(--subtext0); text-align: center; padding: 2rem;">No telemetry data available for this ride</p>';
     });
+  }
+
+  // ── Share banner / Share management UI ──────────────────
+  if (IS_SHARE_MODE) {
+    const banner = document.getElementById('share-banner');
+    if (banner) {
+      const expiryText = shareInfo && shareInfo.expiresAt
+        ? ` · link expires ${formatDate(shareInfo.expiresAt)}`
+        : '';
+      banner.textContent = `🔗 You are viewing a shared ride${expiryText}.`;
+      banner.style.display = '';
+    }
+  } else {
+    initShareManager(effectiveRideId);
+  }
+}
+
+// ── Share management (owner view) ──────────────────────────
+
+function initShareManager(rideId) {
+  const btn = document.getElementById('share-btn');
+  const modal = document.getElementById('share-modal');
+  if (!btn || !modal) return;
+
+  btn.style.display = '';
+
+  const closeBtn = document.getElementById('share-close');
+  const createBtn = document.getElementById('share-create');
+  const expirySelect = document.getElementById('share-expiry');
+  const customInput = document.getElementById('share-expiry-custom');
+  const listEl = document.getElementById('share-list');
+
+  function openModal() {
+    modal.style.display = 'flex';
+    refreshShareList(rideId);
+  }
+  function closeModal() { modal.style.display = 'none'; }
+
+  btn.addEventListener('click', openModal);
+  closeBtn.addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+  expirySelect.addEventListener('change', () => {
+    customInput.style.display = expirySelect.value === 'custom' ? '' : 'none';
+  });
+
+  createBtn.addEventListener('click', async () => {
+    createBtn.disabled = true;
+    try {
+      const body = {};
+      if (expirySelect.value === 'custom') {
+        if (!customInput.value) {
+          alert('Please pick a custom expiry date/time.');
+          return;
+        }
+        body.expiresAt = new Date(customInput.value).toISOString();
+      } else {
+        body.expiresIn = expirySelect.value;
+      }
+      await apiMutate('POST', `/rides/${rideId}/shares`, body);
+      await refreshShareList(rideId);
+    } catch (err) {
+      alert(`Failed to create share: ${err.message}`);
+    } finally {
+      createBtn.disabled = false;
+    }
+  });
+}
+
+function shareUrlFor(token) {
+  return `${window.location.origin}/gt3/ride.html?share=${encodeURIComponent(token)}`;
+}
+
+async function refreshShareList(rideId) {
+  const listEl = document.getElementById('share-list');
+  if (!listEl) return;
+  listEl.innerHTML = '<p style="color: var(--subtext0);">Loading…</p>';
+  try {
+    const data = await apiFetch(`/rides/${rideId}/shares`);
+    const shares = (data && data.shares) || [];
+    if (shares.length === 0) {
+      listEl.innerHTML = '<p style="color: var(--subtext0);">No share links yet.</p>';
+      return;
+    }
+    listEl.innerHTML = '';
+    for (const s of shares) {
+      const row = document.createElement('div');
+      row.className = 'share-row';
+      const url = shareUrlFor(s.token);
+      const expiry = s.expiresAt ? `expires ${formatDate(s.expiresAt)}` : 'never expires';
+      const accessed = s.accessCount ? `${s.accessCount} view${s.accessCount === 1 ? '' : 's'}` : 'no views';
+      row.innerHTML = `
+        <div class="share-row-meta">
+          <span class="share-status share-status-${s.status}">${s.status}</span>
+          <span>${expiry}</span>
+          <span style="color: var(--subtext0);">· ${accessed}</span>
+        </div>
+        <input type="text" class="share-url" readonly value="${url}" />
+        <div class="share-row-actions">
+          <button class="btn-copy">Copy link</button>
+          ${s.status === 'active' ? '<button class="btn-revoke">Revoke</button>' : ''}
+        </div>
+      `;
+      const copyBtn = row.querySelector('.btn-copy');
+      copyBtn.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(url);
+          copyBtn.textContent = 'Copied!';
+          setTimeout(() => { copyBtn.textContent = 'Copy link'; }, 1500);
+        } catch {
+          row.querySelector('.share-url').select();
+        }
+      });
+      const revokeBtn = row.querySelector('.btn-revoke');
+      if (revokeBtn) {
+        revokeBtn.addEventListener('click', async () => {
+          if (!confirm('Revoke this share link? Anyone with the link will lose access.')) return;
+          try {
+            await apiMutate('DELETE', `/rides/${rideId}/shares/${encodeURIComponent(s.token)}`);
+            await refreshShareList(rideId);
+          } catch (err) {
+            alert(`Failed to revoke: ${err.message}`);
+          }
+        });
+      }
+      listEl.appendChild(row);
+    }
+  } catch (err) {
+    listEl.innerHTML = `<p class="error">Failed to load shares: ${err.message}</p>`;
   }
 }
 

@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { randomBytes } from 'crypto';
 import { getPool } from '../db';
 import { writePoint } from '../influx';
 import { InfluxDBClient } from '../clients/influxdb';
@@ -580,6 +581,145 @@ router.post('/activity/start', async (req, res) => {
     return res.json({ success: sent > 0, sent, total: tokens.length });
   } catch (err) {
     gt3Logger.error({ err, userSub }, 'Failed to send GT3 push-to-start');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ── Share links ────────────────────────────────────────────
+
+const EXPIRES_IN_PRESETS: Record<string, number> = {
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+};
+
+function generateShareToken(): string {
+  return randomBytes(32).toString('base64url');
+}
+
+function shareStatus(row: { expires_at: Date | null; revoked_at: Date | null }): 'active' | 'expired' | 'revoked' {
+  if (row.revoked_at) return 'revoked';
+  if (row.expires_at && new Date(row.expires_at).getTime() <= Date.now()) return 'expired';
+  return 'active';
+}
+
+// POST /gt3/rides/:id/shares — create a share link for a ride
+router.post('/rides/:id/shares', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  const { expiresIn, expiresAt } = req.body ?? {};
+
+  let expiresAtDate: Date | null = null;
+  if (expiresIn === 'never' || (expiresIn == null && expiresAt == null)) {
+    expiresAtDate = null;
+  } else if (typeof expiresIn === 'string' && EXPIRES_IN_PRESETS[expiresIn] != null) {
+    expiresAtDate = new Date(Date.now() + EXPIRES_IN_PRESETS[expiresIn]);
+  } else if (typeof expiresAt === 'string') {
+    const parsed = new Date(expiresAt);
+    if (Number.isNaN(parsed.getTime())) {
+      return res.status(400).json({ error: 'Invalid expiresAt' });
+    }
+    if (parsed.getTime() <= Date.now()) {
+      return res.status(400).json({ error: 'expiresAt must be in the future' });
+    }
+    expiresAtDate = parsed;
+  } else {
+    return res.status(400).json({ error: 'Invalid expiresIn / expiresAt' });
+  }
+
+  try {
+    const rideCheck = await pool.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2',
+      [req.params.id, userSub],
+    );
+    if (rideCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    const token = generateShareToken();
+    const result = await pool.query(
+      `INSERT INTO gt3_ride_shares (token, ride_id, user_sub, expires_at)
+       VALUES ($1, $2, $3, $4)
+       RETURNING token, expires_at, created_at`,
+      [token, req.params.id, userSub, expiresAtDate],
+    );
+    const row = result.rows[0];
+    return res.json({
+      token: row.token,
+      expiresAt: row.expires_at,
+      createdAt: row.created_at,
+      status: 'active',
+    });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to create ride share');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /gt3/rides/:id/shares — list all share links for a ride
+router.get('/rides/:id/shares', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const rideCheck = await pool.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2',
+      [req.params.id, userSub],
+    );
+    if (rideCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    const result = await pool.query(
+      `SELECT token, expires_at, revoked_at, created_at, last_accessed_at, access_count
+       FROM gt3_ride_shares
+       WHERE ride_id = $1 AND user_sub = $2
+       ORDER BY created_at DESC`,
+      [req.params.id, userSub],
+    );
+    const shares = result.rows.map((row: Record<string, unknown>) => ({
+      token: row.token,
+      expiresAt: row.expires_at,
+      revokedAt: row.revoked_at,
+      createdAt: row.created_at,
+      lastAccessedAt: row.last_accessed_at,
+      accessCount: row.access_count,
+      status: shareStatus(row as { expires_at: Date | null; revoked_at: Date | null }),
+    }));
+    return res.json({ shares });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to list ride shares');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// DELETE /gt3/rides/:id/shares/:token — revoke a share link
+router.delete('/rides/:id/shares/:token', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const result = await pool.query(
+      `UPDATE gt3_ride_shares
+       SET revoked_at = NOW()
+       WHERE token = $1 AND ride_id = $2 AND user_sub = $3 AND revoked_at IS NULL
+       RETURNING token`,
+      [req.params.token, req.params.id, userSub],
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Share not found' });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to revoke ride share');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });

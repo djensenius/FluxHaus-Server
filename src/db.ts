@@ -297,6 +297,19 @@ export async function initDatabase(): Promise<void> {
         heart_rate INTEGER
       );
       CREATE INDEX IF NOT EXISTS idx_gt3_samples_ride ON gt3_samples (ride_id, timestamp);
+
+      CREATE TABLE IF NOT EXISTS gt3_ride_shares (
+        token TEXT PRIMARY KEY,
+        ride_id UUID NOT NULL REFERENCES gt3_rides(id) ON DELETE CASCADE,
+        user_sub TEXT NOT NULL,
+        expires_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_accessed_at TIMESTAMPTZ,
+        access_count INTEGER NOT NULL DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_gt3_ride_shares_ride ON gt3_ride_shares (ride_id);
+      CREATE INDEX IF NOT EXISTS idx_gt3_ride_shares_user ON gt3_ride_shares (user_sub, created_at DESC);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {

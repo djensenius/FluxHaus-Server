@@ -436,3 +436,115 @@ textarea:focus {
     height: 280px;
   }
 }
+
+/* ── Share link UI ─────────────────────────────────────── */
+.share-banner {
+  background: var(--surface1, #313244);
+  color: var(--text, #cdd6f4);
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin: 0 0 1rem 0;
+  border-left: 3px solid #89dceb;
+}
+
+#share-btn {
+  background: #89dceb;
+  color: #1e1e2e;
+  border: none;
+  border-radius: 6px;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  font-weight: 600;
+}
+#share-btn:hover { filter: brightness(0.9); }
+
+.share-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.share-modal-content {
+  background: var(--base, #1e1e2e);
+  color: var(--text, #cdd6f4);
+  border-radius: 10px;
+  max-width: 600px;
+  width: 92%;
+  max-height: 85vh;
+  overflow-y: auto;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+.share-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid var(--surface0, #313244);
+}
+.share-modal-header h3 { margin: 0; }
+.share-modal-header button {
+  background: transparent;
+  color: var(--text, #cdd6f4);
+  border: none;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+.share-modal-body { padding: 1rem 1.25rem; display: flex; flex-direction: column; gap: 0.6rem; }
+.share-modal-body label { display: flex; flex-direction: column; gap: 0.3rem; }
+.share-modal-body select,
+.share-modal-body input[type="datetime-local"],
+.share-modal-body input[type="text"] {
+  background: var(--surface0, #313244);
+  color: var(--text, #cdd6f4);
+  border: 1px solid var(--surface1, #45475a);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.95rem;
+}
+#share-create {
+  background: #a6e3a1;
+  color: #1e1e2e;
+  border: none;
+  border-radius: 6px;
+  padding: 0.5rem 1rem;
+  cursor: pointer;
+  font-weight: 600;
+  margin-top: 0.3rem;
+}
+#share-create:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.share-row {
+  border: 1px solid var(--surface1, #45475a);
+  border-radius: 8px;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.share-row-meta { display: flex; flex-wrap: wrap; gap: 0.6rem; align-items: center; font-size: 0.88rem; }
+.share-status {
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+.share-status-active { background: #a6e3a1; color: #1e1e2e; }
+.share-status-expired { background: #f9e2af; color: #1e1e2e; }
+.share-status-revoked { background: #f38ba8; color: #1e1e2e; }
+.share-url { width: 100%; font-family: monospace; font-size: 0.8rem; }
+.share-row-actions { display: flex; gap: 0.5rem; }
+.share-row-actions button {
+  background: var(--surface1, #45475a);
+  color: var(--text, #cdd6f4);
+  border: none;
+  border-radius: 6px;
+  padding: 0.3rem 0.7rem;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.share-row-actions .btn-revoke { background: #f38ba8; color: #1e1e2e; }
