@@ -647,7 +647,11 @@ async function refreshShareList(rideId) {
       listEl.appendChild(row);
     }
   } catch (err) {
-    listEl.innerHTML = `<p class="error">Failed to load shares: ${err.message}</p>`;
+    listEl.innerHTML = '';
+    const p = document.createElement('p');
+    p.className = 'error';
+    p.textContent = `Failed to load shares: ${err.message}`;
+    listEl.appendChild(p);
   }
 }
 
