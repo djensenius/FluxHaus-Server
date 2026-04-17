@@ -1,4 +1,6 @@
-import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from '../live-activity-hooks';
+import {
+  onDishwasherStatusChange, onMieleStatusChange, onPushToStartTokenRegistered, onRobotStatusChange,
+} from '../live-activity-hooks';
 import * as apns from '../apns';
 import * as apnsChannels from '../apns-channels';
 import * as laSubs from '../la-subscriptions';
@@ -72,7 +74,7 @@ describe('live-activity-hooks (consolidated)', () => {
       const [channelId, contentState, event] = mockMultiDeviceBroadcast.mock.calls[0];
       expect(channelId).toBe('ch-consolidated');
       expect(event).toBe('update');
-      expect(contentState.devices.length).toBe(1);
+      expect(contentState.devices).toHaveLength(1);
       expect(contentState.devices[0].name).toBe('Washer');
       expect(contentState.devices[0].running).toBe(true);
     });
@@ -156,6 +158,99 @@ describe('live-activity-hooks (consolidated)', () => {
         'Your washer has finished.',
         'appliance_done',
       );
+    });
+  });
+
+  describe('broadcast serialization', () => {
+    it('does not throw when overlapping broadcastConsolidated calls are serialized', async () => {
+      // Advance well past any throttle from prior tests (module state persists)
+      jest.setSystemTime(Date.now() + 300_000);
+      mockMultiDeviceBroadcast.mockResolvedValue(true);
+      mockGetChannelId.mockResolvedValue('ch');
+      mockGetAllActivityTokens.mockResolvedValue([]);
+
+      // Fire two status changes concurrently — they should be serialized, not crash
+      const p1 = onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
+      });
+      const p2 = onMieleStatusChange('dryer', {
+        name: 'Tumble dryer', timeRunning: 10, timeRemaining: 40, inUse: true,
+      });
+
+      // Both should resolve without errors
+      await expect(Promise.all([p1, p2])).resolves.not.toThrow();
+
+      // At least one broadcast should have been sent
+      expect(mockMultiDeviceBroadcast).toHaveBeenCalled();
+    });
+  });
+
+  describe('catch-up push-to-start cooldown', () => {
+    it('sends catch-up push-to-start when devices are running', async () => {
+      mockGetChannelId.mockResolvedValue('ch');
+      mockGetSubscribedTokens.mockResolvedValue([{ pushToStartToken: 'tok-a' }]);
+      mockGetAllApnsTokens.mockResolvedValue([]);
+
+      // Initialize all device types by sending idle statuses, then start one
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
+      });
+      await onMieleStatusChange('dryer', {
+        name: 'Tumble dryer', timeRunning: 0, timeRemaining: 0, inUse: false,
+      });
+      await onDishwasherStatusChange({ operationState: 'Inactive', doorState: 'Closed' });
+      await onRobotStatusChange('broombot', { running: false });
+      await onRobotStatusChange('mopbot', { running: false });
+      // Now start washer
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
+      });
+
+      // Advance past cooldown
+      jest.setSystemTime(Date.now() + 60_000);
+      mockMultiPushToStart.mockClear();
+
+      await onPushToStartTokenRegistered('new-token');
+
+      expect(mockMultiPushToStart).toHaveBeenCalledTimes(1);
+      expect(mockMultiPushToStart).toHaveBeenCalledWith(
+        [{ pushToStartToken: 'new-token' }],
+        expect.objectContaining({ devices: expect.any(Array) }),
+        expect.anything(),
+      );
+    });
+
+    it('skips catch-up for same token within cooldown window', async () => {
+      mockGetChannelId.mockResolvedValue('ch');
+      mockGetSubscribedTokens.mockResolvedValue([{ pushToStartToken: 'tok-a' }]);
+      mockGetAllApnsTokens.mockResolvedValue([]);
+
+      // Initialize all types
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
+      });
+      await onMieleStatusChange('dryer', {
+        name: 'Tumble dryer', timeRunning: 0, timeRemaining: 0, inUse: false,
+      });
+      await onDishwasherStatusChange({ operationState: 'Inactive', doorState: 'Closed' });
+      await onRobotStatusChange('broombot', { running: false });
+      await onRobotStatusChange('mopbot', { running: false });
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
+      });
+
+      // Advance past cooldown, send first catch-up
+      jest.setSystemTime(Date.now() + 60_000);
+      await onPushToStartTokenRegistered('same-token');
+      mockMultiPushToStart.mockClear();
+
+      // Same token immediately again — should be skipped
+      await onPushToStartTokenRegistered('same-token');
+      expect(mockMultiPushToStart).not.toHaveBeenCalled();
+
+      // Different token — should work
+      await onPushToStartTokenRegistered('different-token');
+      expect(mockMultiPushToStart).toHaveBeenCalledTimes(1);
     });
   });
 });
