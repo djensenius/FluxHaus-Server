@@ -27,11 +27,17 @@ let lastConsolidatedBroadcast = 0;
 const CONSOLIDATED_THROTTLE_MS = 60_000;
 
 // Timestamp of the last push-to-start sent (for catch-up gating)
-let lastPushToStartSentAt = 0;
 const PUSH_TO_START_COOLDOWN_MS = 30_000;
+
+// Per-token cooldown tracking for catch-up push-to-start
+const lastPushToStartByToken = new Map<string, number>();
 
 // Serialize broadcastConsolidated to prevent overlapping calls
 let broadcastQueue: Promise<void> = Promise.resolve();
+
+// Timestamp when the module was loaded — used as fallback for allInitialized
+const moduleLoadedAt = Date.now();
+const INITIALIZATION_TIMEOUT_MS = 60_000;
 
 // Periodic keep-alive interval to prevent stale activities
 let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
@@ -186,15 +192,19 @@ function startKeepAlive(): void {
  */
 async function broadcastConsolidated(force = false): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-use-before-define
-  broadcastQueue = broadcastQueue.then(() => broadcastConsolidatedImpl(force)).catch(() => {});
+  broadcastQueue = broadcastQueue.then(() => broadcastConsolidatedImpl(force)).catch((err) => {
+    laLogger.error({ err }, 'broadcastConsolidated failed');
+  });
   await broadcastQueue;
 }
 
 async function broadcastConsolidatedImpl(force = false): Promise<void> {
-  // Don't send push-to-start until all device types have been initialized.
-  // This prevents false starts on server restart when polling hydrates state.
-  const allInitialized = ['washer', 'dryer', 'dishwasher', 'broombot', 'mopbot']
+  // Don't send push-to-start until all device types have been initialized
+  // (or timeout elapsed), to prevent false starts on server restart.
+  const allTypesInitialized = ['washer', 'dryer', 'dishwasher', 'broombot', 'mopbot']
     .every((dt) => initializedDeviceTypes.has(dt));
+  const initTimedOut = Date.now() - moduleLoadedAt > INITIALIZATION_TIMEOUT_MS;
+  const allInitialized = allTypesInitialized || initTimedOut;
 
   const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
   const hasRunning = runningDevices.length > 0;
@@ -219,7 +229,6 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
         );
         // channelId is optional — push-to-start works without it
         await multiDevicePushToStartAll(subscribedTokens, contentState, channelId ?? undefined);
-        lastPushToStartSentAt = Date.now();
       }
       // Also send silent push to wake the app for local reconcile
       const apnsTokens = await getAllApnsTokens();
@@ -398,9 +407,10 @@ export async function onPushToStartTokenRegistered(
   const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
   if (runningDevices.length === 0) return;
 
-  // Skip if a push-to-start was already sent recently (avoid duplicates)
-  if (Date.now() - lastPushToStartSentAt < PUSH_TO_START_COOLDOWN_MS) {
-    laLogger.debug('Skipping catch-up push-to-start — one was sent recently');
+  // Per-token cooldown to avoid duplicate sends without blocking other tokens
+  const lastSentForToken = lastPushToStartByToken.get(pushToStartToken) ?? 0;
+  if (Date.now() - lastSentForToken < PUSH_TO_START_COOLDOWN_MS) {
+    laLogger.debug('Skipping catch-up push-to-start — one was sent recently for this token');
     return;
   }
 
@@ -412,5 +422,5 @@ export async function onPushToStartTokenRegistered(
     'Sending catch-up push-to-start for newly registered token',
   );
   await multiDevicePushToStartAll([{ pushToStartToken }], contentState, channelId ?? undefined);
-  lastPushToStartSentAt = Date.now();
+  lastPushToStartByToken.set(pushToStartToken, Date.now());
 }
