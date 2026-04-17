@@ -221,7 +221,7 @@ export function createAuthRouter(): Router {
         httpOnly: true,
         secure: process.env.NODE_ENV === 'production',
         sameSite: 'lax' as const,
-        maxAge: 24 * 60 * 60 * 1000, // 24 hours
+        maxAge: 365 * 24 * 60 * 60 * 1000, // 1 year
         signed: true,
       });
 

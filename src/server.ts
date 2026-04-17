@@ -111,7 +111,7 @@ export async function createServer(): Promise<Express> {
     cookie: {
       secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      maxAge: 365 * 24 * 60 * 60 * 1000, // 1 year
       sameSite: 'lax',
     },
   };
