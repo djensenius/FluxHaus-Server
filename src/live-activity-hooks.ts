@@ -26,6 +26,13 @@ const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
 let lastConsolidatedBroadcast = 0;
 const CONSOLIDATED_THROTTLE_MS = 60_000;
 
+// Timestamp of the last push-to-start sent (for catch-up gating)
+let lastPushToStartSentAt = 0;
+const PUSH_TO_START_COOLDOWN_MS = 30_000;
+
+// Serialize broadcastConsolidated to prevent overlapping calls
+let broadcastQueue: Promise<void> = Promise.resolve();
+
 // Periodic keep-alive interval to prevent stale activities
 let keepAliveInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -175,9 +182,20 @@ function startKeepAlive(): void {
 /**
  * Build and broadcast the consolidated multi-device Live Activity.
  * Called after every individual device state change.
- * Throttled to avoid flooding Apple's servers.
+ * Serialized via promise chain to prevent overlapping calls.
  */
 async function broadcastConsolidated(force = false): Promise<void> {
+  // eslint-disable-next-line @typescript-eslint/no-use-before-define
+  broadcastQueue = broadcastQueue.then(() => broadcastConsolidatedImpl(force)).catch(() => {});
+  await broadcastQueue;
+}
+
+async function broadcastConsolidatedImpl(force = false): Promise<void> {
+  // Don't send push-to-start until all device types have been initialized.
+  // This prevents false starts on server restart when polling hydrates state.
+  const allInitialized = ['washer', 'dryer', 'dishwasher', 'broombot', 'mopbot']
+    .every((dt) => initializedDeviceTypes.has(dt));
+
   const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
   const hasRunning = runningDevices.length > 0;
   const wasAnyRunning = previousRunningState.get('consolidated') ?? false;
@@ -192,7 +210,7 @@ async function broadcastConsolidated(force = false): Promise<void> {
 
   if (hasRunning) {
     // Push-to-start if transitioning from no devices to at least one
-    if (!wasAnyRunning) {
+    if (!wasAnyRunning && allInitialized) {
       const subscribedTokens = await getSubscribedDeviceTokens();
       if (subscribedTokens.length > 0) {
         laLogger.info(
@@ -201,18 +219,7 @@ async function broadcastConsolidated(force = false): Promise<void> {
         );
         // channelId is optional — push-to-start works without it
         await multiDevicePushToStartAll(subscribedTokens, contentState, channelId ?? undefined);
-        // Retry push-to-start after 5s in case the first attempt was rejected
-        setTimeout(async () => {
-          try {
-            const retryTokens = await getSubscribedDeviceTokens();
-            if (retryTokens.length > 0) {
-              laLogger.debug('Retrying push-to-start');
-              await multiDevicePushToStartAll(retryTokens, contentState, channelId ?? undefined);
-            }
-          } catch {
-            // Retry failures are non-critical
-          }
-        }, 5000);
+        lastPushToStartSentAt = Date.now();
       }
       // Also send silent push to wake the app for local reconcile
       const apnsTokens = await getAllApnsTokens();
@@ -382,8 +389,8 @@ export async function onRobotStatusChange(
 
 /**
  * Called when a new push-to-start token is registered.
- * If devices are currently running, immediately send a push-to-start
- * to the new token so the user doesn't have to wait for the next transition.
+ * If devices are currently running and no push-to-start was sent recently,
+ * send one to the new token so the user doesn't have to wait for the next transition.
  */
 export async function onPushToStartTokenRegistered(
   pushToStartToken: string,
@@ -391,13 +398,19 @@ export async function onPushToStartTokenRegistered(
   const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
   if (runningDevices.length === 0) return;
 
+  // Skip if a push-to-start was already sent recently (avoid duplicates)
+  if (Date.now() - lastPushToStartSentAt < PUSH_TO_START_COOLDOWN_MS) {
+    laLogger.debug('Skipping catch-up push-to-start — one was sent recently');
+    return;
+  }
+
   const channelId = await getChannelId('consolidated');
-  if (!channelId) return;
 
   const contentState: MultiDeviceContentState = { devices: runningDevices };
   laLogger.info(
     { count: runningDevices.length },
     'Sending catch-up push-to-start for newly registered token',
   );
-  await multiDevicePushToStartAll([{ pushToStartToken }], contentState, channelId);
+  await multiDevicePushToStartAll([{ pushToStartToken }], contentState, channelId ?? undefined);
+  lastPushToStartSentAt = Date.now();
 }
