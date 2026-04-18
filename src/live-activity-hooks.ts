@@ -76,7 +76,10 @@ function buildMieleContentState(
     trailingText = `${device.status} · ${trailingText}`;
   }
 
-  const running = (device.timeRemaining ?? 0) > 0;
+  // Treat delayed/programmed states as not running — the Live Activity
+  // should only appear once the appliance actually starts its cycle.
+  const isDelayed = device.status === 'Programmed' || device.status === 'Waiting to start';
+  const running = !isDelayed && (device.timeRemaining ?? 0) > 0;
 
   return {
     device: {
@@ -131,7 +134,10 @@ function buildDishwasherContentState(dishwasher: DishWasher): LiveActivityConten
     trailingText = `${dishwasher.operationState} · ${trailingText}`;
   }
 
-  const running = (dishwasher.programProgress ?? 0) > 0;
+  // Treat delayed start as not running — the Live Activity
+  // should only appear once the appliance actually starts its cycle.
+  const running = dishwasher.operationState !== 'DelayedStart'
+    && (dishwasher.programProgress ?? 0) > 0;
 
   return {
     device: {
@@ -306,7 +312,7 @@ export async function onMieleStatusChange(
   const name = deviceType === 'washer' ? 'Washer' : 'Dryer';
   const icon = deviceType === 'washer' ? 'washer' : 'dryer';
   const contentState = buildMieleContentState(name, icon, device);
-  const running = (device.timeRemaining ?? 0) > 0;
+  const { running } = contentState.device;
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
@@ -336,7 +342,7 @@ export async function onMieleStatusChange(
 export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<void> {
   const activityType = 'dishwasher';
   const contentState = buildDishwasherContentState(dishwasher);
-  const running = (dishwasher.programProgress ?? 0) > 0;
+  const { running } = contentState.device;
 
   // Cache for consolidated activity
   cachedDeviceStates.set(activityType, contentState.device);
