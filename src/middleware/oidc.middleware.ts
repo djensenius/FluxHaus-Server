@@ -76,7 +76,15 @@ export function getOidcIssuer(): Issuer<Client> | null {
 export async function validateBearerToken(
   token: string,
 ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> {
-  if (!oidcIssuer) return null;
+  if (!oidcIssuer) {
+    // Attempt lazy re-initialization if OIDC failed at startup
+    oidcLogger.warn('validateBearerToken: oidcIssuer is null — attempting re-init');
+    await initOidc();
+    if (!oidcIssuer) {
+      oidcLogger.error('validateBearerToken: OIDC re-init failed, rejecting token');
+      return null;
+    }
+  }
 
   // Try local JWT validation via JWKS (fast, no network call per request)
   if (jwks) {
@@ -103,7 +111,12 @@ export async function validateBearerToken(
           preferred_username: jwtPayload.preferred_username,
         };
       } catch (err) {
-        errorState.last = err instanceof Error ? err : new Error(String(err));
+        const jwtErr = err instanceof Error ? err : new Error(String(err));
+        oidcLogger.debug(
+          { issuer, err: jwtErr.message },
+          'JWT verification failed for issuer',
+        );
+        errorState.last = jwtErr;
         return null;
       }
     };
