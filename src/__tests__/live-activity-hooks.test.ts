@@ -268,7 +268,7 @@ describe('live-activity-hooks (consolidated)', () => {
         activeProgram: 'Eco50',
       });
 
-      const calls = mockMultiDeviceBroadcast.mock.calls;
+      const { calls } = mockMultiDeviceBroadcast.mock;
       if (calls.length > 0) {
         const lastContent = calls[calls.length - 1][1];
         const dw = lastContent.devices?.find((d: { name: string }) => d.name === 'Dishwasher');
@@ -289,7 +289,7 @@ describe('live-activity-hooks (consolidated)', () => {
         activeProgram: 'Eco50',
       });
 
-      const calls = mockMultiDeviceBroadcast.mock.calls;
+      const { calls } = mockMultiDeviceBroadcast.mock;
       if (calls.length > 0) {
         const lastContent = calls[calls.length - 1][1];
         const dw = lastContent.devices?.find((d: { name: string }) => d.name === 'Dishwasher');
@@ -312,7 +312,7 @@ describe('live-activity-hooks (consolidated)', () => {
         inUse: true,
       });
 
-      const calls = mockMultiDeviceBroadcast.mock.calls;
+      const { calls } = mockMultiDeviceBroadcast.mock;
       if (calls.length > 0) {
         const lastContent = calls[calls.length - 1][1];
         const washer = lastContent.devices?.find((d: { name: string }) => d.name === 'Washer');
@@ -333,7 +333,7 @@ describe('live-activity-hooks (consolidated)', () => {
         inUse: true,
       });
 
-      const calls = mockMultiDeviceBroadcast.mock.calls;
+      const { calls } = mockMultiDeviceBroadcast.mock;
       if (calls.length > 0) {
         const lastContent = calls[calls.length - 1][1];
         const dryer = lastContent.devices?.find((d: { name: string }) => d.name === 'Dryer');
