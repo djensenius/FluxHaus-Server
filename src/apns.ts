@@ -338,6 +338,7 @@ async function sendRawBroadcast(
       'apns-topic': `${bundleId}.push-type.liveactivity`,
       'apns-push-type': 'liveactivity',
       'apns-priority': '10',
+      'apns-expiration': '0',
       'apns-channel-id': channelId,
       authorization: `bearer ${jwt}`,
       'content-type': 'application/json',
