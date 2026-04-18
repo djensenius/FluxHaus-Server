@@ -73,13 +73,34 @@ export function getOidcIssuer(): Issuer<Client> | null {
   return oidcIssuer;
 }
 
+// Rate-limit OIDC re-initialization: single-flight + cooldown
+let oidcInitPromise: Promise<void> | null = null;
+let lastOidcInitAttempt = 0;
+const OIDC_REINIT_COOLDOWN_MS = 60_000; // 1 minute
+
 export async function validateBearerToken(
   token: string,
 ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> {
   if (!oidcIssuer) {
-    // Attempt lazy re-initialization if OIDC failed at startup
-    oidcLogger.warn('validateBearerToken: oidcIssuer is null — attempting re-init');
-    await initOidc();
+    const { OIDC_ISSUER_URL, OIDC_CLIENT_ID } = process.env;
+    if (!OIDC_ISSUER_URL || !OIDC_CLIENT_ID) {
+      // OIDC intentionally not configured — skip silently
+      return null;
+    }
+
+    const now = Date.now();
+    if (now - lastOidcInitAttempt < OIDC_REINIT_COOLDOWN_MS) {
+      return null;
+    }
+
+    // Single-flight: reuse in-progress init
+    if (!oidcInitPromise) {
+      lastOidcInitAttempt = now;
+      oidcLogger.warn('validateBearerToken: oidcIssuer is null — attempting re-init');
+      oidcInitPromise = initOidc().finally(() => { oidcInitPromise = null; });
+    }
+    await oidcInitPromise;
+
     if (!oidcIssuer) {
       oidcLogger.error('validateBearerToken: OIDC re-init failed, rejecting token');
       return null;
