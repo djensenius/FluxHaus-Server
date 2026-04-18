@@ -253,4 +253,126 @@ describe('live-activity-hooks (consolidated)', () => {
       expect(mockMultiPushToStart).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('delayed start - dishwasher', () => {
+    it('treats DelayedStart as not running', async () => {
+      jest.setSystemTime(Date.now() + 500_000);
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
+      mockMultiDeviceBroadcast.mockClear();
+
+      await onDishwasherStatusChange({
+        operationState: 'DelayedStart',
+        doorState: 'Closed',
+        programProgress: 0,
+        remainingTime: 3600,
+        activeProgram: 'Eco50',
+      });
+
+      const calls = mockMultiDeviceBroadcast.mock.calls;
+      if (calls.length > 0) {
+        const lastContent = calls[calls.length - 1][1];
+        const dw = lastContent.devices?.find((d: { name: string }) => d.name === 'Dishwasher');
+        expect(dw).toBeUndefined();
+      }
+    });
+
+    it('treats DelayedStart with programProgress > 0 as not running', async () => {
+      jest.setSystemTime(Date.now() + 500_000);
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
+      mockMultiDeviceBroadcast.mockClear();
+
+      await onDishwasherStatusChange({
+        operationState: 'DelayedStart',
+        doorState: 'Closed',
+        programProgress: 5,
+        remainingTime: 3600,
+        activeProgram: 'Eco50',
+      });
+
+      const calls = mockMultiDeviceBroadcast.mock.calls;
+      if (calls.length > 0) {
+        const lastContent = calls[calls.length - 1][1];
+        const dw = lastContent.devices?.find((d: { name: string }) => d.name === 'Dishwasher');
+        expect(dw).toBeUndefined();
+      }
+    });
+  });
+
+  describe('delayed start - Miele', () => {
+    it('treats Programmed status as not running', async () => {
+      jest.setSystemTime(Date.now() + 600_000);
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
+      mockMultiDeviceBroadcast.mockClear();
+
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine',
+        timeRunning: 0,
+        timeRemaining: 120,
+        status: 'Programmed',
+        inUse: true,
+      });
+
+      const calls = mockMultiDeviceBroadcast.mock.calls;
+      if (calls.length > 0) {
+        const lastContent = calls[calls.length - 1][1];
+        const washer = lastContent.devices?.find((d: { name: string }) => d.name === 'Washer');
+        expect(washer).toBeUndefined();
+      }
+    });
+
+    it('treats Waiting to start status as not running', async () => {
+      jest.setSystemTime(Date.now() + 600_000);
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
+      mockMultiDeviceBroadcast.mockClear();
+
+      await onMieleStatusChange('dryer', {
+        name: 'Tumble dryer',
+        timeRunning: 0,
+        timeRemaining: 90,
+        status: 'Waiting to start',
+        inUse: true,
+      });
+
+      const calls = mockMultiDeviceBroadcast.mock.calls;
+      if (calls.length > 0) {
+        const lastContent = calls[calls.length - 1][1];
+        const dryer = lastContent.devices?.find((d: { name: string }) => d.name === 'Dryer');
+        expect(dryer).toBeUndefined();
+      }
+    });
+
+    it('starts Live Activity when delayed start transitions to running', async () => {
+      jest.setSystemTime(Date.now() + 700_000);
+      mockGetChannelId.mockResolvedValue('ch-consolidated');
+
+      // First: programmed (not running)
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine',
+        timeRunning: 0,
+        timeRemaining: 120,
+        status: 'Programmed',
+        inUse: true,
+      });
+
+      jest.setSystemTime(Date.now() + 800_000);
+      mockMultiDeviceBroadcast.mockClear();
+
+      // Then: transitions to running
+      await onMieleStatusChange('washer', {
+        name: 'Washing machine',
+        timeRunning: 5,
+        timeRemaining: 115,
+        status: 'Running',
+        inUse: true,
+      });
+
+      expect(mockMultiDeviceBroadcast).toHaveBeenCalled();
+      const lastCall = mockMultiDeviceBroadcast.mock.calls[
+        mockMultiDeviceBroadcast.mock.calls.length - 1
+      ];
+      const washer = lastCall[1].devices?.find((d: { name: string }) => d.name === 'Washer');
+      expect(washer).toBeDefined();
+      expect(washer.running).toBe(true);
+    });
+  });
 });
