@@ -78,6 +78,21 @@ let oidcInitPromise: Promise<void> | null = null;
 let lastOidcInitAttempt = 0;
 const OIDC_REINIT_COOLDOWN_MS = 60_000; // 1 minute
 
+/**
+ * Expand each issuer URL to include both with and without trailing slash,
+ * preserving the configured value first for optimal matching order.
+ */
+export function normalizeIssuers(issuers: string[]): string[] {
+  return [
+    ...new Set(
+      issuers.flatMap((iss) => {
+        const alternate = iss.endsWith('/') ? iss.slice(0, -1) : `${iss}/`;
+        return [iss, alternate];
+      }),
+    ),
+  ];
+}
+
 export async function validateBearerToken(
   token: string,
 ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> {
@@ -116,15 +131,7 @@ export async function validateBearerToken(
       oidcIssuer.metadata.issuer,
       ...trustedIssuers,
     ].filter(Boolean) as string[];
-    const allIssuers = [
-      ...new Set(
-        rawIssuers.flatMap((iss) => {
-          const withSlash = iss.endsWith('/') ? iss : `${iss}/`;
-          const withoutSlash = iss.endsWith('/') ? iss.slice(0, -1) : iss;
-          return [withSlash, withoutSlash];
-        }),
-      ),
-    ];
+    const allIssuers = normalizeIssuers(rawIssuers);
 
     const errorState = { last: null as Error | null };
     const tryIssuer = async (
