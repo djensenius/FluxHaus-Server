@@ -109,11 +109,22 @@ export async function validateBearerToken(
 
   // Try local JWT validation via JWKS (fast, no network call per request)
   if (jwks) {
-    // Try primary issuer first, then additional trusted issuers
-    const allIssuers = [
+    // Try primary issuer first, then additional trusted issuers.
+    // Include both with and without trailing slash to handle Authentik
+    // issuer URL normalization differences.
+    const rawIssuers = [
       oidcIssuer.metadata.issuer,
       ...trustedIssuers,
     ].filter(Boolean) as string[];
+    const allIssuers = [
+      ...new Set(
+        rawIssuers.flatMap((iss) => {
+          const withSlash = iss.endsWith('/') ? iss : `${iss}/`;
+          const withoutSlash = iss.endsWith('/') ? iss.slice(0, -1) : iss;
+          return [withSlash, withoutSlash];
+        }),
+      ),
+    ];
 
     const errorState = { last: null as Error | null };
     const tryIssuer = async (
