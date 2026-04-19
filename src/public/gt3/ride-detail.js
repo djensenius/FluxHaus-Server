@@ -2,24 +2,35 @@
 
 const API_BASE = '/gt3';
 
-const CHART_COLORS = {
-  sky: '#89dceb',
-  sapphire: '#74c7ec',
-  mauve: '#cba6f7',
-  green: '#a6e3a1',
-  peach: '#fab387',
-  red: '#f38ba8',
-  blue: '#89b4fa',
-  teal: '#94e2d5',
-  pink: '#f5c2e7',
-  yellow: '#f9e2af',
-  text: '#cdd6f4',
-  subtext: '#a6adc8',
-  surface: '#313244',
-};
+// Read Catppuccin palette from CSS custom properties (respects light/dark)
+function getChartColors() {
+  const s = getComputedStyle(document.documentElement);
+  const v = (name) => s.getPropertyValue(name).trim();
+  return {
+    sky: v('--sky'), sapphire: v('--sapphire'), mauve: v('--mauve'),
+    green: v('--green'), peach: v('--peach'), red: v('--red'),
+    blue: v('--blue'), teal: v('--teal'), pink: v('--pink'),
+    yellow: v('--yellow'), text: v('--text'), subtext: v('--subtext0'),
+    surface: v('--surface0'),
+  };
+}
+let CHART_COLORS = getChartColors();
 
-Chart.defaults.color = CHART_COLORS.subtext;
-Chart.defaults.borderColor = CHART_COLORS.surface;
+function applyChartDefaults() {
+  CHART_COLORS = getChartColors();
+  Chart.defaults.color = CHART_COLORS.subtext;
+  Chart.defaults.borderColor = CHART_COLORS.surface;
+}
+applyChartDefaults();
+
+function isLightMode() {
+  return window.matchMedia('(prefers-color-scheme: light)').matches;
+}
+
+function cartoTileUrl() {
+  const variant = isLightMode() ? 'light_all' : 'rastertiles/voyager';
+  return `https://{s}.basemaps.cartocdn.com/${variant}/{z}/{x}/{y}{r}.png`;
+}
 
 const GEAR_NAMES = { 1: 'Eco', 2: 'Standard', 3: 'Sport', 4: 'Race' };
 const GEAR_COLORS = { 1: '#a6e3a1', 2: '#89b4fa', 3: '#fab387', 4: '#f38ba8' };
@@ -277,7 +288,7 @@ async function loadRide() {
   // ── Map ─────────────────────────────────────────────────
   if (ride.gps_track && Array.isArray(ride.gps_track) && ride.gps_track.length > 0) {
     const map = L.map('map', { attributionControl: true });
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    L.tileLayer(cartoTileUrl(), {
       attribution: '&copy; OpenStreetMap contributors, &copy; CARTO',
       maxZoom: 19,
     }).addTo(map);
@@ -673,3 +684,9 @@ async function refreshShareList(rideId) {
 }
 
 loadRide();
+
+// Re-render on theme change
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  applyChartDefaults();
+  loadRide();
+});
