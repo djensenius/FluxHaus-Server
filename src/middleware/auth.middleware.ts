@@ -120,6 +120,17 @@ export async function authMiddleware(
       next();
       return;
     }
+    // Token was rejected by both MCP and OIDC — log context for debugging
+    authLogger.warn(
+      {
+        route: req.path,
+        method: req.method,
+        userAgent: req.headers['user-agent'],
+        clientIP: req.ip,
+        tokenHashPrefix: createHash('sha256').update(token).digest('hex').slice(0, 12),
+      },
+      'Bearer token rejected by both MCP and OIDC validators',
+    );
   }
 
   // 3. Basic auth fallback for demo/rhizome users
@@ -162,6 +173,12 @@ export async function authMiddleware(
   } else if (authHeader) {
     reason = 'invalid_credentials';
   }
+  let authPath = 'none';
+  if (hasBearerToken) {
+    authPath = 'bearer→mcp_miss→oidc_miss';
+  } else if (authHeader) {
+    authPath = 'basic→miss';
+  }
   const authFailureLog = {
     route: req.path,
     method: req.method,
@@ -170,6 +187,9 @@ export async function authMiddleware(
     tokenHashPrefix: hasBearerToken
       ? createHash('sha256').update(authHeader.slice(7)).digest('hex').slice(0, 12)
       : undefined,
+    userAgent: req.headers['user-agent'],
+    clientIP: req.ip,
+    authPath,
   };
   if (reason === 'token_rejected') {
     authLogger.warn(authFailureLog, 'Auth failed — returning 401');
