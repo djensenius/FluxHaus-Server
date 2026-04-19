@@ -1,6 +1,6 @@
 {
   "name": "fluxhaus-server",
-  "version": "2.1.69",
+  "version": "2.1.70",
   "description": "",
   "main": "index.js",
   "type": "commonjs",
