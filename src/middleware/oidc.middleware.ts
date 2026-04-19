@@ -78,21 +78,6 @@ let oidcInitPromise: Promise<void> | null = null;
 let lastOidcInitAttempt = 0;
 const OIDC_REINIT_COOLDOWN_MS = 60_000; // 1 minute
 
-/**
- * Expand each issuer URL to include both with and without trailing slash,
- * preserving the configured value first for optimal matching order.
- */
-export function normalizeIssuers(issuers: string[]): string[] {
-  return [
-    ...new Set(
-      issuers.flatMap((iss) => {
-        const alternate = iss.endsWith('/') ? iss.slice(0, -1) : `${iss}/`;
-        return [iss, alternate];
-      }),
-    ),
-  ];
-}
-
 export async function validateBearerToken(
   token: string,
 ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> {
@@ -125,13 +110,10 @@ export async function validateBearerToken(
   // Try local JWT validation via JWKS (fast, no network call per request)
   if (jwks) {
     // Try primary issuer first, then additional trusted issuers.
-    // Include both with and without trailing slash to handle Authentik
-    // issuer URL normalization differences.
-    const rawIssuers = [
+    const allIssuers = [
       oidcIssuer.metadata.issuer,
       ...trustedIssuers,
     ].filter(Boolean) as string[];
-    const allIssuers = normalizeIssuers(rawIssuers);
 
     const errorState = { last: null as Error | null };
     const tryIssuer = async (
@@ -169,10 +151,45 @@ export async function validateBearerToken(
     );
     if (results) return results;
 
-    oidcLogger.warn(
-      { stage: 'validateBearerToken', issuers: allIssuers, err: errorState.last?.message },
-      'JWT validation failed for all issuers, trying userinfo fallback',
-    );
+    // Decode token payload (without verification) to log what the token actually claims
+    let tokenClaims: Record<string, unknown> | null = null;
+    try {
+      const parts = token.split('.');
+      if (parts.length === 3) {
+        tokenClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+      }
+    } catch { /* not a JWT — opaque token */ }
+
+    if (tokenClaims) {
+      oidcLogger.warn(
+        {
+          stage: 'validateBearerToken',
+          trustedIssuers: allIssuers,
+          tokenIss: tokenClaims.iss,
+          tokenAud: tokenClaims.aud,
+          tokenExp: tokenClaims.exp,
+          tokenExpDate: tokenClaims.exp
+            ? new Date((tokenClaims.exp as number) * 1000).toISOString()
+            : undefined,
+          now: new Date().toISOString(),
+          isExpired: tokenClaims.exp
+            ? (tokenClaims.exp as number) * 1000 < Date.now()
+            : 'no exp claim',
+          err: errorState.last?.message,
+        },
+        'JWT validation failed — token claims vs trusted issuers',
+      );
+    } else {
+      oidcLogger.warn(
+        {
+          stage: 'validateBearerToken',
+          trustedIssuers: allIssuers,
+          tokenType: 'opaque (not a JWT)',
+          err: errorState.last?.message,
+        },
+        'JWT validation failed — token is not a decodable JWT, trying userinfo fallback',
+      );
+    }
   }
 
   // Fallback to userinfo endpoint for opaque tokens
