@@ -1,6 +1,6 @@
-/* GT3 Pro Dashboard — Catppuccin Mocha Theme */
+/* GT3 Pro Dashboard — Catppuccin Mocha / Latte Theme */
 
-/* ── CSS Custom Properties ─────────────────────────────────── */
+/* ── CSS Custom Properties (Mocha — dark, default) ─────────── */
 :root {
   --base: #1e1e2e;
   --mantle: #181825;
@@ -28,6 +28,35 @@
   --radius: 12px;
   --radius-sm: 6px;
   --transition: 150ms ease;
+}
+
+/* ── Catppuccin Latte (light) ──────────────────────────────── */
+@media (prefers-color-scheme: light) {
+  :root {
+    --base: #eff1f5;
+    --mantle: #e6e9ef;
+    --crust: #dce0e8;
+    --surface0: #ccd0da;
+    --surface1: #bcc0cc;
+    --surface2: #acb0be;
+    --text: #4c4f69;
+    --subtext1: #5c5f77;
+    --subtext0: #6c6f85;
+    --overlay0: #9ca0b0;
+    --overlay1: #8c8fa1;
+    --sky: #04a5e5;
+    --sapphire: #209fb5;
+    --green: #40a02b;
+    --red: #d20f39;
+    --yellow: #df8e1d;
+    --peach: #fe640b;
+    --mauve: #8839ef;
+    --blue: #1e66f5;
+    --teal: #179299;
+    --pink: #ea76cb;
+    --flamingo: #dd7878;
+    --rosewater: #dc8a78;
+  }
 }
 
 /* ── Reset / Normalize ─────────────────────────────────────── */

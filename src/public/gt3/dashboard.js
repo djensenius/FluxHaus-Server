@@ -5,26 +5,33 @@ const API_BASE = '/gt3';
 let currentPage = 1;
 const PAGE_SIZE = 20;
 
-// Catppuccin Mocha chart palette
-const CHART_COLORS = {
-  sky: '#89dceb',
-  sapphire: '#74c7ec',
-  mauve: '#cba6f7',
-  green: '#a6e3a1',
-  peach: '#fab387',
-  red: '#f38ba8',
-  blue: '#89b4fa',
-  teal: '#94e2d5',
-  pink: '#f5c2e7',
-  yellow: '#f9e2af',
-  text: '#cdd6f4',
-  subtext: '#a6adc8',
-  surface: '#313244',
-  overlay: '#6c7086',
-};
+// Read Catppuccin palette from CSS custom properties (respects light/dark)
+function getChartColors() {
+  const s = getComputedStyle(document.documentElement);
+  const v = (name) => s.getPropertyValue(name).trim();
+  return {
+    sky: v('--sky'), sapphire: v('--sapphire'), mauve: v('--mauve'),
+    green: v('--green'), peach: v('--peach'), red: v('--red'),
+    blue: v('--blue'), teal: v('--teal'), pink: v('--pink'),
+    yellow: v('--yellow'), text: v('--text'), subtext: v('--subtext0'),
+    surface: v('--surface0'), overlay: v('--overlay0'),
+  };
+}
+let CHART_COLORS = getChartColors();
 
-Chart.defaults.color = CHART_COLORS.subtext;
-Chart.defaults.borderColor = CHART_COLORS.surface;
+function applyChartDefaults() {
+  CHART_COLORS = getChartColors();
+  Chart.defaults.color = CHART_COLORS.subtext;
+  Chart.defaults.borderColor = CHART_COLORS.surface;
+}
+applyChartDefaults();
+
+// Re-render on theme change
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+  applyChartDefaults();
+  loadStats();
+  loadRides(currentPage);
+});
 
 // ── Helpers ────────────────────────────────────────────────
 
