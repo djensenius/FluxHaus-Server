@@ -256,11 +256,14 @@ export async function sendGT3PushToStart(
     if (result.failed.length > 0) {
       const failure = result.failed[0];
       const reason = failure.response?.reason || 'unknown';
-      apnsLogger.warn({ reason }, 'GT3 push-to-start failed');
+      apnsLogger.warn({ reason, tokenPrefix: deviceToken.substring(0, 8) }, 'GT3 push-to-start failed');
 
-      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+      // Only delete on definitive token invalidity — NOT on transient errors.
+      // Push-to-start tokens can appear "bad" temporarily if iOS hasn't finished
+      // processing the previous push, so we log but preserve the token.
+      if (reason === 'BadDeviceToken') {
         await deleteDeviceToken(deviceToken);
-        apnsLogger.info('Removed invalid GT3 push-to-start token');
+        apnsLogger.info({ tokenPrefix: deviceToken.substring(0, 8) }, 'Removed invalid GT3 push-to-start token');
       }
       return false;
     }
