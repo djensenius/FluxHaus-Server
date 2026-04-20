@@ -120,11 +120,20 @@ describe('push-token-store', () => {
     it('upserts token into device_tokens table', async () => {
       mockQuery.mockResolvedValue({ rows: [] });
       await saveDeviceToken(sampleDeviceToken);
-      expect(mockQuery).toHaveBeenCalledTimes(1);
-      const [sql, params] = mockQuery.mock.calls[0];
-      expect(sql).toContain('INSERT INTO device_tokens');
-      expect(sql).toContain('ON CONFLICT');
-      expect(params).toEqual([
+      expect(mockQuery).toHaveBeenCalledTimes(2);
+
+      // First call: DELETE stale tokens for same user+device+bundle
+      const [deleteSql, deleteParams] = mockQuery.mock.calls[0];
+      expect(deleteSql).toContain('DELETE FROM device_tokens');
+      expect(deleteParams).toEqual([
+        'user-123', 'org.davidjensenius.FluxHaus', 'iPhone 15', 'device-tok-xyz',
+      ]);
+
+      // Second call: INSERT with ON CONFLICT upsert
+      const [insertSql, insertParams] = mockQuery.mock.calls[1];
+      expect(insertSql).toContain('INSERT INTO device_tokens');
+      expect(insertSql).toContain('ON CONFLICT');
+      expect(insertParams).toEqual([
         'user-123', 'iPhone 15', 'device-tok-xyz', 'org.davidjensenius.FluxHaus',
       ]);
     });
