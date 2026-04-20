@@ -573,7 +573,7 @@ router.post('/activity/start', async (req, res) => {
     }
 
     gt3Logger.info({ userSub, sent, total: tokens.length }, 'GT3 push-to-start dispatched');
-    return res.json({ success: sent > 0, sent, total: tokens.length });
+    return res.json({ success: sent > 0, sent, total: tokens.length, failures });
   } catch (err) {
     gt3Logger.error({ err, userSub }, 'Failed to send GT3 push-to-start');
     return res.status(500).json({ error: 'Internal server error' });
