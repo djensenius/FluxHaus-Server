@@ -68,11 +68,15 @@ router.post('/push-tokens/device', async (req, res) => {
       deviceName,
       bundleId: bundleId || process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus',
     });
-    pushLogger.info({ userSub }, 'Device push-to-start token registered');
+    pushLogger.info({ userSub, bundleId: bundleId || 'default' }, 'Device push-to-start token registered');
     res.json({ success: true });
 
     // If devices are already running, send push-to-start immediately
-    onPushToStartTokenRegistered(pushToStartToken).catch(() => {});
+    // Only for FluxHaus tokens — GT3 tokens use a different push format
+    const effectiveBundleId = bundleId || process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
+    if (effectiveBundleId === (process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus')) {
+      onPushToStartTokenRegistered(pushToStartToken).catch(() => {});
+    }
   } catch (err) {
     pushLogger.error({ err, userSub }, 'Failed to register device token');
     res.status(500).json({ error: 'Failed to register device token' });

@@ -527,6 +527,17 @@ router.post('/activity/start', async (req, res) => {
   const gt3BundleId = 'org.davidjensenius.GT3Companion';
   try {
     const tokens = await getDeviceTokensByUserAndBundle(userSub, gt3BundleId);
+    gt3Logger.info(
+      {
+        userSub,
+        tokenCount: tokens.length,
+        devices: tokens.map((t) => ({
+          device: t.deviceName,
+          tokenPrefix: t.pushToStartToken.substring(0, 8),
+        })),
+      },
+      'GT3 push-to-start: found tokens',
+    );
     if (tokens.length === 0) {
       gt3Logger.warn({ userSub }, 'No GT3 push-to-start tokens found');
       return res.status(404).json({ error: 'No push-to-start token registered' });
@@ -551,6 +562,15 @@ router.post('/activity/start', async (req, res) => {
     const sent = results.filter(
       (r) => r.status === 'fulfilled' && r.value === true,
     ).length;
+    const failures = results
+      .filter((r) => r.status === 'rejected' || (r.status === 'fulfilled' && r.value === false))
+      .map((r, i) => ({
+        tokenPrefix: tokens[i].pushToStartToken.substring(0, 8),
+        reason: r.status === 'rejected' ? String((r as PromiseRejectedResult).reason) : 'apns_rejected',
+      }));
+    if (failures.length > 0) {
+      gt3Logger.warn({ userSub, failures }, 'GT3 push-to-start: some tokens failed');
+    }
 
     gt3Logger.info({ userSub, sent, total: tokens.length }, 'GT3 push-to-start dispatched');
     return res.json({ success: sent > 0, sent, total: tokens.length });
