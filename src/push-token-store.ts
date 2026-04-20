@@ -102,6 +102,16 @@ export async function saveDeviceToken(data: DeviceTokenData): Promise<void> {
   }
 
   try {
+    // Remove any stale tokens for this user+device+bundle before inserting.
+    // This handles reinstalls where iOS issues a new token but the old row
+    // with the previous token value still exists.
+    await pool.query(
+      `DELETE FROM device_tokens
+       WHERE user_sub = $1 AND bundle_id = $2 AND device_name = $3
+         AND push_to_start_token != $4`,
+      [data.userSub, data.bundleId, data.deviceName, data.pushToStartToken],
+    );
+
     await pool.query(
       `INSERT INTO device_tokens (user_sub, device_name, push_to_start_token, bundle_id)
        VALUES ($1, $2, $3, $4)
