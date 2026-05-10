@@ -1,4 +1,5 @@
 import { Response } from 'express';
+import { createHash } from 'crypto';
 
 export const GT3_PHOTO_MIME_TYPE = 'image/jpeg';
 export const MAX_GT3_PHOTO_BYTES = 7_500_000;
@@ -79,6 +80,21 @@ function isJPEG(data: Buffer): boolean {
     && data[2] === 0xff;
 }
 
+function isISO8601DateTime(value: string): boolean {
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/,
+  );
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  return date.getUTCFullYear() === year
+    && date.getUTCMonth() === month - 1
+    && date.getUTCDate() === day;
+}
+
 export function validateRidePhotoPayload(
   payload: RidePhotoPayload,
 ): { ok: true; value: ValidRidePhotoPayload } | { ok: false; status: number; error: string } {
@@ -87,6 +103,9 @@ export function validateRidePhotoPayload(
   }
 
   if (typeof payload.capturedAt !== 'string') {
+    return { ok: false, status: 400, error: 'capturedAt must be an ISO8601 string' };
+  }
+  if (!isISO8601DateTime(payload.capturedAt)) {
     return { ok: false, status: 400, error: 'capturedAt must be an ISO8601 string' };
   }
   const capturedAt = new Date(payload.capturedAt);
@@ -129,7 +148,8 @@ export function validateRidePhotoPayload(
 
 export function sendRidePhotoBytes(res: Response, row: RidePhotoBytesRow): Response {
   const data = row.image_data;
-  const etag = `"gt3-photo-${row.id}-${data.length}"`;
+  const contentHash = createHash('sha256').update(data).digest('hex');
+  const etag = `"gt3-photo-${row.id}-${contentHash}"`;
   if (res.req.headers['if-none-match'] === etag) {
     return res.status(304).end();
   }

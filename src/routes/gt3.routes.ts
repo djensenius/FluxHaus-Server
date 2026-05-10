@@ -357,25 +357,32 @@ router.post('/rides/:id/photos', async (req, res) => {
     return res.status(validation.status).json({ error: validation.error });
   }
 
+  const client = await pool.connect();
   try {
-    const rideResult = await pool.query(
-      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2',
+    await client.query('BEGIN');
+
+    const rideResult = await client.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2 FOR UPDATE',
       [req.params.id, userSub],
     );
-    if (rideResult.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
+    if (rideResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ride not found' });
+    }
 
-    const countResult = await pool.query(
+    const countResult = await client.query(
       'SELECT COUNT(*)::int AS count FROM gt3_ride_photos WHERE ride_id = $1 AND user_sub = $2',
       [req.params.id, userSub],
     );
     if ((countResult.rows[0]?.count ?? 0) >= MAX_GT3_PHOTOS_PER_RIDE) {
+      await client.query('ROLLBACK');
       return res.status(409).json({ error: 'Ride photo limit reached' });
     }
 
     const photo = validation.value;
-    const result = await pool.query(
+    const result = await client.query(
       `INSERT INTO gt3_ride_photos (
-         ride_id, user_sub, captured_at, latitude, longitude, mime_type, image_data
+        ride_id, user_sub, captured_at, latitude, longitude, mime_type, image_data
        )
        VALUES ($1,$2,$3,$4,$5,$6,$7)
        RETURNING id`,
@@ -390,11 +397,15 @@ router.post('/rides/:id/photos', async (req, res) => {
       ],
     );
     const photoId = result.rows[0]?.id;
+    await client.query('COMMIT');
     gt3Logger.info({ rideId: req.params.id, photoId, userSub }, 'Stored ride photo');
     return res.json({ ok: true, id: photoId });
   } catch (err) {
+    await client.query('ROLLBACK');
     gt3Logger.error({ err }, 'Failed to store ride photo');
     return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -406,19 +417,21 @@ router.get('/rides/:id/photos', async (req, res) => {
   if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
 
   try {
-    const result = await pool.query(
-      `SELECT r.id AS ride_id, p.id, p.captured_at, p.latitude, p.longitude,
-              p.mime_type, octet_length(p.image_data) AS byte_length, p.created_at
-       FROM gt3_rides r
-       LEFT JOIN gt3_ride_photos p ON p.ride_id = r.id
-       WHERE r.id = $1 AND r.user_sub = $2
-       ORDER BY p.captured_at DESC NULLS LAST`,
+    const rideResult = await pool.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2',
       [req.params.id, userSub],
     );
-    if (result.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
-    const photos = result.rows
-      .filter((row: RidePhotoMetadataRow & { ride_id: string }) => row.id)
-      .map((row: RidePhotoMetadataRow) => ridePhotoMetadata(row));
+    if (rideResult.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
+
+    const result = await pool.query(
+      `SELECT id, captured_at, latitude, longitude, mime_type,
+              octet_length(image_data) AS byte_length, created_at
+       FROM gt3_ride_photos
+       WHERE ride_id = $1 AND user_sub = $2
+       ORDER BY captured_at DESC`,
+      [req.params.id, userSub],
+    );
+    const photos = result.rows.map((row: RidePhotoMetadataRow) => ridePhotoMetadata(row));
     return res.json({ photos });
   } catch (err) {
     gt3Logger.error({ err }, 'Failed to list ride photos');

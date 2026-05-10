@@ -55,19 +55,28 @@ function validPayload(overrides: Record<string, unknown> = {}) {
 
 describe('GT3 ride photos', () => {
   let mockQuery: jest.Mock;
+  let mockClientQuery: jest.Mock;
+  let mockRelease: jest.Mock;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockQuery = jest.fn();
-    (getPool as jest.Mock).mockReturnValue({ query: mockQuery, connect: jest.fn() });
+    mockClientQuery = jest.fn();
+    mockRelease = jest.fn();
+    (getPool as jest.Mock).mockReturnValue({
+      query: mockQuery,
+      connect: jest.fn().mockResolvedValue({ query: mockClientQuery, release: mockRelease }),
+    });
   });
 
   describe('POST /gt3/rides/:id/photos', () => {
     it('stores a validated JPEG photo for an owned ride', async () => {
-      mockQuery
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ id: RIDE_ID }] })
         .mockResolvedValueOnce({ rows: [{ count: 0 }] })
-        .mockResolvedValueOnce({ rows: [{ id: PHOTO_ID }] });
+        .mockResolvedValueOnce({ rows: [{ id: PHOTO_ID }] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const res = await request(buildApp(USER_SUB))
         .post(`/gt3/rides/${RIDE_ID}/photos`)
@@ -75,13 +84,17 @@ describe('GT3 ride photos', () => {
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ ok: true, id: PHOTO_ID });
-      expect(mockQuery.mock.calls[0][1]).toEqual([RIDE_ID, USER_SUB]);
-      const insertArgs = mockQuery.mock.calls[2][1];
+      expect(mockClientQuery.mock.calls[0][0]).toBe('BEGIN');
+      expect(mockClientQuery.mock.calls[1][0]).toContain('FOR UPDATE');
+      expect(mockClientQuery.mock.calls[1][1]).toEqual([RIDE_ID, USER_SUB]);
+      const insertArgs = mockClientQuery.mock.calls[3][1];
       expect(insertArgs[0]).toBe(RIDE_ID);
       expect(insertArgs[1]).toBe(USER_SUB);
       expect(insertArgs[5]).toBe('image/jpeg');
       expect(Buffer.isBuffer(insertArgs[6])).toBe(true);
       expect(insertArgs[6]).toEqual(jpegBytes);
+      expect(mockClientQuery.mock.calls[4][0]).toBe('COMMIT');
+      expect(mockRelease).toHaveBeenCalledTimes(1);
     });
 
     it('requires an authenticated OIDC user', async () => {
@@ -94,13 +107,18 @@ describe('GT3 ride photos', () => {
     });
 
     it('returns 404 when the ride is not owned by the user', async () => {
-      mockQuery.mockResolvedValueOnce({ rows: [] });
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const res = await request(buildApp(USER_SUB))
         .post(`/gt3/rides/${RIDE_ID}/photos`)
         .send(validPayload());
 
       expect(res.status).toBe(404);
+      expect(mockClientQuery.mock.calls[2][0]).toBe('ROLLBACK');
+      expect(mockRelease).toHaveBeenCalledTimes(1);
     });
 
     it('rejects unsupported mime types', async () => {
@@ -131,6 +149,16 @@ describe('GT3 ride photos', () => {
         .send(validPayload({ capturedAt: 'not-a-date' }));
       expect(badDate.status).toBe(400);
 
+      const nonISODate = await request(buildApp(USER_SUB))
+        .post(`/gt3/rides/${RIDE_ID}/photos`)
+        .send(validPayload({ capturedAt: 'May 10 2026 09:00:00' }));
+      expect(nonISODate.status).toBe(400);
+
+      const invalidISODate = await request(buildApp(USER_SUB))
+        .post(`/gt3/rides/${RIDE_ID}/photos`)
+        .send(validPayload({ capturedAt: '2026-02-31T09:00:00Z' }));
+      expect(invalidISODate.status).toBe(400);
+
       const badLatitude = await request(buildApp(USER_SUB))
         .post(`/gt3/rides/${RIDE_ID}/photos`)
         .send(validPayload({ latitude: 91 }));
@@ -144,33 +172,37 @@ describe('GT3 ride photos', () => {
     });
 
     it('enforces the per-ride photo cap', async () => {
-      mockQuery
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
         .mockResolvedValueOnce({ rows: [{ id: RIDE_ID }] })
-        .mockResolvedValueOnce({ rows: [{ count: 200 }] });
+        .mockResolvedValueOnce({ rows: [{ count: 200 }] })
+        .mockResolvedValueOnce({ rows: [] });
 
       const res = await request(buildApp(USER_SUB))
         .post(`/gt3/rides/${RIDE_ID}/photos`)
         .send(validPayload());
 
       expect(res.status).toBe(409);
-      expect(mockQuery).toHaveBeenCalledTimes(2);
+      expect(mockClientQuery).toHaveBeenCalledTimes(4);
+      expect(mockClientQuery.mock.calls[3][0]).toBe('ROLLBACK');
     });
   });
 
   describe('GET /gt3/rides/:id/photos', () => {
     it('returns metadata without image bytes', async () => {
-      mockQuery.mockResolvedValueOnce({
-        rows: [{
-          ride_id: RIDE_ID,
-          id: PHOTO_ID,
-          captured_at: new Date(),
-          latitude: 43,
-          longitude: -79,
-          mime_type: 'image/jpeg',
-          byte_length: jpegBytes.length,
-          created_at: new Date(),
-        }],
-      });
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: RIDE_ID }] })
+        .mockResolvedValueOnce({
+          rows: [{
+            id: PHOTO_ID,
+            captured_at: new Date(),
+            latitude: 43,
+            longitude: -79,
+            mime_type: 'image/jpeg',
+            byte_length: jpegBytes.length,
+            created_at: new Date(),
+          }],
+        });
 
       const res = await request(buildApp(USER_SUB)).get(`/gt3/rides/${RIDE_ID}/photos`);
 
@@ -179,6 +211,27 @@ describe('GT3 ride photos', () => {
       expect(res.body.photos[0].id).toBe(PHOTO_ID);
       expect(res.body.photos[0].imageData).toBeUndefined();
       expect(mockQuery.mock.calls[0][1]).toEqual([RIDE_ID, USER_SUB]);
+      expect(mockQuery.mock.calls[1][0]).toContain('FROM gt3_ride_photos');
+    });
+
+    it('returns an empty list for owned rides without photos', async () => {
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ id: RIDE_ID }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const res = await request(buildApp(USER_SUB)).get(`/gt3/rides/${RIDE_ID}/photos`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.photos).toEqual([]);
+    });
+
+    it('returns 404 before querying photos when the ride is not owned', async () => {
+      mockQuery.mockResolvedValueOnce({ rows: [] });
+
+      const res = await request(buildApp(USER_SUB)).get(`/gt3/rides/${RIDE_ID}/photos`);
+
+      expect(res.status).toBe(404);
+      expect(mockQuery).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -200,6 +253,7 @@ describe('GT3 ride photos', () => {
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toContain('image/jpeg');
       expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers.etag).toMatch(new RegExp(`^"gt3-photo-${PHOTO_ID}-[a-f0-9]{64}"$`));
       expect(res.body).toEqual(jpegBytes);
       expect(mockQuery.mock.calls[0][1]).toEqual([PHOTO_ID, RIDE_ID, USER_SUB]);
     });
