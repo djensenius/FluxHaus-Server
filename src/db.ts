@@ -298,6 +298,22 @@ export async function initDatabase(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_gt3_samples_ride ON gt3_samples (ride_id, timestamp);
 
+      CREATE TABLE IF NOT EXISTS gt3_ride_photos (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        ride_id UUID NOT NULL REFERENCES gt3_rides(id) ON DELETE CASCADE,
+        user_sub TEXT NOT NULL,
+        captured_at TIMESTAMPTZ NOT NULL,
+        latitude DOUBLE PRECISION,
+        longitude DOUBLE PRECISION,
+        mime_type TEXT NOT NULL,
+        image_data BYTEA NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_gt3_ride_photos_ride
+        ON gt3_ride_photos (ride_id, captured_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_gt3_ride_photos_user
+        ON gt3_ride_photos (user_sub, created_at DESC);
+
       CREATE TABLE IF NOT EXISTS gt3_ride_shares (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         token_hash TEXT NOT NULL UNIQUE,

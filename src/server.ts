@@ -100,6 +100,18 @@ export async function createServer(): Promise<Express> {
     express.json({ limit: '10mb' }),
     express.urlencoded({ extended: true }),
   );
+  app.use((
+    err: Error & { type?: string; status?: number },
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction,
+  ) => {
+    if (err.type === 'entity.too.large' || err.status === 413) {
+      res.status(413).json({ error: 'Request body too large' });
+      return;
+    }
+    next(err);
+  });
 
   // PG-backed session store (for server-side session tracking/revocation)
   const PgStore = connectPgSimple(session);

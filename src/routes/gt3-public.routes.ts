@@ -3,6 +3,12 @@ import { createHash } from 'crypto';
 import { getPool } from '../db';
 import logger from '../logger';
 import { gpsDistanceFromTrack } from '../gt3-geo';
+import {
+  RidePhotoBytesRow,
+  RidePhotoMetadataRow,
+  ridePhotoMetadata,
+  sendRidePhotoBytes,
+} from '../gt3-photos';
 
 const gt3PublicLogger = logger.child({ subsystem: 'gt3-public' });
 
@@ -48,6 +54,20 @@ function bumpAccess(shareId: string): void {
     .catch((err: unknown) => gt3PublicLogger.warn({ err, shareId }, 'Failed to bump share access stats'));
 }
 
+async function listPhotosForSharedRide(rideId: string): Promise<Array<Record<string, unknown>>> {
+  const pool = getPool();
+  if (!pool) return [];
+  const result = await pool.query(
+    `SELECT id, captured_at, latitude, longitude, mime_type,
+            octet_length(image_data) AS byte_length, created_at
+     FROM gt3_ride_photos
+     WHERE ride_id = $1
+     ORDER BY captured_at DESC`,
+    [rideId],
+  );
+  return result.rows.map((row: RidePhotoMetadataRow) => ridePhotoMetadata(row));
+}
+
 // GET /gt3/shared/:token — public ride detail
 router.get('/shared/:token', async (req, res) => {
   const pool = getPool();
@@ -77,10 +97,13 @@ router.get('/shared/:token', async (req, res) => {
       }
     }
 
+    const photos = await listPhotosForSharedRide(share.ride_id);
+
     bumpAccess(share.id);
     res.setHeader('Cache-Control', 'private, max-age=60');
     return res.json({
       ride,
+      photos,
       share: {
         expiresAt: share.expires_at,
       },
@@ -116,6 +139,49 @@ router.get('/shared/:token/geojson', async (req, res) => {
     });
   } catch (err) {
     gt3PublicLogger.error({ err }, 'Failed to get shared GeoJSON');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /gt3/shared/:token/photos — public shared ride photo metadata
+router.get('/shared/:token/photos', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  try {
+    const share = await resolveValidShare(req.params.token);
+    if (!share) return res.status(404).json({ error: 'Share not found or expired' });
+
+    const photos = await listPhotosForSharedRide(share.ride_id);
+    bumpAccess(share.id);
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    return res.json({ photos, rideId: share.ride_id });
+  } catch (err) {
+    gt3PublicLogger.error({ err }, 'Failed to list shared ride photos');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /gt3/shared/:token/photos/:photoId — public shared ride JPEG bytes
+router.get('/shared/:token/photos/:photoId', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  try {
+    const tokenHash = hashShareToken(req.params.token);
+    const result = await pool.query(
+      `SELECT s.id AS share_id, p.id, p.captured_at, p.mime_type, p.image_data, p.created_at
+       FROM gt3_ride_shares s
+       JOIN gt3_ride_photos p ON p.ride_id = s.ride_id
+       WHERE s.token_hash = $1
+         AND s.revoked_at IS NULL
+         AND (s.expires_at IS NULL OR s.expires_at > NOW())
+         AND p.id = $2`,
+      [tokenHash, req.params.photoId],
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Photo not found' });
+    bumpAccess(result.rows[0].share_id);
+    return sendRidePhotoBytes(res, result.rows[0] as RidePhotoBytesRow);
+  } catch (err) {
+    gt3PublicLogger.error({ err }, 'Failed to get shared ride photo');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
