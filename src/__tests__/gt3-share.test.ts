@@ -261,6 +261,7 @@ describe('GT3 ride share links', () => {
             created_at: new Date(),
           }],
         })
+        .mockResolvedValueOnce({ rows: [] }) // photos
         .mockResolvedValueOnce({ rows: [] }); // bumpAccess (fire-and-forget)
 
       // No auth — anonymous request

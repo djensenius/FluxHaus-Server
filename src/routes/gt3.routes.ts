@@ -7,6 +7,14 @@ import logger from '../logger';
 import { sendGT3PushToStart } from '../apns';
 import { getDeviceTokensByUserAndBundle } from '../push-token-store';
 import { gpsDistanceFromTrack } from '../gt3-geo';
+import {
+  MAX_GT3_PHOTOS_PER_RIDE,
+  RidePhotoBytesRow,
+  RidePhotoMetadataRow,
+  ridePhotoMetadata,
+  sendRidePhotoBytes,
+  validateRidePhotoPayload,
+} from '../gt3-photos';
 
 const influxQuery = new InfluxDBClient({
   url: (process.env.INFLUXDB_URL || '').trim(),
@@ -333,6 +341,123 @@ router.get('/rides/:id', async (req, res) => {
     return res.json(ride);
   } catch (err) {
     gt3Logger.error({ err }, 'Failed to get ride');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// POST /gt3/rides/:id/photos — attach a JPEG photo to an authenticated user's ride
+router.post('/rides/:id/photos', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  const validation = validateRidePhotoPayload(req.body ?? {});
+  if (!validation.ok) {
+    return res.status(validation.status).json({ error: validation.error });
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const rideResult = await client.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2 FOR UPDATE',
+      [req.params.id, userSub],
+    );
+    if (rideResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    const countResult = await client.query(
+      'SELECT COUNT(*)::int AS count FROM gt3_ride_photos WHERE ride_id = $1 AND user_sub = $2',
+      [req.params.id, userSub],
+    );
+    if ((countResult.rows[0]?.count ?? 0) >= MAX_GT3_PHOTOS_PER_RIDE) {
+      await client.query('ROLLBACK');
+      return res.status(409).json({ error: 'Ride photo limit reached' });
+    }
+
+    const photo = validation.value;
+    const result = await client.query(
+      `INSERT INTO gt3_ride_photos (
+        ride_id, user_sub, captured_at, latitude, longitude, mime_type, image_data
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING id`,
+      [
+        req.params.id,
+        userSub,
+        photo.capturedAt,
+        photo.latitude,
+        photo.longitude,
+        photo.mimeType,
+        photo.imageData,
+      ],
+    );
+    const photoId = result.rows[0]?.id;
+    await client.query('COMMIT');
+    gt3Logger.info({ rideId: req.params.id, photoId, userSub }, 'Stored ride photo');
+    return res.json({ ok: true, id: photoId });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    gt3Logger.error({ err }, 'Failed to store ride photo');
+    return res.status(500).json({ error: 'Internal server error' });
+  } finally {
+    client.release();
+  }
+});
+
+// GET /gt3/rides/:id/photos — photo metadata for an authenticated user's ride
+router.get('/rides/:id/photos', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const rideResult = await pool.query(
+      'SELECT id FROM gt3_rides WHERE id = $1 AND user_sub = $2',
+      [req.params.id, userSub],
+    );
+    if (rideResult.rows.length === 0) return res.status(404).json({ error: 'Ride not found' });
+
+    const result = await pool.query(
+      `SELECT id, captured_at, latitude, longitude, mime_type,
+              octet_length(image_data) AS byte_length, created_at
+       FROM gt3_ride_photos
+       WHERE ride_id = $1 AND user_sub = $2
+       ORDER BY captured_at DESC`,
+      [req.params.id, userSub],
+    );
+    const photos = result.rows.map((row: RidePhotoMetadataRow) => ridePhotoMetadata(row));
+    return res.json({ photos });
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to list ride photos');
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// GET /gt3/rides/:id/photos/:photoId — JPEG bytes for an authenticated user's ride photo
+router.get('/rides/:id/photos/:photoId', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const result = await pool.query(
+      `SELECT p.id, p.captured_at, p.mime_type, p.image_data, p.created_at
+       FROM gt3_ride_photos p
+       JOIN gt3_rides r ON r.id = p.ride_id
+       WHERE p.id = $1 AND p.ride_id = $2 AND r.user_sub = $3`,
+      [req.params.photoId, req.params.id, userSub],
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Photo not found' });
+    return sendRidePhotoBytes(res, result.rows[0] as RidePhotoBytesRow);
+  } catch (err) {
+    gt3Logger.error({ err }, 'Failed to get ride photo');
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
