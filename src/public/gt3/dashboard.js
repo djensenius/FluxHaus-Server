@@ -115,6 +115,10 @@ function rideHealthSummary(ride) {
   ].filter(Boolean).join('<br>');
 }
 
+function hasRideHealth(ride) {
+  return rideHealthSummary(ride) !== '—';
+}
+
 // Track chart instances so we can destroy before re-creating on pagination
 const chartInstances = {};
 
@@ -231,8 +235,12 @@ async function loadRides(page = 1) {
   if (!data) return;
 
   const tbody = document.getElementById('rides-body');
+  const healthHeader = document.getElementById('health-header');
+  const showHealthColumn = Array.isArray(data.rides) && data.rides.some(hasRideHealth);
+  if (healthHeader) healthHeader.style.display = showHealthColumn ? '' : 'none';
+  const columnCount = showHealthColumn ? 9 : 8;
   if (!data.rides || data.rides.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted" style="padding:2rem">No rides found</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${columnCount}" class="text-center text-muted" style="padding:2rem">No rides found</td></tr>`;
     return;
   }
 
@@ -244,7 +252,7 @@ async function loadRides(page = 1) {
       <td>${formatSpeed(r.avg_speed)}</td>
       <td><span class="battery-badge">${r.start_battery ?? '?'}% → ${r.end_battery ?? '?'}%</span></td>
       <td><span class="gear-badge gear-${r.gear_mode}">${gearName(r.gear_mode)}</span></td>
-      <td>${rideHealthSummary(r)}</td>
+      ${showHealthColumn ? `<td>${rideHealthSummary(r)}</td>` : ''}
       <td>${r.weather_temp != null ? `${weatherEmoji(r.weather_condition)} ${r.weather_temp.toFixed(0)}°C` : '—'}</td>
       <td><a href="/gt3/ride.html?id=${r.id}" class="btn-small">Details →</a></td>
     </tr>
