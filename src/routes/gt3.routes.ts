@@ -169,8 +169,9 @@ router.post('/ride', async (req, res) => {
       gear_mode: r.primaryGearMode ?? r.gearMode ?? 0,
     };
     if (r.healthData) {
-      rideFields.avg_heart_rate = r.healthData.avgHeartRate ?? 0;
-      rideFields.total_calories = r.healthData.totalCalories ?? 0;
+      rideFields.avg_heart_rate = r.healthData.avgHeartRate ?? r.healthData.averageHeartRate ?? 0;
+      rideFields.max_heart_rate = r.healthData.maxHeartRate ?? 0;
+      rideFields.total_calories = r.healthData.totalCalories ?? r.healthData.activeCalories ?? 0;
     }
     if (r.weather) {
       rideFields.weather_temp = r.weather.temp ?? 0;
@@ -270,6 +271,67 @@ router.post('/ride', async (req, res) => {
     const detail = err instanceof Error ? err.message : String(err);
     gt3Logger.error({ err }, 'Failed to store ride');
     return res.status(500).json({ error: 'Internal server error', detail });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /gt3/rides/:id/health — backfill ride health summary and timestamped HR samples
+router.patch('/rides/:id/health', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  const client = await pool.connect();
+  try {
+    const { healthData, heartRateSamples } = req.body ?? {};
+    const samples = Array.isArray(heartRateSamples) ? heartRateSamples : [];
+
+    await client.query('BEGIN');
+    const rideResult = await client.query(
+      'SELECT id, health_data FROM gt3_rides WHERE id = $1 AND user_sub = $2 FOR UPDATE',
+      [req.params.id, userSub],
+    );
+    if (rideResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    if (healthData && typeof healthData === 'object') {
+      const existing = rideResult.rows[0].health_data ?? {};
+      await client.query(
+        'UPDATE gt3_rides SET health_data = $1 WHERE id = $2',
+        [{ ...existing, ...healthData }, req.params.id],
+      );
+    }
+
+    const validSamples = samples.flatMap((sample) => {
+      const heartRate = Number(sample?.heartRate);
+      const timestamp = sample?.timestamp ? new Date(sample.timestamp) : null;
+      if (!timestamp || Number.isNaN(timestamp.getTime()) || heartRate <= 0) return [];
+      return [{ heartRate: Math.round(heartRate), timestamp: timestamp.toISOString() }];
+    });
+    const updatedSamples = await validSamples.reduce(async (chain, sample) => {
+      const count = await chain;
+      const result = await client.query(
+        `UPDATE gt3_samples
+         SET heart_rate = $1
+         WHERE ride_id = $2
+           AND timestamp BETWEEN $3::timestamptz - INTERVAL '750 milliseconds'
+                         AND $3::timestamptz + INTERVAL '750 milliseconds'`,
+        [sample.heartRate, req.params.id, sample.timestamp],
+      );
+      return count + (result.rowCount ?? 0);
+    }, Promise.resolve(0));
+
+    await client.query('COMMIT');
+    gt3Logger.info({ rideId: req.params.id, updatedSamples }, 'Updated ride health data');
+    return res.json({ ok: true, updatedSamples });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    gt3Logger.error({ err }, 'Failed to update ride health data');
+    return res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
   }

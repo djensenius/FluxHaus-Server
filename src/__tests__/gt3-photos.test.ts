@@ -207,6 +207,40 @@ describe('GT3 ride photos', () => {
     });
   });
 
+  describe('PATCH /gt3/rides/:id/health', () => {
+    it('merges ride health data and backfills timestamped heart-rate samples', async () => {
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: RIDE_ID, health_data: { existing: true } }] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const timestamp = '2026-05-17T15:00:00.000Z';
+      const res = await request(buildApp(USER_SUB))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({
+          healthData: { averageHeartRate: 132, maxHeartRate: 155, activeCalories: 210.5 },
+          heartRateSamples: [{ timestamp, heartRate: 144 }],
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, updatedSamples: 1 });
+      expect(mockClientQuery.mock.calls[1][0]).toContain('FOR UPDATE');
+      expect(mockClientQuery.mock.calls[2][1]).toEqual([
+        {
+          existing: true,
+          averageHeartRate: 132,
+          maxHeartRate: 155,
+          activeCalories: 210.5,
+        },
+        RIDE_ID,
+      ]);
+      expect(mockClientQuery.mock.calls[3][1]).toEqual([144, RIDE_ID, timestamp]);
+      expect(mockClientQuery.mock.calls[4][0]).toBe('COMMIT');
+    });
+  });
+
   describe('GET /gt3/rides/:id/photos', () => {
     it('returns metadata without image bytes', async () => {
       mockQuery
