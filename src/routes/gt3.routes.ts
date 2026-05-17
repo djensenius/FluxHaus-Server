@@ -26,6 +26,37 @@ const influxQuery = new InfluxDBClient({
 const gt3Logger = logger.child({ subsystem: 'gt3' });
 
 const router = Router();
+const MAX_GT3_HEALTH_SAMPLES = 5_000;
+const MAX_GT3_HEALTH_DATA_KEYS = 20;
+
+function finiteNonNegativeNumber(value: unknown): number | undefined {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : undefined;
+}
+
+function sanitizeRideHealthData(healthData: unknown): Record<string, number> | null {
+  if (!healthData || typeof healthData !== 'object' || Array.isArray(healthData)) return null;
+  const source = healthData as Record<string, unknown>;
+  const sanitized: Record<string, number> = {};
+  [
+    'avgHeartRate',
+    'averageHeartRate',
+    'maxHeartRate',
+    'totalCalories',
+    'activeCalories',
+  ].forEach((key) => {
+    const value = finiteNonNegativeNumber(source[key]);
+    if (value !== undefined) sanitized[key] = value;
+  });
+  return Object.keys(sanitized).length > 0 ? sanitized : null;
+}
+
+function hasOversizedRideHealthData(healthData: unknown): boolean {
+  return !!healthData
+    && typeof healthData === 'object'
+    && !Array.isArray(healthData)
+    && Object.keys(healthData).length > MAX_GT3_HEALTH_DATA_KEYS;
+}
 
 // POST /gt3/telemetry — batch telemetry samples → InfluxDB
 router.post('/telemetry', async (req, res) => {
@@ -169,8 +200,9 @@ router.post('/ride', async (req, res) => {
       gear_mode: r.primaryGearMode ?? r.gearMode ?? 0,
     };
     if (r.healthData) {
-      rideFields.avg_heart_rate = r.healthData.avgHeartRate ?? 0;
-      rideFields.total_calories = r.healthData.totalCalories ?? 0;
+      rideFields.avg_heart_rate = r.healthData.avgHeartRate ?? r.healthData.averageHeartRate ?? 0;
+      rideFields.max_heart_rate = r.healthData.maxHeartRate ?? 0;
+      rideFields.total_calories = r.healthData.totalCalories ?? r.healthData.activeCalories ?? 0;
     }
     if (r.weather) {
       rideFields.weather_temp = r.weather.temp ?? 0;
@@ -270,6 +302,97 @@ router.post('/ride', async (req, res) => {
     const detail = err instanceof Error ? err.message : String(err);
     gt3Logger.error({ err }, 'Failed to store ride');
     return res.status(500).json({ error: 'Internal server error', detail });
+  } finally {
+    client.release();
+  }
+});
+
+// PATCH /gt3/rides/:id/health — backfill ride health summary and timestamped HR samples
+router.patch('/rides/:id/health', async (req, res) => {
+  const pool = getPool();
+  if (!pool) return res.status(503).json({ error: 'Database unavailable' });
+  const userSub = req.user?.sub;
+  if (!userSub) return res.status(401).json({ error: 'Unauthorized' });
+
+  const client = await pool.connect();
+  try {
+    const { healthData, heartRateSamples } = req.body ?? {};
+    const samples = Array.isArray(heartRateSamples) ? heartRateSamples : [];
+    if (samples.length > MAX_GT3_HEALTH_SAMPLES) {
+      return res.status(413).json({ error: 'Too many heart-rate samples' });
+    }
+    if (hasOversizedRideHealthData(healthData)) {
+      return res.status(413).json({ error: 'Too many health data fields' });
+    }
+
+    await client.query('BEGIN');
+    const rideResult = await client.query(
+      'SELECT id, health_data FROM gt3_rides WHERE id = $1 AND user_sub = $2 FOR UPDATE',
+      [req.params.id, userSub],
+    );
+    if (rideResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Ride not found' });
+    }
+
+    const sanitizedHealthData = sanitizeRideHealthData(healthData);
+    if (sanitizedHealthData) {
+      const existing = rideResult.rows[0].health_data ?? {};
+      await client.query(
+        'UPDATE gt3_rides SET health_data = $1 WHERE id = $2',
+        [JSON.stringify({ ...existing, ...sanitizedHealthData }), req.params.id],
+      );
+    }
+
+    const validSamples = samples.flatMap((sample) => {
+      const heartRate = Number(sample?.heartRate);
+      const timestamp = sample?.timestamp ? new Date(sample.timestamp) : null;
+      if (!timestamp
+        || Number.isNaN(timestamp.getTime())
+        || !Number.isFinite(heartRate)
+        || heartRate <= 0) {
+        return [];
+      }
+      return [{ heartRate: Math.round(heartRate), timestamp: timestamp.toISOString() }];
+    });
+    const sampleValues = validSamples.reduce((values, sample) => {
+      values.push(sample.timestamp, sample.heartRate);
+      return values;
+    }, [] as Array<string | number>);
+    const valuesSql = validSamples.map((_sample, index) => {
+      const p = index * 2 + 1;
+      return `($${p}::timestamptz, $${p + 1}::integer)`;
+    });
+    const updatedSamples = validSamples.length > 0 ? (await client.query(
+      `WITH input(ts, heart_rate) AS (VALUES ${valuesSql.join(',')}),
+       nearest AS (
+         SELECT DISTINCT ON (sample_match.id) sample_match.id, input.heart_rate
+         FROM input
+         CROSS JOIN LATERAL (
+           SELECT id, ABS(EXTRACT(EPOCH FROM (timestamp - input.ts))) AS delta
+           FROM gt3_samples
+           WHERE ride_id = $${sampleValues.length + 1}
+             AND timestamp BETWEEN input.ts - INTERVAL '750 milliseconds'
+                           AND input.ts + INTERVAL '750 milliseconds'
+           ORDER BY delta
+           LIMIT 1
+         ) AS sample_match
+         ORDER BY sample_match.id, sample_match.delta
+       )
+       UPDATE gt3_samples AS samples
+       SET heart_rate = nearest.heart_rate
+       FROM nearest
+       WHERE samples.id = nearest.id`,
+      [...sampleValues, req.params.id],
+    )).rowCount ?? 0 : 0;
+
+    await client.query('COMMIT');
+    gt3Logger.info({ rideId: req.params.id, updatedSamples }, 'Updated ride health data');
+    return res.json({ ok: true, updatedSamples });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    gt3Logger.error({ err }, 'Failed to update ride health data');
+    return res.status(500).json({ error: 'Internal server error' });
   } finally {
     client.release();
   }
