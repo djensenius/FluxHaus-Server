@@ -70,7 +70,7 @@ function decodeBase64Image(value: unknown): Buffer | null {
   if (base64.startsWith('data:')) {
     const dataUriMatch = base64.match(/^data:(image\/(?:jpeg|jpg));base64,(.+)$/i);
     if (!dataUriMatch) return null;
-    base64 = dataUriMatch[2];
+    [, base64] = dataUriMatch.slice(1);
   }
   base64 = base64.replace(/\s+/g, '');
   if (base64.length > maxEncodedLength) return null;
