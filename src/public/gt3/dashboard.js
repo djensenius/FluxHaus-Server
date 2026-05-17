@@ -97,6 +97,28 @@ function formatDuration(startIso, endIso) {
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
+function finiteNumber(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function rideHealthSummary(ride) {
+  const health = ride.health_data || ride.healthData || {};
+  const avgHeartRate = finiteNumber(health.averageHeartRate ?? health.avgHeartRate);
+  const maxHeartRate = finiteNumber(health.maxHeartRate);
+  const activeCalories = finiteNumber(health.activeCalories ?? health.totalCalories);
+  if (avgHeartRate == null && maxHeartRate == null && activeCalories == null) return '—';
+  return [
+    avgHeartRate != null ? `♥ ${Math.round(avgHeartRate)} avg` : null,
+    maxHeartRate != null ? `♥ ${Math.round(maxHeartRate)} max` : null,
+    activeCalories != null ? `🔥 ${Math.round(activeCalories)} cal` : null,
+  ].filter(Boolean).join('<br>');
+}
+
+function hasRideHealth(ride) {
+  return rideHealthSummary(ride) !== '—';
+}
+
 // Track chart instances so we can destroy before re-creating on pagination
 const chartInstances = {};
 
@@ -213,8 +235,12 @@ async function loadRides(page = 1) {
   if (!data) return;
 
   const tbody = document.getElementById('rides-body');
+  const healthHeader = document.getElementById('health-header');
+  const showHealthColumn = Array.isArray(data.rides) && data.rides.some(hasRideHealth);
+  if (healthHeader) healthHeader.style.display = showHealthColumn ? '' : 'none';
+  const columnCount = showHealthColumn ? 9 : 8;
   if (!data.rides || data.rides.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted" style="padding:2rem">No rides found</td></tr>';
+    tbody.innerHTML = `<tr><td colspan="${columnCount}" class="text-center text-muted" style="padding:2rem">No rides found</td></tr>`;
     return;
   }
 
@@ -226,6 +252,7 @@ async function loadRides(page = 1) {
       <td>${formatSpeed(r.avg_speed)}</td>
       <td><span class="battery-badge">${r.start_battery ?? '?'}% → ${r.end_battery ?? '?'}%</span></td>
       <td><span class="gear-badge gear-${r.gear_mode}">${gearName(r.gear_mode)}</span></td>
+      ${showHealthColumn ? `<td>${rideHealthSummary(r)}</td>` : ''}
       <td>${r.weather_temp != null ? `${weatherEmoji(r.weather_condition)} ${r.weather_temp.toFixed(0)}°C` : '—'}</td>
       <td><a href="/gt3/ride.html?id=${r.id}" class="btn-small">Details →</a></td>
     </tr>

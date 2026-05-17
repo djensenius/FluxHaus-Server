@@ -126,6 +126,29 @@ function formatDuration(startIso, endIso) {
   return min < 60 ? `${min} min` : `${Math.floor(min / 60)}h ${min % 60}m`;
 }
 
+function finiteNumber(value) {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
+function rideHealthCards(ride) {
+  const health = ride.health_data || ride.healthData || {};
+  const avgHeartRate = finiteNumber(health.averageHeartRate ?? health.avgHeartRate);
+  const maxHeartRate = finiteNumber(health.maxHeartRate);
+  const activeCalories = finiteNumber(health.activeCalories ?? health.totalCalories);
+  return [
+    avgHeartRate != null
+      ? `<div class="stat-card"><div class="stat-value">${Math.round(avgHeartRate)} bpm</div><div class="stat-label">Avg HR</div></div>`
+      : null,
+    maxHeartRate != null
+      ? `<div class="stat-card"><div class="stat-value">${Math.round(maxHeartRate)} bpm</div><div class="stat-label">Max HR</div></div>`
+      : null,
+    activeCalories != null
+      ? `<div class="stat-card"><div class="stat-value">${Math.round(activeCalories)} cal</div><div class="stat-label">Active Calories</div></div>`
+      : null,
+  ].filter(Boolean).join('');
+}
+
 // Handle both InfluxDB (_time) and Postgres (timestamp) column names
 function sampleTime(s) {
   return s._time || s.time || s.timestamp;
@@ -285,6 +308,7 @@ async function loadRide() {
   document.title = `Ride ${formatDate(ride.start_time)} — GT3 Pro`;
 
   // ── Ride info cards ─────────────────────────────────────
+  const healthCards = rideHealthCards(ride);
   document.getElementById('ride-info').innerHTML = `
     <div class="stat-card">
       <div class="stat-value">${formatDate(ride.start_time)}</div>
@@ -314,6 +338,7 @@ async function loadRide() {
       <div class="stat-value">${gearName(ride.gear_mode)}</div>
       <div class="stat-label">Gear Mode</div>
     </div>
+    ${healthCards}
   `;
 
   // ── Weather ─────────────────────────────────────────────
