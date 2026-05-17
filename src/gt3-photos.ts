@@ -65,11 +65,19 @@ function parseOptionalCoordinate(
 
 function decodeBase64Image(value: unknown): Buffer | null {
   if (typeof value !== 'string' || value.length === 0) return null;
-  if (value.length > Math.ceil(MAX_GT3_PHOTO_BYTES / 3) * 4) return null;
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 !== 0) return null;
-  const decoded = Buffer.from(value, 'base64');
+  const maxEncodedLength = Math.ceil(MAX_GT3_PHOTO_BYTES / 3) * 4;
+  let base64 = value.trim();
+  if (base64.startsWith('data:')) {
+    const dataUriMatch = base64.match(/^data:(image\/(?:jpeg|jpg));base64,(.+)$/i);
+    if (!dataUriMatch) return null;
+    [, base64] = dataUriMatch.slice(1);
+  }
+  base64 = base64.replace(/\s+/g, '');
+  if (base64.length > maxEncodedLength) return null;
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(base64) || base64.length % 4 !== 0) return null;
+  const decoded = Buffer.from(base64, 'base64');
   if (decoded.length === 0 || decoded.length > MAX_GT3_PHOTO_BYTES) return null;
-  if (decoded.toString('base64') !== value) return null;
+  if (decoded.toString('base64') !== base64) return null;
   return decoded;
 }
 
@@ -98,7 +106,8 @@ function isISO8601DateTime(value: string): boolean {
 export function validateRidePhotoPayload(
   payload: RidePhotoPayload,
 ): { ok: true; value: ValidRidePhotoPayload } | { ok: false; status: number; error: string } {
-  if (payload.mimeType !== GT3_PHOTO_MIME_TYPE) {
+  const mimeType = typeof payload.mimeType === 'string' ? payload.mimeType.trim().toLowerCase() : '';
+  if (mimeType !== GT3_PHOTO_MIME_TYPE && mimeType !== 'image/jpg') {
     return { ok: false, status: 400, error: 'mimeType must be image/jpeg' };
   }
 
