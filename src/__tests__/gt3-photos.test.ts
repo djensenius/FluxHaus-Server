@@ -143,6 +143,25 @@ describe('GT3 ride photos', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
+    it('accepts data URI payloads and image/jpg aliases', async () => {
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: RIDE_ID }] })
+        .mockResolvedValueOnce({ rows: [{ count: 0 }] })
+        .mockResolvedValueOnce({ rows: [{ id: PHOTO_ID }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const res = await request(buildApp(USER_SUB))
+        .post(`/gt3/rides/${RIDE_ID}/photos`)
+        .send(validPayload({
+          mimeType: 'image/jpg',
+          imageData: `data:image/jpeg;base64,${jpegBytes.toString('base64')}`,
+        }));
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, id: PHOTO_ID });
+    });
+
     it('rejects invalid dates and coordinates', async () => {
       const badDate = await request(buildApp(USER_SUB))
         .post(`/gt3/rides/${RIDE_ID}/photos`)

@@ -138,6 +138,60 @@ function formatTime(iso) {
   });
 }
 
+function photoBytesUrl(rideId, photoId) {
+  if (!photoId) return '#';
+  if (IS_SHARE_MODE) {
+    return `${API_BASE}/shared/${encodeURIComponent(SHARE_TOKEN)}/photos/${encodeURIComponent(photoId)}`;
+  }
+  return `${API_BASE}/rides/${encodeURIComponent(rideId)}/photos/${encodeURIComponent(photoId)}`;
+}
+
+function renderRidePhotos(photos, rideId) {
+  const section = document.getElementById('photos-section');
+  const grid = document.getElementById('photos-grid');
+  if (!section || !grid) return;
+  if (!Array.isArray(photos) || photos.length === 0 || !rideId) {
+    section.style.display = 'none';
+    grid.innerHTML = '';
+    return;
+  }
+  section.style.display = '';
+  grid.innerHTML = photos.map((photo) => {
+    const imageUrl = photoBytesUrl(rideId, photo.id);
+    const stamp = photo.capturedAt || photo.createdAt;
+    return `
+      <a class="ride-photo-card" href="${imageUrl}" target="_blank" rel="noopener noreferrer">
+        <img src="${imageUrl}" loading="lazy" alt="Ride photo" />
+        <div class="ride-photo-meta">${formatDate(stamp)}</div>
+      </a>
+    `;
+  }).join('');
+}
+
+function addRidePhotoMarkers(map, photos, rideId) {
+  if (!map || !Array.isArray(photos) || photos.length === 0 || !rideId) return;
+  photos.forEach((photo) => {
+    const lat = Number(photo.latitude);
+    const lon = Number(photo.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const marker = L.circleMarker([lat, lon], {
+      radius: 6,
+      color: '#fff',
+      weight: 2,
+      fillColor: CHART_COLORS.mauve,
+      fillOpacity: 1,
+    }).addTo(map);
+    const imageUrl = photoBytesUrl(rideId, photo.id);
+    const stamp = photo.capturedAt || photo.createdAt;
+    marker.bindPopup(`
+      <div style="max-width: 180px;">
+        <img src="${imageUrl}" alt="Ride photo" style="width: 100%; border-radius: 6px;" />
+        <div style="margin-top: 0.3rem; color: var(--subtext1);">${formatDate(stamp)}</div>
+      </div>
+    `);
+  });
+}
+
 const defaultChartOptions = {
   responsive: true,
   plugins: { legend: { position: 'top' } },
@@ -190,6 +244,7 @@ async function loadRide() {
   // Share-mode: fetch from /shared/:token endpoints. Ride id is embedded in response.
   let ride;
   let samplesData;
+  let photosData;
   let effectiveRideId = rideId;
   let shareInfo = null;
 
@@ -203,7 +258,10 @@ async function loadRide() {
     ride = sharedResp.ride;
     shareInfo = sharedResp.share;
     effectiveRideId = ride.id;
-    samplesData = await apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}/samples`, { allow404: true }).catch(() => null);
+    [samplesData, photosData] = await Promise.all([
+      apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}/samples`, { allow404: true }).catch(() => null),
+      apiFetch(`/shared/${encodeURIComponent(SHARE_TOKEN)}/photos`, { allow404: true }).catch(() => null),
+    ]);
 
     // Hide owner-only navigation ("Back to Dashboard") in share mode
     const nav = document.querySelector('header nav');
@@ -214,12 +272,15 @@ async function loadRide() {
         '<p class="error" style="margin:2rem">No ride ID specified. <a href="/gt3/">Return to dashboard</a></p>';
       return;
     }
-    [ride, samplesData] = await Promise.all([
+    [ride, samplesData, photosData] = await Promise.all([
       apiFetch(`/rides/${rideId}`),
       apiFetch(`/rides/${rideId}/samples`).catch(() => null),
+      apiFetch(`/rides/${rideId}/photos`).catch(() => null),
     ]);
     if (!ride) return;
   }
+  const photos = (photosData && Array.isArray(photosData.photos)) ? photosData.photos : [];
+  renderRidePhotos(photos, effectiveRideId);
 
   document.title = `Ride ${formatDate(ride.start_time)} — GT3 Pro`;
 
@@ -312,6 +373,7 @@ async function loadRide() {
         radius: 8, fillColor: CHART_COLORS.red,
         color: '#fff', weight: 2, fillOpacity: 1,
       }).addTo(map).bindPopup('End');
+      addRidePhotoMarkers(map, photos, effectiveRideId);
 
       map.fitBounds(polyline.getBounds(), { padding: [30, 30] });
     }
