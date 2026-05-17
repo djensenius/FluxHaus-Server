@@ -154,6 +154,18 @@ function sampleTime(s) {
   return s._time || s.time || s.timestamp;
 }
 
+function validHeartRateSamples(samples) {
+  return samples.filter((s) => {
+    const heartRate = parseFloat(s.heart_rate || s.heartRate);
+    return heartRate > 0 && sampleTime(s);
+  });
+}
+
+function hasEnoughHeartRateSamples(samples) {
+  const timestamps = new Set(samples.map((s) => sampleTime(s)));
+  return samples.length >= 2 && timestamps.size >= 2;
+}
+
 function formatTime(iso) {
   if (!iso) return '';
   return new Date(iso).toLocaleTimeString(undefined, {
@@ -520,8 +532,8 @@ async function loadRide() {
     }
 
     // Heart rate
-    const hrSamples = samples.filter(s => parseFloat(s.heart_rate || s.heartRate) > 0);
-    if (hrSamples.length > 0) {
+    const hrSamples = validHeartRateSamples(samples);
+    if (hasEnoughHeartRateSamples(hrSamples)) {
       new Chart(document.getElementById('heartRateChart'), {
         type: 'line',
         data: {
