@@ -27,6 +27,7 @@ const gt3Logger = logger.child({ subsystem: 'gt3' });
 
 const router = Router();
 const MAX_GT3_HEALTH_SAMPLES = 5_000;
+const MAX_GT3_HEALTH_DATA_KEYS = 20;
 
 function finiteNonNegativeNumber(value: unknown): number | undefined {
   const numberValue = Number(value);
@@ -48,6 +49,13 @@ function sanitizeRideHealthData(healthData: unknown): Record<string, number> | n
     if (value !== undefined) sanitized[key] = value;
   });
   return Object.keys(sanitized).length > 0 ? sanitized : null;
+}
+
+function hasOversizedRideHealthData(healthData: unknown): boolean {
+  return !!healthData
+    && typeof healthData === 'object'
+    && !Array.isArray(healthData)
+    && Object.keys(healthData).length > MAX_GT3_HEALTH_DATA_KEYS;
 }
 
 // POST /gt3/telemetry — batch telemetry samples → InfluxDB
@@ -312,6 +320,9 @@ router.patch('/rides/:id/health', async (req, res) => {
     const samples = Array.isArray(heartRateSamples) ? heartRateSamples : [];
     if (samples.length > MAX_GT3_HEALTH_SAMPLES) {
       return res.status(413).json({ error: 'Too many heart-rate samples' });
+    }
+    if (hasOversizedRideHealthData(healthData)) {
+      return res.status(413).json({ error: 'Too many health data fields' });
     }
 
     await client.query('BEGIN');

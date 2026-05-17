@@ -299,6 +299,58 @@ describe('GT3 ride photos', () => {
       expect(res.status).toBe(413);
       expect(mockClientQuery).not.toHaveBeenCalled();
     });
+
+    it('rejects oversized health data objects', async () => {
+      const healthData = Object.fromEntries(
+        Array.from({ length: 21 }, (_value, index) => [`metric${index}`, index]),
+      );
+
+      const res = await request(buildApp(USER_SUB))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({ healthData });
+
+      expect(res.status).toBe(413);
+      expect(mockClientQuery).not.toHaveBeenCalled();
+    });
+
+    it('backfills timestamped heart-rate samples when health data is omitted', async () => {
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: RIDE_ID, health_data: null }] })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const timestamp = '2026-05-17T15:00:00.000Z';
+      const res = await request(buildApp(USER_SUB))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({ heartRateSamples: [{ timestamp, heartRate: 144 }] });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, updatedSamples: 1 });
+      expect(mockClientQuery.mock.calls[2][0]).toContain('WITH input');
+      expect(mockClientQuery.mock.calls[2][1]).toEqual([timestamp, 144, RIDE_ID]);
+      expect(mockClientQuery.mock.calls[3][0]).toBe('COMMIT');
+    });
+
+    it('rolls back health backfill transactions on database errors', async () => {
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: RIDE_ID, health_data: null }] })
+        .mockRejectedValueOnce(new Error('sample update failed'))
+        .mockResolvedValueOnce({ rows: [] });
+
+      const res = await request(buildApp(USER_SUB))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({
+          heartRateSamples: [{
+            timestamp: '2026-05-17T15:00:00.000Z',
+            heartRate: 144,
+          }],
+        });
+
+      expect(res.status).toBe(500);
+      expect(mockClientQuery.mock.calls[3][0]).toBe('ROLLBACK');
+    });
   });
 
   describe('GET /gt3/rides/:id/photos', () => {
