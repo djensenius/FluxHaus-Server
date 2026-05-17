@@ -28,6 +28,28 @@ const gt3Logger = logger.child({ subsystem: 'gt3' });
 const router = Router();
 const MAX_GT3_HEALTH_SAMPLES = 5_000;
 
+function finiteNonNegativeNumber(value: unknown): number | undefined {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) && numberValue >= 0 ? numberValue : undefined;
+}
+
+function sanitizeRideHealthData(healthData: unknown): Record<string, number> | null {
+  if (!healthData || typeof healthData !== 'object' || Array.isArray(healthData)) return null;
+  const source = healthData as Record<string, unknown>;
+  const sanitized: Record<string, number> = {};
+  [
+    'avgHeartRate',
+    'averageHeartRate',
+    'maxHeartRate',
+    'totalCalories',
+    'activeCalories',
+  ].forEach((key) => {
+    const value = finiteNonNegativeNumber(source[key]);
+    if (value !== undefined) sanitized[key] = value;
+  });
+  return Object.keys(sanitized).length > 0 ? sanitized : null;
+}
+
 // POST /gt3/telemetry — batch telemetry samples → InfluxDB
 router.post('/telemetry', async (req, res) => {
   try {
@@ -302,11 +324,12 @@ router.patch('/rides/:id/health', async (req, res) => {
       return res.status(404).json({ error: 'Ride not found' });
     }
 
-    if (healthData && typeof healthData === 'object') {
+    const sanitizedHealthData = sanitizeRideHealthData(healthData);
+    if (sanitizedHealthData) {
       const existing = rideResult.rows[0].health_data ?? {};
       await client.query(
         'UPDATE gt3_rides SET health_data = $1 WHERE id = $2',
-        [JSON.stringify({ ...existing, ...healthData }), req.params.id],
+        [JSON.stringify({ ...existing, ...sanitizedHealthData }), req.params.id],
       );
     }
 
