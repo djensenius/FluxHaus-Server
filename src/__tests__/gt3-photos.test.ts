@@ -228,16 +228,76 @@ describe('GT3 ride photos', () => {
       expect(res.body).toEqual({ ok: true, updatedSamples: 1 });
       expect(mockClientQuery.mock.calls[1][0]).toContain('FOR UPDATE');
       expect(mockClientQuery.mock.calls[2][1]).toEqual([
-        {
+        JSON.stringify({
           existing: true,
           averageHeartRate: 132,
           maxHeartRate: 155,
           activeCalories: 210.5,
-        },
+        }),
         RIDE_ID,
       ]);
-      expect(mockClientQuery.mock.calls[3][1]).toEqual([144, RIDE_ID, timestamp]);
+      expect(mockClientQuery.mock.calls[3][0]).toContain('WITH input');
+      expect(mockClientQuery.mock.calls[3][1]).toEqual([timestamp, 144, RIDE_ID]);
       expect(mockClientQuery.mock.calls[4][0]).toBe('COMMIT');
+    });
+
+    it('requires an authenticated OIDC user for health backfill', async () => {
+      const res = await request(buildApp(null))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({ heartRateSamples: [] });
+
+      expect(res.status).toBe(401);
+      expect(mockClientQuery).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when health backfill ride is not owned by the user', async () => {
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const res = await request(buildApp(USER_SUB))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({ heartRateSamples: [] });
+
+      expect(res.status).toBe(404);
+      expect(mockClientQuery.mock.calls[2][0]).toBe('ROLLBACK');
+    });
+
+    it('skips invalid heart-rate samples without failing the health patch', async () => {
+      mockClientQuery
+        .mockResolvedValueOnce({ rows: [] })
+        .mockResolvedValueOnce({ rows: [{ id: RIDE_ID, health_data: null }] })
+        .mockResolvedValueOnce({ rows: [] });
+
+      const res = await request(buildApp(USER_SUB))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({
+          heartRateSamples: [
+            { timestamp: 'not-a-date', heartRate: 144 },
+            { timestamp: '2026-05-17T15:00:00.000Z', heartRate: 'wat' },
+            { timestamp: '2026-05-17T15:01:00.000Z', heartRate: 0 },
+          ],
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ ok: true, updatedSamples: 0 });
+      expect(mockClientQuery).toHaveBeenCalledTimes(3);
+      expect(mockClientQuery.mock.calls[2][0]).toBe('COMMIT');
+    });
+
+    it('rejects oversized health backfill batches', async () => {
+      const heartRateSamples = Array.from({ length: 5_001 }, (_, index) => ({
+        timestamp: new Date(1_768_000_000_000 + index).toISOString(),
+        heartRate: 120,
+      }));
+
+      const res = await request(buildApp(USER_SUB))
+        .patch(`/gt3/rides/${RIDE_ID}/health`)
+        .send({ heartRateSamples });
+
+      expect(res.status).toBe(413);
+      expect(mockClientQuery).not.toHaveBeenCalled();
     });
   });
 

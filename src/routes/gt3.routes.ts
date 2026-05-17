@@ -26,6 +26,7 @@ const influxQuery = new InfluxDBClient({
 const gt3Logger = logger.child({ subsystem: 'gt3' });
 
 const router = Router();
+const MAX_GT3_HEALTH_SAMPLES = 5_000;
 
 // POST /gt3/telemetry — batch telemetry samples → InfluxDB
 router.post('/telemetry', async (req, res) => {
@@ -287,6 +288,9 @@ router.patch('/rides/:id/health', async (req, res) => {
   try {
     const { healthData, heartRateSamples } = req.body ?? {};
     const samples = Array.isArray(heartRateSamples) ? heartRateSamples : [];
+    if (samples.length > MAX_GT3_HEALTH_SAMPLES) {
+      return res.status(413).json({ error: 'Too many heart-rate samples' });
+    }
 
     await client.query('BEGIN');
     const rideResult = await client.query(
@@ -302,28 +306,51 @@ router.patch('/rides/:id/health', async (req, res) => {
       const existing = rideResult.rows[0].health_data ?? {};
       await client.query(
         'UPDATE gt3_rides SET health_data = $1 WHERE id = $2',
-        [{ ...existing, ...healthData }, req.params.id],
+        [JSON.stringify({ ...existing, ...healthData }), req.params.id],
       );
     }
 
     const validSamples = samples.flatMap((sample) => {
       const heartRate = Number(sample?.heartRate);
       const timestamp = sample?.timestamp ? new Date(sample.timestamp) : null;
-      if (!timestamp || Number.isNaN(timestamp.getTime()) || heartRate <= 0) return [];
+      if (!timestamp
+        || Number.isNaN(timestamp.getTime())
+        || !Number.isFinite(heartRate)
+        || heartRate <= 0) {
+        return [];
+      }
       return [{ heartRate: Math.round(heartRate), timestamp: timestamp.toISOString() }];
     });
-    const updatedSamples = await validSamples.reduce(async (chain, sample) => {
-      const count = await chain;
-      const result = await client.query(
-        `UPDATE gt3_samples
-         SET heart_rate = $1
-         WHERE ride_id = $2
-           AND timestamp BETWEEN $3::timestamptz - INTERVAL '750 milliseconds'
-                         AND $3::timestamptz + INTERVAL '750 milliseconds'`,
-        [sample.heartRate, req.params.id, sample.timestamp],
-      );
-      return count + (result.rowCount ?? 0);
-    }, Promise.resolve(0));
+    const sampleValues = validSamples.reduce((values, sample) => {
+      values.push(sample.timestamp, sample.heartRate);
+      return values;
+    }, [] as Array<string | number>);
+    const valuesSql = validSamples.map((_sample, index) => {
+      const p = index * 2 + 1;
+      return `($${p}::timestamptz, $${p + 1}::integer)`;
+    });
+    const updatedSamples = validSamples.length > 0 ? (await client.query(
+      `WITH input(ts, heart_rate) AS (VALUES ${valuesSql.join(',')}),
+       nearest AS (
+         SELECT DISTINCT ON (sample_match.id) sample_match.id, input.heart_rate
+         FROM input
+         CROSS JOIN LATERAL (
+           SELECT id, ABS(EXTRACT(EPOCH FROM (timestamp - input.ts))) AS delta
+           FROM gt3_samples
+           WHERE ride_id = $${sampleValues.length + 1}
+             AND timestamp BETWEEN input.ts - INTERVAL '750 milliseconds'
+                           AND input.ts + INTERVAL '750 milliseconds'
+           ORDER BY delta
+           LIMIT 1
+         ) AS sample_match
+         ORDER BY sample_match.id, sample_match.delta
+       )
+       UPDATE gt3_samples AS samples
+       SET heart_rate = nearest.heart_rate
+       FROM nearest
+       WHERE samples.id = nearest.id`,
+      [...sampleValues, req.params.id],
+    )).rowCount ?? 0 : 0;
 
     await client.query('COMMIT');
     gt3Logger.info({ rideId: req.params.id, updatedSamples }, 'Updated ride health data');
