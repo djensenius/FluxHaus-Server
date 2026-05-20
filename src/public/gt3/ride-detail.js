@@ -265,6 +265,7 @@ function setupRidePhotoSlideshow() {
 
   if (grid) {
     grid.addEventListener('click', (event) => {
+      if (!(event.target instanceof Element)) return;
       const card = event.target.closest('.ride-photo-card');
       if (!card) return;
       const index = Number(card.dataset.photoIndex);
