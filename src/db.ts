@@ -177,10 +177,16 @@ export async function initDatabase(): Promise<void> {
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
         user_sub TEXT NOT NULL,
         content TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'fact',
         created_at TIMESTAMPTZ DEFAULT NOW()
       );
-      CREATE INDEX IF NOT EXISTS idx_user_memories_user
-        ON user_memories (user_sub);
+      ALTER TABLE user_memories
+        ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'fact';
+      DROP INDEX IF EXISTS idx_user_memories_user;
+      CREATE INDEX IF NOT EXISTS idx_user_memories_user_created
+        ON user_memories (user_sub, created_at);
+      CREATE INDEX IF NOT EXISTS idx_user_memories_user_category_created
+        ON user_memories (user_sub, category, created_at);
 
       CREATE TABLE IF NOT EXISTS la_subscriptions (
         user_sub TEXT PRIMARY KEY,
