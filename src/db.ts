@@ -182,8 +182,11 @@ export async function initDatabase(): Promise<void> {
       );
       ALTER TABLE user_memories
         ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'fact';
-      CREATE INDEX IF NOT EXISTS idx_user_memories_user
-        ON user_memories (user_sub);
+      DROP INDEX IF EXISTS idx_user_memories_user;
+      CREATE INDEX IF NOT EXISTS idx_user_memories_user_created
+        ON user_memories (user_sub, created_at);
+      CREATE INDEX IF NOT EXISTS idx_user_memories_user_category_created
+        ON user_memories (user_sub, category, created_at);
 
       CREATE TABLE IF NOT EXISTS la_subscriptions (
         user_sub TEXT PRIMARY KEY,

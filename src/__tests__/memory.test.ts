@@ -119,6 +119,22 @@ describe('memory', () => {
       expect(sql).not.toContain('AND category');
       expect(params).toEqual(['user-1']);
     });
+
+    it('treats null or empty category as no filter', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+      await listMemories('user-1', '');
+      await listMemories('user-1', null as unknown as string);
+      expect(mockPool.query.mock.calls[0][0]).not.toContain('AND category');
+      expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1']);
+      expect(mockPool.query.mock.calls[1][0]).not.toContain('AND category');
+      expect(mockPool.query.mock.calls[1][1]).toEqual(['user-1']);
+    });
+
+    it('orders by created_at with a stable id tie-breaker', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+      await listMemories('user-1');
+      expect(mockPool.query.mock.calls[0][0]).toContain('ORDER BY created_at, id');
+    });
   });
 
   describe('deleteMemory', () => {

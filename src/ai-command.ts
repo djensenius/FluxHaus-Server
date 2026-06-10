@@ -1868,25 +1868,37 @@ async function executeToolInner(
     return 'Image generation is only available through the AI command interface.';
 
   // ── User Memory ──
-  case 'save_memory':
+  case 'save_memory': {
     if (!userSub) return 'Memory not available — user not authenticated';
-    return JSON.stringify(await saveMemory(userSub, args.content, args.category), null, 2);
+    if (typeof args.content !== 'string' || args.content.trim() === '') {
+      return 'Invalid memory: content must be a non-empty string';
+    }
+    const category = typeof args.category === 'string' ? args.category : undefined;
+    return JSON.stringify(await saveMemory(userSub, args.content, category), null, 2);
+  }
   case 'delete_memory':
     if (!userSub) return 'Memory not available — user not authenticated';
+    if (typeof args.memory_id !== 'string' || args.memory_id === '') {
+      return 'Invalid request: memory_id must be a string';
+    }
     return (await deleteMemory(userSub, args.memory_id))
       ? 'Memory deleted successfully'
       : 'Memory not found';
   case 'list_memories': {
     if (!userSub) return 'Memory not available — user not authenticated';
-    const memories = await listMemories(userSub, args.category);
+    const category = typeof args.category === 'string' ? args.category : undefined;
+    const memories = await listMemories(userSub, category);
     return JSON.stringify(memories, null, 2);
   }
   case 'update_memory': {
     if (!userSub) return 'Memory not available — user not authenticated';
-    const updated = await updateMemory(userSub, args.memory_id, {
-      content: args.content,
-      category: args.category,
-    });
+    if (typeof args.memory_id !== 'string' || args.memory_id === '') {
+      return 'Invalid update: memory_id must be a string';
+    }
+    const updates: { content?: string; category?: string } = {};
+    if (typeof args.content === 'string') updates.content = args.content;
+    if (typeof args.category === 'string') updates.category = args.category;
+    const updated = await updateMemory(userSub, args.memory_id, updates);
     return updated ? JSON.stringify(updated, null, 2) : 'Memory not found';
   }
   case 'delete_all_memories': {

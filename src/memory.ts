@@ -92,9 +92,9 @@ export async function listMemories(userSub: string, category?: string): Promise<
   const pool = getPool();
   if (!pool) return [];
 
-  const filterByCategory = category !== undefined;
+  const filterByCategory = typeof category === 'string' && category !== '';
   const sql = `SELECT id, content, category, created_at FROM user_memories WHERE user_sub = $1${
-    filterByCategory ? ' AND category = $2' : ''} ORDER BY created_at`;
+    filterByCategory ? ' AND category = $2' : ''} ORDER BY created_at, id`;
   const params = filterByCategory ? [userSub, normalizeCategory(category)] : [userSub];
 
   const result = await pool.query(sql, params);
