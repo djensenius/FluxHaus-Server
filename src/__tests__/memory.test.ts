@@ -103,6 +103,22 @@ describe('memory', () => {
       const result = await listMemories('user-1');
       expect(result[0].category).toBe('fact');
     });
+
+    it('pushes the category filter down into the SQL query', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+      await listMemories('user-1', 'project');
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('AND category = $2');
+      expect(params).toEqual(['user-1', 'project']);
+    });
+
+    it('does not filter by category when none is given', async () => {
+      mockPool.query.mockResolvedValue({ rows: [] });
+      await listMemories('user-1');
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).not.toContain('AND category');
+      expect(params).toEqual(['user-1']);
+    });
   });
 
   describe('deleteMemory', () => {
@@ -184,6 +200,13 @@ describe('memory', () => {
   });
 
   describe('buildMemoryPrompt', () => {
+    it('returns an empty string when the database is unavailable', async () => {
+      getPool.mockReturnValue(null);
+      const prompt = await buildMemoryPrompt('user-1');
+      expect(prompt).toBe('');
+      expect(mockPool.query).not.toHaveBeenCalled();
+    });
+
     it('returns a proactive capture directive when there are no memories', async () => {
       mockPool.query.mockResolvedValue({ rows: [] });
       const prompt = await buildMemoryPrompt('user-1');

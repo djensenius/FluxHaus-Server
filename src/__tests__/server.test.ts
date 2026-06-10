@@ -9,6 +9,7 @@ import HomeConnect from '../homeconnect';
 import transcribeAudio from '../stt';
 import synthesizeSpeech from '../tts';
 import { executeAICommand } from '../ai-command';
+import { getPool } from '../db';
 
 // Mock dependencies
 jest.mock('fs');
@@ -385,6 +386,18 @@ describe('Server', () => {
       mockedExecuteAICommand.mockResolvedValue('Lights are on.');
     });
 
+    // Some tests below enable the memory path by giving getPool a live pool;
+    // restore the default (no DB) afterwards so it never leaks into other tests.
+    afterEach(() => {
+      jest.mocked(getPool).mockReturnValue(null);
+    });
+
+    const enableMemoryPool = () => {
+      jest.mocked(getPool).mockReturnValue({
+        query: jest.fn().mockResolvedValue({ rows: [] }),
+      } as never);
+    };
+
     it('returns 403 for non-admin', async () => {
       await request(app)
         .post('/voice')
@@ -402,6 +415,7 @@ describe('Server', () => {
     });
 
     it('processes text input and returns audio/mpeg', async () => {
+      enableMemoryPool();
       const response = await request(app)
         .post('/voice')
         .set('Authorization', oidcAuthHeader)
@@ -424,6 +438,7 @@ describe('Server', () => {
     });
 
     it('processes base64 audio input via STT then returns audio/mpeg', async () => {
+      enableMemoryPool();
       const fakeAudio = Buffer.from('fake audio bytes').toString('base64');
       await request(app)
         .post('/voice')

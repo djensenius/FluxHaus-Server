@@ -4,7 +4,7 @@ import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import { FluxHausServices } from './services';
 import {
-  deleteAllMemories, deleteMemory, listMemories, normalizeCategory, saveMemory, updateMemory,
+  deleteAllMemories, deleteMemory, listMemories, saveMemory, updateMemory,
 } from './memory';
 import logger from './logger';
 
@@ -1878,10 +1878,7 @@ async function executeToolInner(
       : 'Memory not found';
   case 'list_memories': {
     if (!userSub) return 'Memory not available — user not authenticated';
-    const all = await listMemories(userSub);
-    const memories = args.category
-      ? all.filter((m) => m.category === normalizeCategory(args.category))
-      : all;
+    const memories = await listMemories(userSub, args.category);
     return JSON.stringify(memories, null, 2);
   }
   case 'update_memory': {

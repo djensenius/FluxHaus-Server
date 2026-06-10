@@ -88,14 +88,16 @@ export async function saveMemory(
   };
 }
 
-export async function listMemories(userSub: string): Promise<Memory[]> {
+export async function listMemories(userSub: string, category?: string): Promise<Memory[]> {
   const pool = getPool();
   if (!pool) return [];
 
-  const result = await pool.query(
-    'SELECT id, content, category, created_at FROM user_memories WHERE user_sub = $1 ORDER BY created_at',
-    [userSub],
-  );
+  const filterByCategory = category !== undefined;
+  const sql = `SELECT id, content, category, created_at FROM user_memories WHERE user_sub = $1${
+    filterByCategory ? ' AND category = $2' : ''} ORDER BY created_at`;
+  const params = filterByCategory ? [userSub, normalizeCategory(category)] : [userSub];
+
+  const result = await pool.query(sql, params);
 
   return result.rows.map((row) => rowToMemory(row, userSub));
 }
@@ -180,9 +182,13 @@ export async function deleteAllMemories(userSub: string): Promise<number> {
  * durable facts (projects, possessions, purchase ideas, preferences) without
  * being asked, plus the current memories grouped by category. The directive is
  * always present so the assistant captures the first memory from a blank slate;
- * it is only reached when the user's memoryEnabled preference is on.
+ * it is only reached when the user's memoryEnabled preference is on. When the
+ * database is unavailable the directive is omitted entirely, so the assistant is
+ * not told to call memory tools that would fail during an outage or startup.
  */
 export async function buildMemoryPrompt(userSub: string): Promise<string> {
+  if (!getPool()) return '';
+
   const memories = await listMemories(userSub);
 
   const directive = '\n\nYou maintain a long-term memory about this user that persists across '
