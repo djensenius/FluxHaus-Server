@@ -458,6 +458,8 @@ textarea:focus {
 }
 
 .photo-slideshow-content img {
+  display: block;
+  max-width: 100%;
   max-height: calc(100vh - 9rem);
   width: auto;
   margin: 0 auto;
