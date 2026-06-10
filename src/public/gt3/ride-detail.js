@@ -221,6 +221,8 @@ function showRidePhotoSlideshow(index) {
   updateRidePhotoSlideshow();
   modal.style.display = 'flex';
   document.body.classList.add('photo-slideshow-open');
+  const closeButton = slideshowEl('photo-slideshow-close');
+  if (closeButton) closeButton.focus();
 }
 
 function advanceRidePhotoSlideshow(step) {
