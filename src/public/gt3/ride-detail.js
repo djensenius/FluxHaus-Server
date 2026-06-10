@@ -66,6 +66,8 @@ function weatherEmoji(condition) {
 // Detect share-mode (public, no-auth access) via ?share=<token>
 const SHARE_TOKEN = new URLSearchParams(window.location.search).get('share');
 const IS_SHARE_MODE = !!SHARE_TOKEN;
+let ridePhotoSlides = [];
+let currentRidePhotoIndex = 0;
 
 let csrfTokenCache = null;
 async function getCsrf() {
@@ -181,6 +183,54 @@ function photoBytesUrl(rideId, photoId) {
   return `${API_BASE}/rides/${encodeURIComponent(rideId)}/photos/${encodeURIComponent(photoId)}`;
 }
 
+function slideshowEl(id) {
+  return document.getElementById(id);
+}
+
+function hideRidePhotoSlideshow() {
+  const modal = slideshowEl('photo-slideshow');
+  if (!modal) return;
+  modal.style.display = 'none';
+  document.body.classList.remove('photo-slideshow-open');
+}
+
+function updateRidePhotoSlideshow() {
+  const slide = ridePhotoSlides[currentRidePhotoIndex];
+  if (!slide) {
+    hideRidePhotoSlideshow();
+    return;
+  }
+
+  const image = slideshowEl('photo-slideshow-image');
+  const caption = slideshowEl('photo-slideshow-caption');
+  const counter = slideshowEl('photo-slideshow-counter');
+  const prev = slideshowEl('photo-slideshow-prev');
+  const next = slideshowEl('photo-slideshow-next');
+
+  if (image) image.src = slide.imageUrl;
+  if (caption) caption.textContent = slide.caption;
+  if (counter) counter.textContent = `${currentRidePhotoIndex + 1} / ${ridePhotoSlides.length}`;
+  if (prev) prev.style.display = ridePhotoSlides.length > 1 ? '' : 'none';
+  if (next) next.style.display = ridePhotoSlides.length > 1 ? '' : 'none';
+}
+
+function showRidePhotoSlideshow(index) {
+  const modal = slideshowEl('photo-slideshow');
+  if (!modal || ridePhotoSlides.length === 0) return;
+  currentRidePhotoIndex = Math.max(0, Math.min(index, ridePhotoSlides.length - 1));
+  updateRidePhotoSlideshow();
+  modal.style.display = 'flex';
+  document.body.classList.add('photo-slideshow-open');
+  const closeButton = slideshowEl('photo-slideshow-close');
+  if (closeButton) closeButton.focus();
+}
+
+function advanceRidePhotoSlideshow(step) {
+  if (ridePhotoSlides.length === 0) return;
+  currentRidePhotoIndex = (currentRidePhotoIndex + step + ridePhotoSlides.length) % ridePhotoSlides.length;
+  updateRidePhotoSlideshow();
+}
+
 function renderRidePhotos(photos, rideId) {
   const section = document.getElementById('photos-section');
   const grid = document.getElementById('photos-grid');
@@ -188,19 +238,60 @@ function renderRidePhotos(photos, rideId) {
   if (!Array.isArray(photos) || photos.length === 0 || !rideId) {
     section.style.display = 'none';
     grid.innerHTML = '';
+    ridePhotoSlides = [];
+    hideRidePhotoSlideshow();
     return;
   }
   section.style.display = '';
-  grid.innerHTML = photos.map((photo) => {
+  ridePhotoSlides = photos.map((photo) => {
     const imageUrl = photoBytesUrl(rideId, photo.id);
     const stamp = photo.capturedAt || photo.createdAt;
+    return { imageUrl, caption: formatDate(stamp) };
+  });
+  grid.innerHTML = ridePhotoSlides.map((photo, index) => {
     return `
-      <a class="ride-photo-card" href="${imageUrl}" target="_blank" rel="noopener noreferrer">
-        <img src="${imageUrl}" loading="lazy" alt="Ride photo" />
-        <div class="ride-photo-meta">${formatDate(stamp)}</div>
+      <a class="ride-photo-card" href="${photo.imageUrl}" data-photo-index="${index}">
+        <img src="${photo.imageUrl}" loading="lazy" alt="Ride photo" />
+        <div class="ride-photo-meta">${photo.caption}</div>
       </a>
     `;
   }).join('');
+}
+
+function setupRidePhotoSlideshow() {
+  const grid = slideshowEl('photos-grid');
+  const modal = slideshowEl('photo-slideshow');
+  const close = slideshowEl('photo-slideshow-close');
+  const prev = slideshowEl('photo-slideshow-prev');
+  const next = slideshowEl('photo-slideshow-next');
+
+  if (grid) {
+    grid.addEventListener('click', (event) => {
+      if (!(event.target instanceof Element)) return;
+      const card = event.target.closest('.ride-photo-card');
+      if (!card) return;
+      const index = Number(card.dataset.photoIndex);
+      if (!Number.isInteger(index)) return;
+      event.preventDefault();
+      showRidePhotoSlideshow(index);
+    });
+  }
+
+  if (modal) {
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) hideRidePhotoSlideshow();
+    });
+  }
+  if (close) close.addEventListener('click', hideRidePhotoSlideshow);
+  if (prev) prev.addEventListener('click', () => advanceRidePhotoSlideshow(-1));
+  if (next) next.addEventListener('click', () => advanceRidePhotoSlideshow(1));
+
+  document.addEventListener('keydown', (event) => {
+    if (!modal || modal.style.display === 'none') return;
+    if (event.key === 'Escape') hideRidePhotoSlideshow();
+    if (event.key === 'ArrowLeft') advanceRidePhotoSlideshow(-1);
+    if (event.key === 'ArrowRight') advanceRidePhotoSlideshow(1);
+  });
 }
 
 function addRidePhotoMarkers(map, photos, rideId) {
@@ -782,6 +873,7 @@ async function refreshShareList(rideId) {
   }
 }
 
+setupRidePhotoSlideshow();
 loadRide();
 
 // Re-render on theme change
