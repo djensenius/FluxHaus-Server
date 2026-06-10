@@ -3,7 +3,9 @@ import OpenAI, { AzureOpenAI } from 'openai';
 import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import { FluxHausServices } from './services';
-import { deleteMemory, saveMemory } from './memory';
+import {
+  deleteAllMemories, deleteMemory, listMemories, normalizeCategory, saveMemory, updateMemory,
+} from './memory';
 import logger from './logger';
 
 const aiLogger = logger.child({ subsystem: 'ai' });
@@ -1085,25 +1087,87 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   // ── User Memory ──
   {
     name: 'save_memory',
-    description: 'Save a fact or preference about the user to remember across conversations. '
-      + 'Use when the user shares personal preferences, important facts, or asks you to remember something.',
+    description: 'Save a durable fact about the user to remember across conversations. '
+      + 'Proactively capture, as the conversation unfolds: projects the user is working on, '
+      + 'things they own, things they want or are thinking about buying, and their preferences. '
+      + 'Also use it whenever the user shares an important personal fact or asks you to remember '
+      + 'something. Avoid saving duplicates of things you already remember.',
     parameters: {
       type: 'object',
       properties: {
         content: { type: 'string', description: 'The fact or preference to remember' },
+        category: {
+          type: 'string',
+          description: 'How to classify the memory: "project" (something they are working on), '
+            + '"possession" (something they own), "wishlist" (something they want or may buy), '
+            + '"preference" (a durable preference), or "fact" (any other lasting fact). '
+            + 'Defaults to "fact".',
+          enum: ['project', 'possession', 'wishlist', 'preference', 'fact'],
+        },
       },
       required: ['content'],
     },
   },
   {
     name: 'delete_memory',
-    description: 'Delete a previously saved memory by its ID. Use when the user asks you to forget something.',
+    description: 'Delete a previously saved memory by its ID. Use when the user asks you to forget '
+      + 'one specific thing. Look up the ID with list_memories first if you do not have it.',
     parameters: {
       type: 'object',
       properties: {
         memory_id: { type: 'string', description: 'The ID of the memory to delete' },
       },
       required: ['memory_id'],
+    },
+  },
+  {
+    name: 'list_memories',
+    description: 'List everything you currently remember about the user, including each memory\'s '
+      + 'id and category. Use when the user asks what you remember or wants to review their '
+      + 'memories, and to find the right id before updating or deleting one. Optionally filter to a '
+      + 'single category.',
+    parameters: {
+      type: 'object',
+      properties: {
+        category: {
+          type: 'string',
+          description: 'Optional: only return memories in this category.',
+          enum: ['project', 'possession', 'wishlist', 'preference', 'fact'],
+        },
+      },
+    },
+  },
+  {
+    name: 'update_memory',
+    description: 'Change an existing memory by id: rewrite its text and/or move it to a different '
+      + 'category. Use when a remembered fact changes — e.g. a project is finished, they sold '
+      + 'something they owned, or a wishlist item was purchased (move it to "possession"). Provide '
+      + 'content and/or category; look up the id with list_memories first if you do not have it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        memory_id: { type: 'string', description: 'The id of the memory to change' },
+        content: {
+          type: 'string',
+          description: 'New text for the memory. Omit to keep the current text.',
+        },
+        category: {
+          type: 'string',
+          description: 'New category for the memory. Omit to keep the current category.',
+          enum: ['project', 'possession', 'wishlist', 'preference', 'fact'],
+        },
+      },
+      required: ['memory_id'],
+    },
+  },
+  {
+    name: 'delete_all_memories',
+    description: 'Delete ALL of the user\'s memories at once (a full cleanup). This is destructive '
+      + 'and cannot be undone — only use it after the user explicitly confirms they want to erase '
+      + 'everything you remember about them.',
+    parameters: {
+      type: 'object',
+      properties: {},
     },
   },
 ];
@@ -1798,12 +1862,33 @@ async function executeToolInner(
   // ── User Memory ──
   case 'save_memory':
     if (!userSub) return 'Memory not available — user not authenticated';
-    return JSON.stringify(await saveMemory(userSub, args.content), null, 2);
+    return JSON.stringify(await saveMemory(userSub, args.content, args.category), null, 2);
   case 'delete_memory':
     if (!userSub) return 'Memory not available — user not authenticated';
     return (await deleteMemory(userSub, args.memory_id))
       ? 'Memory deleted successfully'
       : 'Memory not found';
+  case 'list_memories': {
+    if (!userSub) return 'Memory not available — user not authenticated';
+    const all = await listMemories(userSub);
+    const memories = args.category
+      ? all.filter((m) => m.category === normalizeCategory(args.category))
+      : all;
+    return JSON.stringify(memories, null, 2);
+  }
+  case 'update_memory': {
+    if (!userSub) return 'Memory not available — user not authenticated';
+    const updated = await updateMemory(userSub, args.memory_id, {
+      content: args.content,
+      category: args.category,
+    });
+    return updated ? JSON.stringify(updated, null, 2) : 'Memory not found';
+  }
+  case 'delete_all_memories': {
+    if (!userSub) return 'Memory not available — user not authenticated';
+    const count = await deleteAllMemories(userSub);
+    return `Deleted ${count} ${count === 1 ? 'memory' : 'memories'}`;
+  }
 
   default:
     return `Unknown tool: ${name}`;

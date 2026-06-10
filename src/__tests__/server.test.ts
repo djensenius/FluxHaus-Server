@@ -415,7 +415,7 @@ describe('Server', () => {
         [],
         undefined,
         undefined,
-        undefined,
+        expect.stringContaining('long-term memory'),
         'test-user-123',
       );
       expect(mockedSynthesizeSpeech).toHaveBeenCalledWith('Lights are on.');
@@ -441,7 +441,7 @@ describe('Server', () => {
         [],
         undefined,
         undefined,
-        undefined,
+        expect.stringContaining('long-term memory'),
         'test-user-123',
       );
     });

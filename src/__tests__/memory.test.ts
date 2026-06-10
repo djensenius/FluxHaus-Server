@@ -1,5 +1,5 @@
 import {
-  buildMemoryPrompt, deleteAllMemories, deleteMemory, listMemories, saveMemory,
+  buildMemoryPrompt, deleteAllMemories, deleteMemory, listMemories, saveMemory, updateMemory,
 } from '../memory';
 
 jest.mock('../db', () => ({
@@ -35,7 +35,7 @@ describe('memory', () => {
         .rejects.toThrow('Database not available');
     });
 
-    it('encrypts and inserts memory', async () => {
+    it('encrypts and inserts memory with default category', async () => {
       mockPool.query.mockResolvedValue({
         rows: [{ id: 'mem-1', created_at: '2026-01-01T00:00:00Z' }],
       });
@@ -43,9 +43,28 @@ describe('memory', () => {
       expect(mem).toEqual({
         id: 'mem-1',
         content: 'likes cats',
+        category: 'fact',
         createdAt: '2026-01-01T00:00:00Z',
       });
-      expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1', 'enc:likes cats']);
+      expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1', 'enc:likes cats', 'fact']);
+    });
+
+    it('stores the provided category', async () => {
+      mockPool.query.mockResolvedValue({
+        rows: [{ id: 'mem-2', created_at: '2026-01-01T00:00:00Z' }],
+      });
+      const mem = await saveMemory('user-1', 'building a deck', 'project');
+      expect(mem.category).toBe('project');
+      expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1', 'enc:building a deck', 'project']);
+    });
+
+    it('falls back to fact for unknown categories', async () => {
+      mockPool.query.mockResolvedValue({
+        rows: [{ id: 'mem-3', created_at: '2026-01-01T00:00:00Z' }],
+      });
+      const mem = await saveMemory('user-1', 'something', 'nonsense');
+      expect(mem.category).toBe('fact');
+      expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1', 'enc:something', 'fact']);
     });
   });
 
@@ -56,17 +75,32 @@ describe('memory', () => {
       expect(result).toEqual([]);
     });
 
-    it('decrypts and returns memories', async () => {
+    it('decrypts and returns memories with category', async () => {
       mockPool.query.mockResolvedValue({
         rows: [
-          { id: 'mem-1', content: 'enc:likes cats', created_at: '2026-01-01T00:00:00Z' },
-          { id: 'mem-2', content: 'enc:prefers Celsius', created_at: '2026-01-02T00:00:00Z' },
+          {
+            id: 'mem-1', content: 'enc:likes cats', category: 'preference', created_at: '2026-01-01T00:00:00Z',
+          },
+          {
+            id: 'mem-2', content: 'enc:prefers Celsius', category: 'preference', created_at: '2026-01-02T00:00:00Z',
+          },
         ],
       });
       const result = await listMemories('user-1');
       expect(result).toHaveLength(2);
       expect(result[0].content).toBe('likes cats');
+      expect(result[0].category).toBe('preference');
       expect(result[1].content).toBe('prefers Celsius');
+    });
+
+    it('normalizes a missing category to fact', async () => {
+      mockPool.query.mockResolvedValue({
+        rows: [
+          { id: 'mem-1', content: 'enc:legacy note', created_at: '2026-01-01T00:00:00Z' },
+        ],
+      });
+      const result = await listMemories('user-1');
+      expect(result[0].category).toBe('fact');
     });
   });
 
@@ -84,6 +118,62 @@ describe('memory', () => {
     });
   });
 
+  describe('updateMemory', () => {
+    it('updates content and category', async () => {
+      mockPool.query.mockResolvedValue({
+        rowCount: 1,
+        rows: [{
+          id: 'mem-1', content: 'enc:owns a GT3', category: 'possession', created_at: '2026-01-01T00:00:00Z',
+        }],
+      });
+      const result = await updateMemory('user-1', 'mem-1', {
+        content: 'owns a GT3',
+        category: 'possession',
+      });
+      expect(result).toEqual({
+        id: 'mem-1',
+        content: 'owns a GT3',
+        category: 'possession',
+        createdAt: '2026-01-01T00:00:00Z',
+      });
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('UPDATE user_memories SET content = $1, category = $2');
+      expect(params).toEqual(['enc:owns a GT3', 'possession', 'mem-1', 'user-1']);
+    });
+
+    it('updates only the category', async () => {
+      mockPool.query.mockResolvedValue({
+        rowCount: 1,
+        rows: [{
+          id: 'mem-1', content: 'enc:espresso machine', category: 'possession', created_at: '2026-01-01T00:00:00Z',
+        }],
+      });
+      const result = await updateMemory('user-1', 'mem-1', { category: 'possession' });
+      expect(result?.category).toBe('possession');
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('SET category = $1');
+      expect(params).toEqual(['possession', 'mem-1', 'user-1']);
+    });
+
+    it('returns null when the memory does not exist', async () => {
+      mockPool.query.mockResolvedValue({ rowCount: 0, rows: [] });
+      const result = await updateMemory('user-1', 'mem-99', { content: 'x' });
+      expect(result).toBeNull();
+    });
+
+    it('returns the current memory unchanged when no fields are provided', async () => {
+      mockPool.query.mockResolvedValue({
+        rowCount: 1,
+        rows: [{
+          id: 'mem-1', content: 'enc:likes cats', category: 'preference', created_at: '2026-01-01T00:00:00Z',
+        }],
+      });
+      const result = await updateMemory('user-1', 'mem-1', {});
+      expect(result?.content).toBe('likes cats');
+      expect(mockPool.query.mock.calls[0][0]).toContain('SELECT');
+    });
+  });
+
   describe('deleteAllMemories', () => {
     it('returns count of deleted', async () => {
       mockPool.query.mockResolvedValue({ rowCount: 5 });
@@ -93,20 +183,38 @@ describe('memory', () => {
   });
 
   describe('buildMemoryPrompt', () => {
-    it('returns empty string when no memories', async () => {
+    it('returns a proactive capture directive when there are no memories', async () => {
       mockPool.query.mockResolvedValue({ rows: [] });
       const prompt = await buildMemoryPrompt('user-1');
-      expect(prompt).toBe('');
+      expect(prompt).toContain('save_memory');
+      expect(prompt).toContain('without being asked');
+      expect(prompt).toContain('no saved memories');
     });
 
-    it('returns formatted prompt with memories', async () => {
+    it('groups memories by category', async () => {
       mockPool.query.mockResolvedValue({
         rows: [
-          { id: 'mem-1', content: 'enc:likes cats', created_at: '2026-01-01T00:00:00Z' },
+          {
+            id: 'mem-1', content: 'enc:building a deck', category: 'project', created_at: '2026-01-01T00:00:00Z',
+          },
+          {
+            id: 'mem-2', content: 'enc:owns a GT3', category: 'possession', created_at: '2026-01-02T00:00:00Z',
+          },
+          {
+            id: 'mem-3',
+            content: 'enc:wants an espresso machine',
+            category: 'wishlist',
+            created_at: '2026-01-03T00:00:00Z',
+          },
         ],
       });
       const prompt = await buildMemoryPrompt('user-1');
-      expect(prompt).toContain('likes cats');
+      expect(prompt).toContain("Projects they're working on:");
+      expect(prompt).toContain('building a deck');
+      expect(prompt).toContain('Things they own:');
+      expect(prompt).toContain('owns a GT3');
+      expect(prompt).toContain("Things they're thinking about buying:");
+      expect(prompt).toContain('wants an espresso machine');
       expect(prompt).toContain('save_memory');
       expect(prompt).toContain('delete_memory');
       expect(prompt).toContain('id:mem-1');
