@@ -1,5 +1,6 @@
 import {
-  buildMemoryPrompt, deleteAllMemories, deleteMemory, listMemories, saveMemory, updateMemory,
+  MAX_MEMORIES_IN_PROMPT, buildMemoryPrompt, deleteAllMemories, deleteMemory,
+  listMemories, saveMemory, updateMemory,
 } from '../memory';
 
 jest.mock('../db', () => ({
@@ -218,6 +219,22 @@ describe('memory', () => {
       expect(prompt).toContain('save_memory');
       expect(prompt).toContain('delete_memory');
       expect(prompt).toContain('id:mem-1');
+    });
+
+    it('caps embedded memories at MAX_MEMORIES_IN_PROMPT and notes truncation', async () => {
+      const total = MAX_MEMORIES_IN_PROMPT + 5;
+      const rows = Array.from({ length: total }, (_, i) => ({
+        id: `mem-${i}`,
+        content: `enc:memory ${i}`,
+        category: 'fact',
+        created_at: '2026-01-01T00:00:00Z',
+      }));
+      mockPool.query.mockResolvedValue({ rows });
+      const prompt = await buildMemoryPrompt('user-1');
+      expect(prompt).toContain(`${MAX_MEMORIES_IN_PROMPT} most recent of ${total}`);
+      // Oldest entries (mem-0..mem-4) are dropped; the newest is retained.
+      expect(prompt).not.toContain('[id:mem-0]');
+      expect(prompt).toContain(`[id:mem-${total - 1}]`);
     });
   });
 });

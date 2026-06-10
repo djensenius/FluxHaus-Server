@@ -21,6 +21,13 @@ export type MemoryCategory = (typeof MEMORY_CATEGORIES)[number];
 
 export const DEFAULT_MEMORY_CATEGORY: MemoryCategory = 'fact';
 
+/**
+ * Upper bound on how many memories are embedded verbatim in the system prompt.
+ * The most recent memories are kept; the rest stay retrievable via list_memories.
+ * This bounds prompt size (and cost) as a user's memory set grows.
+ */
+export const MAX_MEMORIES_IN_PROMPT = 200;
+
 const CATEGORY_HEADINGS: Record<MemoryCategory, string> = {
   project: "Projects they're working on",
   possession: 'Things they own',
@@ -46,7 +53,7 @@ export interface Memory {
 interface MemoryRow {
   id: string;
   content: string;
-  category: string;
+  category?: string | null;
   created_at: string;
 }
 
@@ -191,10 +198,15 @@ export async function buildMemoryPrompt(userSub: string): Promise<string> {
     return `${directive} You have no saved memories about this user yet.`;
   }
 
+  // Bound the prompt: embed only the most recently created memories verbatim.
+  const included = memories.length > MAX_MEMORIES_IN_PROMPT
+    ? memories.slice(memories.length - MAX_MEMORIES_IN_PROMPT)
+    : memories;
+
   const sections = MEMORY_CATEGORIES
     .map((category) => ({
       category,
-      items: memories.filter((m) => m.category === category),
+      items: included.filter((m) => m.category === category),
     }))
     .filter(({ items }) => items.length > 0)
     .map(({ category, items }) => {
@@ -203,5 +215,11 @@ export async function buildMemoryPrompt(userSub: string): Promise<string> {
     })
     .join('\n\n');
 
-  return `${directive}\n\nHere is what you currently remember, organized by category:\n\n${sections}`;
+  const truncationNote = included.length < memories.length
+    ? `\n\n(Showing the ${included.length} most recent of ${memories.length} memories; `
+      + 'use list_memories to review them all.)'
+    : '';
+
+  return `${directive}\n\nHere is what you currently remember, organized by category:\n\n`
+    + `${sections}${truncationNote}`;
 }

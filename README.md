@@ -180,7 +180,7 @@ The server uses PostgreSQL for:
 - **Session storage** (`session` table) — browser login sessions
 - **OAuth tokens** (`oauth_tokens` table) — Miele and HomeConnect tokens
 - **User preferences** (`user_preferences` table) — includes memory preferences and default calendar selection
-- **User memories** (`user_memories` table) — durable facts the assistant remembers about each user, grouped by `category` (`project`, `possession`, `wishlist`, `preference`, `fact`); content is encrypted at rest. The assistant captures these proactively as you chat and can list, add, update, delete, or clear them on request (`list_memories`, `save_memory`, `update_memory`, `delete_memory`, `delete_all_memories` tools), in addition to the `/memories` REST endpoints.
+- **User memories** (`user_memories` table) — durable facts the assistant remembers about each user, grouped by `category` (`project`, `possession`, `wishlist`, `preference`, `fact`); content is encrypted at rest. The assistant captures these proactively as you chat and can fully manage them through chat tools — list, add, update, delete, or clear (`list_memories`, `save_memory`, `update_memory`, `delete_memory`, `delete_all_memories`). The REST API exposes a subset: `GET /memories` (list) and `DELETE /memories/:id` / `DELETE /memories` (delete one or clear all).
 
 ```
 POSTGRES_URL=postgresql://fluxhaus:password@localhost:5432/fluxhaus
