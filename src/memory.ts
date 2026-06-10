@@ -183,8 +183,9 @@ export async function buildMemoryPrompt(userSub: string): Promise<string> {
     + 'on your own, without being asked — especially projects they are working on (category '
     + '"project"), things they own ("possession"), things they want or are thinking about buying '
     + '("wishlist"), and their preferences ("preference"); use "fact" for anything else. Do not '
-    + 'save duplicates or trivial, ephemeral details. Use the delete_memory tool when a fact '
-    + 'changes or the user asks you to forget it.';
+    + 'save duplicates or trivial, ephemeral details. Use the update_memory tool when a remembered '
+    + 'fact changes (for example, move a wishlist item to "possession" once they buy it), and the '
+    + 'delete_memory tool when the user asks you to forget something.';
 
   if (memories.length === 0) {
     return `${directive} You have no saved memories about this user yet.`;

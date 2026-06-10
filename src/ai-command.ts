@@ -1164,10 +1164,18 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
     name: 'delete_all_memories',
     description: 'Delete ALL of the user\'s memories at once (a full cleanup). This is destructive '
       + 'and cannot be undone — only use it after the user explicitly confirms they want to erase '
-      + 'everything you remember about them.',
+      + 'everything you remember about them. You must pass confirm: true, and only set it once the '
+      + 'user has clearly confirmed.',
     parameters: {
       type: 'object',
-      properties: {},
+      properties: {
+        confirm: {
+          type: 'boolean',
+          description: 'Must be true to proceed. Set this only after the user has explicitly '
+            + 'confirmed they want to permanently delete all of their memories.',
+        },
+      },
+      required: ['confirm'],
     },
   },
 ];
@@ -1886,6 +1894,10 @@ async function executeToolInner(
   }
   case 'delete_all_memories': {
     if (!userSub) return 'Memory not available — user not authenticated';
+    if (args.confirm !== true) {
+      return 'Refused: deleting all memories is irreversible and requires explicit confirmation. '
+        + 'Confirm with the user first, then call again with confirm set to true.';
+    }
     const count = await deleteAllMemories(userSub);
     return `Deleted ${count} ${count === 1 ? 'memory' : 'memories'}`;
   }
