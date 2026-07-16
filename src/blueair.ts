@@ -1,5 +1,4 @@
 import { HomeAssistantClient } from './homeassistant-client';
-import { writePoint } from './influx';
 import logger from './logger';
 
 const blueairLogger = logger.child({ subsystem: 'blueair' });
@@ -24,7 +23,6 @@ export interface BlueairConfig {
   pm25EntityId?: string;
   filterEntityId?: string;
   onlineEntityId?: string;
-  device?: string;
   pollInterval?: number;
 }
 
@@ -79,8 +77,6 @@ export default class Blueair {
 
   private onlineEntityId: string;
 
-  private device: string;
-
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: BlueairConfig) {
@@ -90,7 +86,6 @@ export default class Blueair {
     this.pm25EntityId = config.pm25EntityId || 'sensor.blue_pure_pm_2_5';
     this.filterEntityId = config.filterEntityId || 'sensor.blue_pure_filter_life';
     this.onlineEntityId = config.onlineEntityId || 'binary_sensor.blue_pure_online';
-    this.device = config.device || 'blue_pure';
     this.startPolling(config.pollInterval ?? 1000 * 60);
   }
 
@@ -134,13 +129,6 @@ export default class Blueair {
         pm25: pm25Value,
         filterLife: filterValue,
       };
-
-      if (pm25Value !== null || filterValue !== null) {
-        const fields: Record<string, number> = {};
-        if (pm25Value !== null) fields.pm25 = pm25Value;
-        if (filterValue !== null) fields.filter_life = filterValue;
-        writePoint('air_purifier', fields, { device: this.device });
-      }
 
       this.onStatusChange?.(this.cachedStatus);
     } catch (err) {

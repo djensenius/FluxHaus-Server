@@ -3,11 +3,6 @@ import { HomeAssistantClient } from '../homeassistant-client';
 
 jest.mock('../homeassistant-client');
 
-jest.mock('../influx', () => ({
-  __esModule: true,
-  writePoint: jest.fn(),
-}));
-
 jest.mock('../logger', () => ({
   __esModule: true,
   default: {
