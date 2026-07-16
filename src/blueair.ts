@@ -157,6 +157,11 @@ export default class Blueair {
   }
 
   public async setPreset(mode: string): Promise<string> {
+    // If we have never successfully polled the device, try once so we can
+    // validate against the modes it actually reports rather than guessing.
+    if (this.cachedStatus.presetModes.length === 0) {
+      await this.updateStatus();
+    }
     const allowed = this.cachedStatus.presetModes.length > 0
       ? this.cachedStatus.presetModes
       : ['auto', 'night', 'manual'];

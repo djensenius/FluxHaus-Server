@@ -724,7 +724,8 @@ export async function createServer(): Promise<Express> {
       res.status(403).send('Forbidden');
       return;
     }
-    const mode = String(req.body?.mode ?? '');
+    const rawMode = req.body?.mode;
+    const mode = typeof rawMode === 'string' ? rawMode : '';
     if (!/^[a-zA-Z0-9_-]+$/.test(mode)) {
       res.status(400).send('mode is required');
       return;
