@@ -1,0 +1,420 @@
+import { Router } from 'express';
+import type { InfluxDBClient } from './clients/influxdb';
+import type { PrometheusClient } from './clients/prometheus';
+import logger from './logger';
+
+const metricsLogger = logger.child({ subsystem: 'metrics' });
+
+export type MetricRange = '1h' | '6h' | '24h' | '7d' | '30d';
+
+const RANGE_SECONDS: Record<MetricRange, number> = {
+  '1h': 60 * 60,
+  '6h': 6 * 60 * 60,
+  '24h': 24 * 60 * 60,
+  '7d': 7 * 24 * 60 * 60,
+  '30d': 30 * 24 * 60 * 60,
+};
+
+const RANGE_WINDOW: Record<MetricRange, string> = {
+  '1h': '1m',
+  '6h': '5m',
+  '24h': '15m',
+  '7d': '1h',
+  '30d': '6h',
+};
+
+interface InfluxMetric {
+  id: string;
+  title: string;
+  unit: string;
+  group: string;
+  source: 'influx';
+  measurement: string;
+  field: string;
+  seriesTag: string;
+}
+
+interface PrometheusMetric {
+  id: string;
+  title: string;
+  unit: string;
+  group: string;
+  source: 'prometheus';
+  promql: string;
+  seriesLabel: string;
+}
+
+export type MetricDefinition = InfluxMetric | PrometheusMetric;
+
+export interface MetricPoint {
+  t: string;
+  v: number;
+}
+
+export interface MetricSeries {
+  name: string;
+  points: MetricPoint[];
+}
+
+export interface MetricSeriesResponse {
+  metric: string;
+  title: string;
+  unit: string;
+  range: MetricRange;
+  series: MetricSeries[];
+}
+
+// Server-defined presets. The app only references metric ids — it never sends
+// raw Flux/PromQL, so the query surface stays locked down.
+export const METRIC_CATALOG: MetricDefinition[] = [
+  {
+    id: 'temperature',
+    title: 'Temperature',
+    unit: '°C',
+    group: 'Environment',
+    source: 'influx',
+    measurement: 'environment',
+    field: 'temperature',
+    seriesTag: 'room',
+  },
+  {
+    id: 'humidity',
+    title: 'Humidity',
+    unit: '%',
+    group: 'Environment',
+    source: 'influx',
+    measurement: 'environment',
+    field: 'humidity',
+    seriesTag: 'room',
+  },
+  {
+    id: 'air_quality',
+    title: 'Air Quality (PM2.5)',
+    unit: 'µg/m³',
+    group: 'Environment',
+    source: 'influx',
+    measurement: 'air_purifier',
+    field: 'pm25',
+    seriesTag: 'device',
+  },
+  {
+    id: 'car_battery',
+    title: 'Car Battery',
+    unit: '%',
+    group: 'Car',
+    source: 'influx',
+    measurement: 'car',
+    field: 'battery_level',
+    seriesTag: 'vehicle',
+  },
+  {
+    id: 'car_range',
+    title: 'Car Range',
+    unit: 'km',
+    group: 'Car',
+    source: 'influx',
+    measurement: 'car',
+    field: 'ev_range',
+    seriesTag: 'vehicle',
+  },
+  {
+    id: 'car_odometer',
+    title: 'Car Odometer',
+    unit: 'km',
+    group: 'Car',
+    source: 'influx',
+    measurement: 'car',
+    field: 'odometer',
+    seriesTag: 'vehicle',
+  },
+  {
+    id: 'cpu_usage',
+    title: 'CPU Usage',
+    unit: '%',
+    group: 'System',
+    source: 'prometheus',
+    promql: '100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100)',
+    seriesLabel: 'instance',
+  },
+  {
+    id: 'memory_usage',
+    title: 'Memory Usage',
+    unit: '%',
+    group: 'System',
+    source: 'prometheus',
+    promql: '100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))',
+    seriesLabel: 'instance',
+  },
+  {
+    id: 'disk_usage',
+    title: 'Disk Usage',
+    unit: '%',
+    group: 'System',
+    source: 'prometheus',
+    promql: '100 - ((node_filesystem_avail_bytes{mountpoint="/"} / node_filesystem_size_bytes{mountpoint="/"}) * 100)',
+    seriesLabel: 'instance',
+  },
+  {
+    id: 'network_rx',
+    title: 'Network In',
+    unit: 'B/s',
+    group: 'Network',
+    source: 'prometheus',
+    promql: 'sum by (instance) (rate(node_network_receive_bytes_total{device!="lo"}[5m]))',
+    seriesLabel: 'instance',
+  },
+  {
+    id: 'network_tx',
+    title: 'Network Out',
+    unit: 'B/s',
+    group: 'Network',
+    source: 'prometheus',
+    promql: 'sum by (instance) (rate(node_network_transmit_bytes_total{device!="lo"}[5m]))',
+    seriesLabel: 'instance',
+  },
+  {
+    id: 'ups_battery',
+    title: 'UPS Battery',
+    unit: '%',
+    group: 'Power',
+    source: 'prometheus',
+    promql: 'nut_battery_charge * 100',
+    seriesLabel: 'ups',
+  },
+  {
+    id: 'ups_load',
+    title: 'UPS Load',
+    unit: '%',
+    group: 'Power',
+    source: 'prometheus',
+    promql: 'nut_load * 100',
+    seriesLabel: 'ups',
+  },
+  {
+    id: 'ups_power',
+    title: 'UPS Power Draw',
+    unit: 'W',
+    group: 'Power',
+    source: 'prometheus',
+    promql: 'nut_real_power_watts',
+    seriesLabel: 'ups',
+  },
+  {
+    id: 'ups_runtime',
+    title: 'UPS Runtime',
+    unit: 'min',
+    group: 'Power',
+    source: 'prometheus',
+    promql: 'nut_battery_runtime_seconds / 60',
+    seriesLabel: 'ups',
+  },
+  {
+    id: 'ups_input_voltage',
+    title: 'UPS Input Voltage',
+    unit: 'V',
+    group: 'Power',
+    source: 'prometheus',
+    promql: 'nut_input_volts',
+    seriesLabel: 'ups',
+  },
+  {
+    id: 'unifi_clients',
+    title: 'UniFi Clients',
+    unit: 'clients',
+    group: 'UniFi',
+    source: 'prometheus',
+    promql: 'unpoller_site_users{status="ok"}',
+    seriesLabel: 'subsystem',
+  },
+  {
+    id: 'unifi_wan_download',
+    title: 'UniFi WAN Download',
+    unit: 'B/s',
+    group: 'UniFi',
+    source: 'prometheus',
+    promql: 'rate(unpoller_device_wan_receive_bytes_total[5m])',
+    seriesLabel: 'name',
+  },
+  {
+    id: 'unifi_wan_upload',
+    title: 'UniFi WAN Upload',
+    unit: 'B/s',
+    group: 'UniFi',
+    source: 'prometheus',
+    promql: 'rate(unpoller_device_wan_transmit_bytes_total[5m])',
+    seriesLabel: 'name',
+  },
+  {
+    id: 'unifi_latency',
+    title: 'UniFi WAN Latency',
+    unit: 'ms',
+    group: 'UniFi',
+    source: 'prometheus',
+    promql: 'unpoller_site_latency_seconds{subsystem="www"} * 1000',
+    seriesLabel: 'site_name',
+  },
+  {
+    id: 'unifi_device_temp',
+    title: 'UniFi Device Temp',
+    unit: '°C',
+    group: 'UniFi',
+    source: 'prometheus',
+    promql: 'unpoller_device_temperature_celsius{temp_type="cpu"}',
+    seriesLabel: 'name',
+  },
+];
+
+export interface MetricsDeps {
+  influxdb?: InfluxDBClient;
+  prometheus?: PrometheusClient;
+  prometheusServers?: { name: string; client: PrometheusClient }[];
+  bucket?: string;
+}
+
+function normaliseRange(value: unknown): MetricRange {
+  if (typeof value === 'string' && value in RANGE_SECONDS) {
+    return value as MetricRange;
+  }
+  return '24h';
+}
+
+async function fetchInflux(
+  metric: InfluxMetric,
+  range: MetricRange,
+  influxdb: InfluxDBClient,
+  bucket: string,
+): Promise<MetricSeries[]> {
+  const window = RANGE_WINDOW[range];
+  const flux = `from(bucket: "${bucket}")
+  |> range(start: -${range})
+  |> filter(fn: (r) => r._measurement == "${metric.measurement}" and r._field == "${metric.field}")
+  |> aggregateWindow(every: ${window}, fn: mean, createEmpty: false)
+  |> keep(columns: ["_time", "_value", "${metric.seriesTag}"])`;
+
+  const rows = await influxdb.query(flux);
+  const grouped = new Map<string, MetricPoint[]>();
+  rows.forEach((row: Record<string, string>) => {
+    /* eslint-disable no-underscore-dangle */
+    const time = row._time;
+    const value = parseFloat(row._value);
+    /* eslint-enable no-underscore-dangle */
+    if (!time || !Number.isFinite(value)) return;
+    const name = row[metric.seriesTag] || metric.title;
+    if (!grouped.has(name)) grouped.set(name, []);
+    grouped.get(name)!.push({ t: time, v: value });
+  });
+
+  return Array.from(grouped.entries()).map(([name, points]) => ({ name, points }));
+}
+
+async function fetchPrometheusFrom(
+  metric: PrometheusMetric,
+  range: MetricRange,
+  serverName: string,
+  client: PrometheusClient,
+  prefix: boolean,
+): Promise<MetricSeries[]> {
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - RANGE_SECONDS[range];
+  const step = Math.max(15, Math.floor(RANGE_SECONDS[range] / 120));
+
+  const result = await client.queryRange(metric.promql, String(start), String(end), String(step));
+  const series: MetricSeries[] = (result?.data?.result ?? []).map((entry: {
+    metric: Record<string, string>;
+    values: [number, string][];
+  }) => {
+    const label = entry.metric?.[metric.seriesLabel]
+      || entry.metric?.instance
+      || entry.metric?.job
+      || metric.title;
+    const name = prefix ? `${serverName}: ${label}` : label;
+    const points: MetricPoint[] = (entry.values ?? [])
+      .map(([ts, val]) => ({ t: new Date(ts * 1000).toISOString(), v: parseFloat(val) }))
+      .filter((p) => Number.isFinite(p.v));
+    return { name, points };
+  });
+  return series;
+}
+
+async function fetchPrometheus(
+  metric: PrometheusMetric,
+  range: MetricRange,
+  deps: MetricsDeps,
+): Promise<MetricSeries[]> {
+  const servers = deps.prometheusServers
+    ?? (deps.prometheus ? [{ name: 'prometheus', client: deps.prometheus }] : []);
+  const multiple = servers.length > 1;
+
+  const results = await Promise.all(
+    servers.map(async (server) => {
+      try {
+        return await fetchPrometheusFrom(metric, range, server.name, server.client, multiple);
+      } catch (err) {
+        metricsLogger.warn({ err, server: server.name, metric: metric.id }, 'Prometheus query failed');
+        return [] as MetricSeries[];
+      }
+    }),
+  );
+
+  return results.flat();
+}
+
+export async function fetchMetricSeries(
+  metricId: string,
+  rangeInput: unknown,
+  deps: MetricsDeps,
+): Promise<MetricSeriesResponse> {
+  const metric = METRIC_CATALOG.find((m) => m.id === metricId);
+  if (!metric) {
+    throw new Error(`Unknown metric: ${metricId}`);
+  }
+  const range = normaliseRange(rangeInput);
+
+  let series: MetricSeries[] = [];
+  if (metric.source === 'influx') {
+    if (deps.influxdb?.configured) {
+      series = await fetchInflux(metric, range, deps.influxdb, deps.bucket ?? 'fluxhaus');
+    }
+  } else {
+    series = await fetchPrometheus(metric, range, deps);
+  }
+
+  series.sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    metric: metric.id,
+    title: metric.title,
+    unit: metric.unit,
+    range,
+    series,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function createMetricsRouter(deps: MetricsDeps, cors: any): Router {
+  const router = Router();
+
+  router.get('/metrics/catalog', cors, (_req, res) => {
+    res.json({
+      metrics: METRIC_CATALOG.map((m) => ({
+        id: m.id,
+        title: m.title,
+        unit: m.unit,
+        group: m.group,
+      })),
+    });
+  });
+
+  router.get('/metrics/series', cors, async (req, res) => {
+    const metricId = String(req.query.metric ?? '');
+    try {
+      const response = await fetchMetricSeries(metricId, req.query.range, deps);
+      res.json(response);
+    } catch (err) {
+      metricsLogger.error({ err, metricId }, 'Failed to fetch metric series');
+      res.status(400).json({ error: (err as Error).message });
+    }
+  });
+
+  return router;
+}

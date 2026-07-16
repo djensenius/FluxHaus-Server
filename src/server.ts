@@ -25,6 +25,8 @@ import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
 import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
+import Environment from './environment';
+import { createMetricsRouter } from './metrics';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
@@ -280,6 +282,11 @@ export async function createServer(): Promise<Express> {
     onDishwasherStatusChange(dw).catch(() => {});
   };
 
+  // Collects room climate (temperature/humidity) from Home Assistant into
+  // InfluxDB so the metrics dashboard has historical series to chart.
+  // eslint-disable-next-line no-new
+  new Environment({ client: homeAssistantClient });
+
   setInterval(() => {
     fs.writeFileSync(
       'cache/dishwasher.json',
@@ -318,6 +325,9 @@ export async function createServer(): Promise<Express> {
   const prometheus = new PrometheusClient({
     url: (process.env.PROMETHEUS_URL || '').trim(),
   });
+  const prometheusSecondary = process.env.PROMETHEUS_URL_2
+    ? new PrometheusClient({ url: process.env.PROMETHEUS_URL_2.trim() })
+    : null;
   const komga = new KomgaClient({
     url: (process.env.KOMGA_URL || '').trim(),
     user: (process.env.KOMGA_USER || '').trim(),
@@ -1397,6 +1407,17 @@ export async function createServer(): Promise<Express> {
   app.use(radarRouter);
   app.use(createRoutinesRouter(allServices));
   app.use(createWebhooksRouter(allServices));
+  app.use(createMetricsRouter({
+    influxdb,
+    prometheus,
+    prometheusServers: [
+      { name: (process.env.PROMETHEUS_NAME || 'server').trim(), client: prometheus },
+      ...(prometheusSecondary
+        ? [{ name: (process.env.PROMETHEUS_NAME_2 || 'truenas').trim(), client: prometheusSecondary }]
+        : []),
+    ],
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+  }, cors(corsOptions)));
   app.use('/gt3', gt3Router);
 
   // Push test GUI (admin only)
