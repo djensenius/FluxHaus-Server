@@ -34,6 +34,10 @@ interface InfluxMetric {
   seriesTag: string;
   entityIds?: string[];
   aggregateFn?: 'mean' | 'last' | 'max' | 'min' | 'sum';
+  // Optional display-name overrides keyed by the resolved series name
+  // (e.g. rename the Environment Canada outdoor reading to "Outside" so the
+  // app can colour it consistently across every chart).
+  seriesRename?: Record<string, string>;
 }
 
 interface PrometheusMetric {
@@ -83,7 +87,9 @@ export const METRIC_CATALOG: MetricDefinition[] = [
       'kitchen_temperature',
       'living_room_temperature',
       'home_current_temperature',
+      'patio_environment_canada_temperature',
     ],
+    seriesRename: { 'Environment Canada Temperature': 'Outside' },
   },
   {
     id: 'humidity',
@@ -94,7 +100,8 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     measurement: 'climate',
     field: 'value',
     seriesTag: 'friendly_name',
-    entityIds: ['home_current_humidity'],
+    entityIds: ['home_current_humidity', 'patio_environment_canada_humidity'],
+    seriesRename: { 'Environment Canada Humidity': 'Outside' },
   },
   {
     id: 'air_quality',
@@ -106,6 +113,18 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     field: 'value',
     seriesTag: 'friendly_name',
     entityIds: ['blue_pure_pm_2_5'],
+  },
+  {
+    id: 'outdoor_air_quality',
+    title: 'Outdoor Air Quality (AQHI)',
+    unit: 'AQHI',
+    group: 'Environment',
+    source: 'influx',
+    measurement: 'state',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['patio_environment_canada_aqhi'],
+    seriesRename: { 'Environment Canada AQHI': 'Outside' },
   },
   {
     id: 'car_battery',
@@ -137,6 +156,133 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     field: 'odometer',
     seriesTag: 'vehicle',
     aggregateFn: 'last',
+  },
+  {
+    id: 'power_draw',
+    title: 'Power Draw',
+    unit: 'W',
+    group: 'Energy',
+    source: 'influx',
+    measurement: 'power',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: [
+      'computer_station_power',
+      'media_centre_power',
+      'server_hardware_power',
+    ],
+  },
+  {
+    id: 'energy_total',
+    title: 'Energy (Total)',
+    unit: 'kWh',
+    group: 'Energy',
+    source: 'influx',
+    measurement: 'energy',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    aggregateFn: 'last',
+    entityIds: [
+      'computer_station_energy',
+      'media_centre_energy',
+      'server_hardware_energy',
+    ],
+  },
+  {
+    id: 'outdoor_temperature',
+    title: 'Outdoor Temperature',
+    unit: '°C',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: 'climate',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['patio_environment_canada_temperature'],
+    seriesRename: { 'Environment Canada Temperature': 'Outside' },
+  },
+  {
+    id: 'outdoor_humidity',
+    title: 'Outdoor Humidity',
+    unit: '%',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: 'climate',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['patio_environment_canada_humidity'],
+    seriesRename: { 'Environment Canada Humidity': 'Outside' },
+  },
+  {
+    id: 'outdoor_dew_point',
+    title: 'Dew Point',
+    unit: '°C',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: '°C',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['patio_environment_canada_dew_point'],
+    seriesRename: { 'Environment Canada Dew point': 'Outside' },
+  },
+  {
+    id: 'outdoor_humidex',
+    title: 'Humidex',
+    unit: '°C',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: '°C',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['patio_environment_canada_humidex'],
+    seriesRename: { 'Environment Canada Humidex': 'Outside' },
+  },
+  {
+    id: 'uv_index',
+    title: 'UV Index',
+    unit: 'UV',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: 'UV index',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['patio_environment_canada_uv_index'],
+    seriesRename: { 'Environment Canada UV index': 'Outside' },
+  },
+  {
+    id: 'aqhi',
+    title: 'Air Quality Health Index',
+    unit: 'AQHI',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: 'state',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['patio_environment_canada_aqhi'],
+    seriesRename: { 'Environment Canada AQHI': 'Outside' },
+  },
+  {
+    id: 'us_aqi',
+    title: 'U.S. Air Quality Index',
+    unit: 'AQI',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: 'state',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['u_s_air_quality_index'],
+    seriesRename: { 'U.S. Air quality index': 'Outside' },
+  },
+  {
+    id: 'cn_aqi',
+    title: 'Chinese Air Quality Index',
+    unit: 'AQI',
+    group: 'Outdoor',
+    source: 'influx',
+    measurement: 'state',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['chinese_air_quality_index'],
+    seriesRename: { 'Chinese Air quality index': 'Outside' },
   },
   {
     id: 'cpu_usage',
@@ -315,7 +461,8 @@ async function fetchInflux(
     const value = parseFloat(row._value);
     /* eslint-enable no-underscore-dangle */
     if (!time || !Number.isFinite(value)) return;
-    const name = row[metric.seriesTag] || metric.title;
+    const rawName = row[metric.seriesTag] || metric.title;
+    const name = metric.seriesRename?.[rawName] ?? rawName;
     if (!grouped.has(name)) grouped.set(name, []);
     grouped.get(name)!.push({ t: time, v: value });
   });
