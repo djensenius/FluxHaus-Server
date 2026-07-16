@@ -53,6 +53,8 @@ export default class Environment {
 
   private sensors: EnvironmentSensor[];
 
+  private timer: ReturnType<typeof setInterval> | null = null;
+
   constructor(config: EnvironmentConfig) {
     this.client = config.client;
     this.sensors = config.sensors ?? parseSensorsFromEnv() ?? DEFAULT_SENSORS;
@@ -61,9 +63,17 @@ export default class Environment {
 
   private startPolling(interval: number) {
     this.collect().catch(() => {});
-    setInterval(() => {
+    this.timer = setInterval(() => {
       this.collect().catch(() => {});
     }, interval);
+    this.timer.unref?.();
+  }
+
+  public stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 
   private async collect() {

@@ -271,7 +271,7 @@ export interface MetricsDeps {
   bucket?: string;
 }
 
-function normaliseRange(value: unknown): MetricRange {
+function normalizeRange(value: unknown): MetricRange {
   if (typeof value === 'string' && value in RANGE_SECONDS) {
     return value as MetricRange;
   }
@@ -341,8 +341,9 @@ async function fetchPrometheus(
   range: MetricRange,
   deps: MetricsDeps,
 ): Promise<MetricSeries[]> {
-  const servers = deps.prometheusServers
-    ?? (deps.prometheus ? [{ name: 'prometheus', client: deps.prometheus }] : []);
+  const servers = (deps.prometheusServers
+    ?? (deps.prometheus ? [{ name: 'prometheus', client: deps.prometheus }] : []))
+    .filter((server) => server.client.configured);
   const multiple = servers.length > 1;
 
   const results = await Promise.all(
@@ -366,9 +367,11 @@ export async function fetchMetricSeries(
 ): Promise<MetricSeriesResponse> {
   const metric = METRIC_CATALOG.find((m) => m.id === metricId);
   if (!metric) {
-    throw new Error(`Unknown metric: ${metricId}`);
+    const error = new Error(`Unknown metric: ${metricId}`);
+    error.name = 'UnknownMetricError';
+    throw error;
   }
-  const range = normaliseRange(rangeInput);
+  const range = normalizeRange(rangeInput);
 
   let series: MetricSeries[] = [];
   if (metric.source === 'influx') {
@@ -412,7 +415,11 @@ export function createMetricsRouter(deps: MetricsDeps, cors: any): Router {
       res.json(response);
     } catch (err) {
       metricsLogger.error({ err, metricId }, 'Failed to fetch metric series');
-      res.status(400).json({ error: (err as Error).message });
+      if ((err as Error).name === 'UnknownMetricError') {
+        res.status(400).json({ error: (err as Error).message });
+      } else {
+        res.status(502).json({ error: 'Failed to fetch metric series' });
+      }
     }
   });
 
