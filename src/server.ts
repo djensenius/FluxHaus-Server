@@ -25,6 +25,7 @@ import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
 import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
+import { createMetricsRouter } from './metrics';
 import Blueair from './blueair';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
@@ -338,6 +339,7 @@ export async function createServer(): Promise<Express> {
     org: (process.env.INFLUXDB_ORG || 'fluxhaus').trim(),
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
   });
+
   const portainer = new PortainerClient({
     url: (process.env.PORTAINER_URL || '').trim(),
     apiKey: (process.env.PORTAINER_API_KEY || '').trim(),
@@ -345,6 +347,9 @@ export async function createServer(): Promise<Express> {
   const prometheus = new PrometheusClient({
     url: (process.env.PROMETHEUS_URL || '').trim(),
   });
+  const prometheusSecondary = process.env.PROMETHEUS_URL_2
+    ? new PrometheusClient({ url: process.env.PROMETHEUS_URL_2.trim() })
+    : null;
   const komga = new KomgaClient({
     url: (process.env.KOMGA_URL || '').trim(),
     user: (process.env.KOMGA_USER || '').trim(),
@@ -1529,6 +1534,17 @@ export async function createServer(): Promise<Express> {
   app.use(radarRouter);
   app.use(createRoutinesRouter(allServices));
   app.use(createWebhooksRouter(allServices));
+  app.use(createMetricsRouter({
+    influxdb,
+    prometheus,
+    prometheusServers: [
+      { name: process.env.PROMETHEUS_NAME?.trim() || 'server', client: prometheus },
+      ...(prometheusSecondary
+        ? [{ name: process.env.PROMETHEUS_NAME_2?.trim() || 'truenas', client: prometheusSecondary }]
+        : []),
+    ],
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+  }, cors(corsOptions)));
   app.use('/gt3', gt3Router);
 
   // Push test GUI (admin only)
