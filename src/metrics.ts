@@ -32,6 +32,7 @@ interface InfluxMetric {
   measurement: string;
   field: string;
   seriesTag: string;
+  entityIds?: string[];
 }
 
 interface PrometheusMetric {
@@ -73,9 +74,15 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     unit: '°C',
     group: 'Environment',
     source: 'influx',
-    measurement: 'environment',
-    field: 'temperature',
-    seriesTag: 'room',
+    measurement: 'climate',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: [
+      'bedroom_temperature',
+      'kitchen_temperature',
+      'living_room_temperature',
+      'home_current_temperature',
+    ],
   },
   {
     id: 'humidity',
@@ -83,9 +90,10 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     unit: '%',
     group: 'Environment',
     source: 'influx',
-    measurement: 'environment',
-    field: 'humidity',
-    seriesTag: 'room',
+    measurement: 'climate',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['home_current_humidity'],
   },
   {
     id: 'air_quality',
@@ -93,9 +101,10 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     unit: 'µg/m³',
     group: 'Environment',
     source: 'influx',
-    measurement: 'air_purifier',
-    field: 'pm25',
-    seriesTag: 'device',
+    measurement: 'μg/m³',
+    field: 'value',
+    seriesTag: 'friendly_name',
+    entityIds: ['blue_pure_pm_2_5'],
   },
   {
     id: 'car_battery',
@@ -285,9 +294,13 @@ async function fetchInflux(
   bucket: string,
 ): Promise<MetricSeries[]> {
   const window = RANGE_WINDOW[range];
+  const entityFilter = metric.entityIds?.length
+    ? `\n  |> filter(fn: (r) => contains(value: r.entity_id, set: [${
+      metric.entityIds.map((id) => `"${id}"`).join(', ')}]))`
+    : '';
   const flux = `from(bucket: "${bucket}")
   |> range(start: -${range})
-  |> filter(fn: (r) => r._measurement == "${metric.measurement}" and r._field == "${metric.field}")
+  |> filter(fn: (r) => r._measurement == "${metric.measurement}" and r._field == "${metric.field}")${entityFilter}
   |> aggregateWindow(every: ${window}, fn: mean, createEmpty: false)
   |> keep(columns: ["_time", "_value", "${metric.seriesTag}"])`;
 
@@ -304,7 +317,10 @@ async function fetchInflux(
     grouped.get(name)!.push({ t: time, v: value });
   });
 
-  return Array.from(grouped.entries()).map(([name, points]) => ({ name, points }));
+  return Array.from(grouped.entries()).map(([name, points]) => ({
+    name,
+    points: points.sort((a, b) => a.t.localeCompare(b.t)),
+  }));
 }
 
 async function fetchPrometheusFrom(

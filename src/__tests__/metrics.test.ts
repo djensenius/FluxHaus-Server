@@ -43,14 +43,27 @@ describe('metrics router', () => {
       configured: true,
       query: jest.fn().mockResolvedValue([
         {
-          _time: '2024-01-01T00:00:00Z', _value: '21.5', room: 'Bedroom',
+          _time: '2024-01-01T00:00:00Z', _value: '21.5', friendly_name: 'Bedroom Temperature',
         },
       ]),
     };
     const app = buildApp({ influxdb: influxdb as never, bucket: 'fluxhaus' });
     const res = await request(app).get('/metrics/series?metric=temperature').expect(200);
     expect(res.body.metric).toBe('temperature');
-    expect(res.body.series.length).toBeGreaterThan(0);
+    expect(res.body.series).toEqual([
+      { name: 'Bedroom Temperature', points: [{ t: '2024-01-01T00:00:00Z', v: 21.5 }] },
+    ]);
+  });
+
+  it('applies an entity_id filter for room-scoped influx metrics', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const influxdb = { configured: true, query };
+    const app = buildApp({ influxdb: influxdb as never, bucket: 'fluxhaus' });
+    await request(app).get('/metrics/series?metric=temperature').expect(200);
+    const flux = query.mock.calls[0][0] as string;
+    expect(flux).toContain('r._measurement == "climate"');
+    expect(flux).toContain('contains(value: r.entity_id');
+    expect(flux).toContain('bedroom_temperature');
   });
 
   it('returns 502 when the upstream influx query fails', async () => {

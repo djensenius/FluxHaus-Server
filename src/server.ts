@@ -25,7 +25,6 @@ import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
 import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
-import Environment from './environment';
 import { createMetricsRouter } from './metrics';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
@@ -314,13 +313,6 @@ export async function createServer(): Promise<Express> {
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
   });
 
-  // Collects room climate (temperature/humidity) from Home Assistant into
-  // InfluxDB so the metrics dashboard has historical series to chart. Only
-  // started when InfluxDB is configured, since it has nowhere to store data.
-  if (influxdb.configured) {
-    // eslint-disable-next-line no-new
-    new Environment({ client: homeAssistantClient });
-  }
   const portainer = new PortainerClient({
     url: (process.env.PORTAINER_URL || '').trim(),
     apiKey: (process.env.PORTAINER_API_KEY || '').trim(),
