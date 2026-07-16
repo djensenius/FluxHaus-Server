@@ -65,6 +65,8 @@ export default class Blueair {
 
   private device: string;
 
+  private timer: ReturnType<typeof setInterval> | null = null;
+
   constructor(config: BlueairConfig) {
     this.client = config.client;
     this.fanEntityId = config.fanEntityId || 'fan.blue_pure_fan';
@@ -78,9 +80,17 @@ export default class Blueair {
 
   private startPolling(interval: number) {
     this.updateStatus().catch(() => {});
-    setInterval(() => {
+    this.timer = setInterval(() => {
       this.updateStatus().catch(() => {});
     }, interval);
+    this.timer.unref?.();
+  }
+
+  public stop(): void {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+    }
   }
 
   private async updateStatus() {
@@ -141,6 +151,12 @@ export default class Blueair {
   }
 
   public async setPreset(mode: string): Promise<string> {
+    const allowed = this.cachedStatus.presetModes.length > 0
+      ? this.cachedStatus.presetModes
+      : ['auto', 'night', 'manual'];
+    if (!allowed.includes(mode)) {
+      throw new Error(`Invalid preset mode: ${mode}`);
+    }
     await this.client.callService('fan', 'set_preset_mode', {
       entity_id: this.fanEntityId,
       preset_mode: mode,

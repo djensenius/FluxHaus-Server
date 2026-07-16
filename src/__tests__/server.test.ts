@@ -255,6 +255,54 @@ describe('Server', () => {
     expect(mockMopbot.turnOff).toHaveBeenCalled();
   });
 
+  it('should control the air purifier fan for admin', async () => {
+    await request(app)
+      .post('/airPurifierFan')
+      .set('Authorization', oidcAuthHeader)
+      .send({ on: true })
+      .expect(200);
+  });
+
+  it('should reject air purifier fan control for non-admin', async () => {
+    await request(app)
+      .post('/airPurifierFan')
+      .set('Authorization', basicAuthHeader('demo', 'demopassword'))
+      .send({ on: true })
+      .expect(403);
+  });
+
+  it('should validate air purifier speed input', async () => {
+    await request(app)
+      .post('/airPurifierSpeed')
+      .set('Authorization', oidcAuthHeader)
+      .send({})
+      .expect(400);
+  });
+
+  it('should set the air purifier speed for admin', async () => {
+    await request(app)
+      .post('/airPurifierSpeed')
+      .set('Authorization', oidcAuthHeader)
+      .send({ percentage: 50 })
+      .expect(200);
+  });
+
+  it('should validate the air purifier preset mode', async () => {
+    await request(app)
+      .post('/airPurifierPreset')
+      .set('Authorization', oidcAuthHeader)
+      .send({ mode: 'bad mode!' })
+      .expect(400);
+  });
+
+  it('should control the air purifier light for admin', async () => {
+    await request(app)
+      .post('/airPurifierLight')
+      .set('Authorization', oidcAuthHeader)
+      .send({ on: true })
+      .expect(200);
+  });
+
   it('should handle deep clean', async () => {
     jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
     await request(app)

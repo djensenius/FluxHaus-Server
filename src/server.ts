@@ -73,6 +73,17 @@ import { createCalendarService } from './calendar';
 
 const serverLogger = logger.child({ subsystem: 'server' });
 
+// Parses a request "on" flag, defaulting to true unless the value is an
+// explicit falsy value (boolean false, or strings like "false"/"0"/"off"/"no").
+function parseOnFlag(value: unknown): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') return value !== 0;
+  if (typeof value === 'string') {
+    return !['false', '0', 'off', 'no'].includes(value.trim().toLowerCase());
+  }
+  return value !== false;
+}
+
 const port = process.env.PORT || 8888;
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -283,11 +294,11 @@ export async function createServer(): Promise<Express> {
 
   const blueair = new Blueair({
     client: homeAssistantClient,
-    fanEntityId: (process.env.BLUEAIR_FAN_ENTITY_ID || 'fan.blue_pure_fan').trim(),
-    lightEntityId: (process.env.BLUEAIR_LIGHT_ENTITY_ID || 'light.blue_pure_led_light').trim(),
-    pm25EntityId: (process.env.BLUEAIR_PM25_ENTITY_ID || 'sensor.blue_pure_pm_2_5').trim(),
-    filterEntityId: (process.env.BLUEAIR_FILTER_ENTITY_ID || 'sensor.blue_pure_filter_life').trim(),
-    onlineEntityId: (process.env.BLUEAIR_ONLINE_ENTITY_ID || 'binary_sensor.blue_pure_online').trim(),
+    fanEntityId: process.env.BLUEAIR_FAN_ENTITY_ID?.trim() || 'fan.blue_pure_fan',
+    lightEntityId: process.env.BLUEAIR_LIGHT_ENTITY_ID?.trim() || 'light.blue_pure_led_light',
+    pm25EntityId: process.env.BLUEAIR_PM25_ENTITY_ID?.trim() || 'sensor.blue_pure_pm_2_5',
+    filterEntityId: process.env.BLUEAIR_FILTER_ENTITY_ID?.trim() || 'sensor.blue_pure_filter_life',
+    onlineEntityId: process.env.BLUEAIR_ONLINE_ENTITY_ID?.trim() || 'binary_sensor.blue_pure_online',
   });
 
   setInterval(() => {
@@ -665,7 +676,7 @@ export async function createServer(): Promise<Express> {
       return;
     }
     try {
-      const result = await blueair.setFan(req.body?.on !== false);
+      const result = await blueair.setFan(parseOnFlag(req.body?.on));
       res.send(result);
     } catch (err) {
       serverLogger.error({ err }, 'airPurifierFan failed');
@@ -727,7 +738,7 @@ export async function createServer(): Promise<Express> {
         res.send(result);
         return;
       }
-      const result = await blueair.setLight(req.body?.on !== false);
+      const result = await blueair.setLight(parseOnFlag(req.body?.on));
       res.send(result);
     } catch (err) {
       serverLogger.error({ err }, 'airPurifierLight failed');
