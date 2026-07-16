@@ -33,6 +33,7 @@ interface InfluxMetric {
   field: string;
   seriesTag: string;
   entityIds?: string[];
+  aggregateFn?: 'mean' | 'last' | 'max' | 'min' | 'sum';
 }
 
 interface PrometheusMetric {
@@ -135,6 +136,7 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     measurement: 'car',
     field: 'odometer',
     seriesTag: 'vehicle',
+    aggregateFn: 'last',
   },
   {
     id: 'cpu_usage',
@@ -294,6 +296,7 @@ async function fetchInflux(
   bucket: string,
 ): Promise<MetricSeries[]> {
   const window = RANGE_WINDOW[range];
+  const aggregateFn = metric.aggregateFn ?? 'mean';
   const entityFilter = metric.entityIds?.length
     ? `\n  |> filter(fn: (r) => contains(value: r.entity_id, set: [${
       metric.entityIds.map((id) => `"${id}"`).join(', ')}]))`
@@ -301,7 +304,7 @@ async function fetchInflux(
   const flux = `from(bucket: "${bucket}")
   |> range(start: -${range})
   |> filter(fn: (r) => r._measurement == "${metric.measurement}" and r._field == "${metric.field}")${entityFilter}
-  |> aggregateWindow(every: ${window}, fn: mean, createEmpty: false)
+  |> aggregateWindow(every: ${window}, fn: ${aggregateFn}, createEmpty: false)
   |> keep(columns: ["_time", "_value", "${metric.seriesTag}"])`;
 
   const rows = await influxdb.query(flux);
@@ -333,6 +336,10 @@ async function fetchPrometheusFrom(
   const { start, end, step } = window;
 
   const result = await client.queryRange(metric.promql, String(start), String(end), String(step));
+  if (result?.status && result.status !== 'success') {
+    const detail = result.error || result.errorType || 'unknown error';
+    throw new Error(`Prometheus query error: ${detail}`);
+  }
   const series: MetricSeries[] = (result?.data?.result ?? []).map((entry: {
     metric: Record<string, string>;
     values: [number, string][];

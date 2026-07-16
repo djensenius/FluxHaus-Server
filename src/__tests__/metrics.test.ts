@@ -103,13 +103,24 @@ describe('metrics router', () => {
     expect(res.body.series).toEqual([]);
   });
 
-  it('returns 502 when all Prometheus backends fail', async () => {
+  it('returns 502 when Prometheus responds with an error status', async () => {
     const client = {
       configured: true,
-      queryRange: jest.fn().mockRejectedValue(new Error('prom down')),
+      queryRange: jest.fn().mockResolvedValue({
+        status: 'error', errorType: 'bad_data', error: 'invalid query',
+      }),
     };
     const app = buildApp({ prometheus: client as never });
     const res = await request(app).get('/metrics/series?metric=cpu_usage').expect(502);
     expect(res.body.error).toBe('Failed to fetch metric series');
+  });
+
+  it('uses last() aggregation for the monotonic car odometer', async () => {
+    const query = jest.fn().mockResolvedValue([]);
+    const influxdb = { configured: true, query };
+    const app = buildApp({ influxdb: influxdb as never, bucket: 'fluxhaus' });
+    await request(app).get('/metrics/series?metric=car_odometer').expect(200);
+    const flux = query.mock.calls[0][0] as string;
+    expect(flux).toContain('fn: last');
   });
 });
