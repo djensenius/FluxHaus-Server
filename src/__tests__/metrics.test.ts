@@ -62,4 +62,41 @@ describe('metrics router', () => {
     const res = await request(app).get('/metrics/series?metric=temperature').expect(502);
     expect(res.body.error).toBe('Failed to fetch metric series');
   });
+
+  it('returns series from a Prometheus-backed metric', async () => {
+    const client = {
+      configured: true,
+      queryRange: jest.fn().mockResolvedValue({
+        data: {
+          result: [
+            { metric: { instance: 'node-1' }, values: [[1704067200, '12.5']] },
+          ],
+        },
+      }),
+    };
+    const app = buildApp({ prometheus: client as never });
+    const res = await request(app).get('/metrics/series?metric=cpu_usage').expect(200);
+    expect(client.queryRange).toHaveBeenCalled();
+    expect(res.body.series).toEqual([
+      { name: 'node-1', points: [{ t: '2024-01-01T00:00:00.000Z', v: 12.5 }] },
+    ]);
+  });
+
+  it('skips unconfigured Prometheus backends', async () => {
+    const client = { configured: false, queryRange: jest.fn() };
+    const app = buildApp({ prometheus: client as never });
+    const res = await request(app).get('/metrics/series?metric=cpu_usage').expect(200);
+    expect(client.queryRange).not.toHaveBeenCalled();
+    expect(res.body.series).toEqual([]);
+  });
+
+  it('returns 502 when all Prometheus backends fail', async () => {
+    const client = {
+      configured: true,
+      queryRange: jest.fn().mockRejectedValue(new Error('prom down')),
+    };
+    const app = buildApp({ prometheus: client as never });
+    const res = await request(app).get('/metrics/series?metric=cpu_usage').expect(502);
+    expect(res.body.error).toBe('Failed to fetch metric series');
+  });
 });

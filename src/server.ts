@@ -282,11 +282,6 @@ export async function createServer(): Promise<Express> {
     onDishwasherStatusChange(dw).catch(() => {});
   };
 
-  // Collects room climate (temperature/humidity) from Home Assistant into
-  // InfluxDB so the metrics dashboard has historical series to chart.
-  // eslint-disable-next-line no-new
-  new Environment({ client: homeAssistantClient });
-
   setInterval(() => {
     fs.writeFileSync(
       'cache/dishwasher.json',
@@ -318,6 +313,14 @@ export async function createServer(): Promise<Express> {
     org: (process.env.INFLUXDB_ORG || 'fluxhaus').trim(),
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
   });
+
+  // Collects room climate (temperature/humidity) from Home Assistant into
+  // InfluxDB so the metrics dashboard has historical series to chart. Only
+  // started when InfluxDB is configured, since it has nowhere to store data.
+  if (influxdb.configured) {
+    // eslint-disable-next-line no-new
+    new Environment({ client: homeAssistantClient });
+  }
   const portainer = new PortainerClient({
     url: (process.env.PORTAINER_URL || '').trim(),
     apiKey: (process.env.PORTAINER_API_KEY || '').trim(),
@@ -1411,9 +1414,9 @@ export async function createServer(): Promise<Express> {
     influxdb,
     prometheus,
     prometheusServers: [
-      { name: (process.env.PROMETHEUS_NAME || 'server').trim(), client: prometheus },
+      { name: process.env.PROMETHEUS_NAME?.trim() || 'server', client: prometheus },
       ...(prometheusSecondary
-        ? [{ name: (process.env.PROMETHEUS_NAME_2 || 'truenas').trim(), client: prometheusSecondary }]
+        ? [{ name: process.env.PROMETHEUS_NAME_2?.trim() || 'truenas', client: prometheusSecondary }]
         : []),
     ],
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),

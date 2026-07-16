@@ -346,18 +346,30 @@ async function fetchPrometheus(
     .filter((server) => server.client.configured);
   const multiple = servers.length > 1;
 
-  const results = await Promise.all(
-    servers.map(async (server) => {
-      try {
-        return await fetchPrometheusFrom(metric, range, server.name, server.client, multiple);
-      } catch (err) {
-        metricsLogger.warn({ err, server: server.name, metric: metric.id }, 'Prometheus query failed');
-        return [] as MetricSeries[];
-      }
-    }),
+  const results = await Promise.allSettled(
+    servers.map((server) => fetchPrometheusFrom(metric, range, server.name, server.client, multiple)),
   );
 
-  return results.flat();
+  results.forEach((result, index) => {
+    if (result.status === 'rejected') {
+      metricsLogger.warn(
+        { err: result.reason, server: servers[index].name, metric: metric.id },
+        'Prometheus query failed',
+      );
+    }
+  });
+
+  const fulfilled = results.filter(
+    (r): r is PromiseFulfilledResult<MetricSeries[]> => r.status === 'fulfilled',
+  );
+
+  // If every configured backend failed, surface the outage instead of
+  // returning an empty result that looks like "no data".
+  if (servers.length > 0 && fulfilled.length === 0) {
+    throw new Error('All Prometheus backends failed');
+  }
+
+  return fulfilled.flatMap((r) => r.value);
 }
 
 export async function fetchMetricSeries(
@@ -414,10 +426,11 @@ export function createMetricsRouter(deps: MetricsDeps, cors: any): Router {
       const response = await fetchMetricSeries(metricId, req.query.range, deps);
       res.json(response);
     } catch (err) {
-      metricsLogger.error({ err, metricId }, 'Failed to fetch metric series');
       if ((err as Error).name === 'UnknownMetricError') {
+        metricsLogger.warn({ metricId }, 'Requested unknown metric');
         res.status(400).json({ error: (err as Error).message });
       } else {
+        metricsLogger.error({ err, metricId }, 'Failed to fetch metric series');
         res.status(502).json({ error: 'Failed to fetch metric series' });
       }
     }
