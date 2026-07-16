@@ -25,6 +25,7 @@ import { HomeAssistantClient } from './homeassistant-client';
 import Car, { CarConfig, CarStartOptions } from './car';
 import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
+import Blueair from './blueair';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
@@ -280,6 +281,15 @@ export async function createServer(): Promise<Express> {
     onDishwasherStatusChange(dw).catch(() => {});
   };
 
+  const blueair = new Blueair({
+    client: homeAssistantClient,
+    fanEntityId: (process.env.BLUEAIR_FAN_ENTITY_ID || 'fan.blue_pure_fan').trim(),
+    lightEntityId: (process.env.BLUEAIR_LIGHT_ENTITY_ID || 'light.blue_pure_led_light').trim(),
+    pm25EntityId: (process.env.BLUEAIR_PM25_ENTITY_ID || 'sensor.blue_pure_pm_2_5').trim(),
+    filterEntityId: (process.env.BLUEAIR_FILTER_ENTITY_ID || 'sensor.blue_pure_filter_life').trim(),
+    onlineEntityId: (process.env.BLUEAIR_ONLINE_ENTITY_ID || 'binary_sensor.blue_pure_online').trim(),
+  });
+
   setInterval(() => {
     fs.writeFileSync(
       'cache/dishwasher.json',
@@ -528,6 +538,7 @@ export async function createServer(): Promise<Express> {
         dishwasher: dishwasher.dishwasher,
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
+        airPurifier: blueair.cachedStatus,
       };
     } else if (role === 'rhizome') {
       data = {
@@ -586,6 +597,7 @@ export async function createServer(): Promise<Express> {
         dishwasher: dishwasher.dishwasher,
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
+        airPurifier: blueair.cachedStatus,
       };
     }
     res.end(JSON.stringify(data));
@@ -644,6 +656,83 @@ export async function createServer(): Promise<Express> {
     }
     await mopbot.turnOff();
     res.send('Broombot is turned off.');
+  });
+
+  // Blue Pure air purifier controls
+  app.post('/airPurifierFan', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    try {
+      const result = await blueair.setFan(req.body?.on !== false);
+      res.send(result);
+    } catch (err) {
+      serverLogger.error({ err }, 'airPurifierFan failed');
+      res.status(502).send('Air purifier fan control failed');
+    }
+  });
+
+  app.post('/airPurifierSpeed', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    const percentage = Number(req.body?.percentage);
+    if (!Number.isFinite(percentage)) {
+      res.status(400).send('percentage is required');
+      return;
+    }
+    try {
+      const result = await blueair.setSpeed(percentage);
+      res.send(result);
+    } catch (err) {
+      serverLogger.error({ err }, 'airPurifierSpeed failed');
+      res.status(502).send('Air purifier speed control failed');
+    }
+  });
+
+  app.post('/airPurifierPreset', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    const mode = String(req.body?.mode ?? '');
+    if (!mode) {
+      res.status(400).send('mode is required');
+      return;
+    }
+    try {
+      const result = await blueair.setPreset(mode);
+      res.send(result);
+    } catch (err) {
+      serverLogger.error({ err }, 'airPurifierPreset failed');
+      res.status(502).send('Air purifier preset control failed');
+    }
+  });
+
+  app.post('/airPurifierLight', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    try {
+      if (req.body?.brightness !== undefined) {
+        const brightness = Number(req.body.brightness);
+        if (!Number.isFinite(brightness)) {
+          res.status(400).send('brightness must be a number');
+          return;
+        }
+        const result = await blueair.setBrightness(brightness);
+        res.send(result);
+        return;
+      }
+      const result = await blueair.setLight(req.body?.on !== false);
+      res.send(result);
+    } catch (err) {
+      serverLogger.error({ err }, 'airPurifierLight failed');
+      res.status(502).send('Air purifier light control failed');
+    }
   });
 
   app.post('/startCar', cors(corsOptions), csrfMiddleware, async (req, res) => {
