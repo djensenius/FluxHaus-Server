@@ -78,6 +78,18 @@ describe('Blueair', () => {
     expect(blueair.cachedStatus.filterLife).toBe(80);
   });
 
+  it('normalizes light brightness to a percentage', async () => {
+    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      if (entityId === 'light.blue_pure_led_light') {
+        return Promise.resolve({ state: 'on', attributes: { brightness: 255 } });
+      }
+      return Promise.resolve({ state: 'off', attributes: {} });
+    });
+    blueair = new Blueair({ client: mockClient });
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+    expect(blueair.cachedStatus.brightness).toBe(100);
+  });
+
   it('turns the fan on and off', async () => {
     blueair = new Blueair({ client: mockClient });
     await blueair.setFan(true);

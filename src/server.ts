@@ -717,6 +717,10 @@ export async function createServer(): Promise<Express> {
       const result = await blueair.setPreset(mode);
       res.send(result);
     } catch (err) {
+      if ((err as Error).name === 'InvalidPresetError') {
+        res.status(400).send('Invalid preset mode');
+        return;
+      }
       serverLogger.error({ err }, 'airPurifierPreset failed');
       res.status(502).send('Air purifier preset control failed');
     }

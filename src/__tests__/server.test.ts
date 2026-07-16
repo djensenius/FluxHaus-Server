@@ -295,6 +295,14 @@ describe('Server', () => {
       .expect(400);
   });
 
+  it('should reject an unsupported air purifier preset mode', async () => {
+    await request(app)
+      .post('/airPurifierPreset')
+      .set('Authorization', oidcAuthHeader)
+      .send({ mode: 'bogus' })
+      .expect(400);
+  });
+
   it('should control the air purifier light for admin', async () => {
     await request(app)
       .post('/airPurifierLight')

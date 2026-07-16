@@ -46,6 +46,22 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function toStringOrNull(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
+}
+
+// Home Assistant reports light brightness on a 0-255 scale; convert it to a
+// 0-100 percentage so it matches the brightness_pct value the API accepts.
+function brightnessToPercent(value: unknown): number | null {
+  const raw = toNumber(value);
+  if (raw === null) return null;
+  return Math.round((Math.max(0, Math.min(255, raw)) / 255) * 100);
+}
+
 export default class Blueair {
   public cachedStatus: BlueairStatus = EMPTY_STATUS;
 
@@ -111,10 +127,10 @@ export default class Blueair {
         online: online ? online.state === 'on' : false,
         fanOn: fan ? fan.state === 'on' : false,
         fanSpeed: fan ? toNumber(fan.attributes?.percentage) : null,
-        presetMode: fan?.attributes?.preset_mode ?? null,
-        presetModes: fan?.attributes?.preset_modes ?? [],
+        presetMode: toStringOrNull(fan?.attributes?.preset_mode),
+        presetModes: toStringArray(fan?.attributes?.preset_modes),
         lightOn: light ? light.state === 'on' : false,
-        brightness: light ? toNumber(light.attributes?.brightness) : null,
+        brightness: light ? brightnessToPercent(light.attributes?.brightness) : null,
         pm25: pm25Value,
         filterLife: filterValue,
       };
@@ -155,7 +171,9 @@ export default class Blueair {
       ? this.cachedStatus.presetModes
       : ['auto', 'night', 'manual'];
     if (!allowed.includes(mode)) {
-      throw new Error(`Invalid preset mode: ${mode}`);
+      const error = new Error(`Invalid preset mode: ${mode}`);
+      error.name = 'InvalidPresetError';
+      throw error;
     }
     await this.client.callService('fan', 'set_preset_mode', {
       entity_id: this.fanEntityId,
