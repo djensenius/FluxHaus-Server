@@ -698,7 +698,7 @@ export async function createServer(): Promise<Express> {
       return;
     }
     const mode = String(req.body?.mode ?? '');
-    if (!mode) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(mode)) {
       res.status(400).send('mode is required');
       return;
     }
