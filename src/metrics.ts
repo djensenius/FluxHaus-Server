@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { type RequestHandler, Router } from 'express';
 import type { InfluxDBClient } from './clients/influxdb';
 import type { PrometheusClient } from './clients/prometheus';
 import logger from './logger';
@@ -325,14 +325,12 @@ async function fetchInflux(
 
 async function fetchPrometheusFrom(
   metric: PrometheusMetric,
-  range: MetricRange,
+  window: { start: number; end: number; step: number },
   serverName: string,
   client: PrometheusClient,
   prefix: boolean,
 ): Promise<MetricSeries[]> {
-  const end = Math.floor(Date.now() / 1000);
-  const start = end - RANGE_SECONDS[range];
-  const step = Math.max(15, Math.floor(RANGE_SECONDS[range] / 120));
+  const { start, end, step } = window;
 
   const result = await client.queryRange(metric.promql, String(start), String(end), String(step));
   const series: MetricSeries[] = (result?.data?.result ?? []).map((entry: {
@@ -362,8 +360,13 @@ async function fetchPrometheus(
     .filter((server) => server.client.configured);
   const multiple = servers.length > 1;
 
+  const end = Math.floor(Date.now() / 1000);
+  const start = end - RANGE_SECONDS[range];
+  const step = Math.max(15, Math.floor(RANGE_SECONDS[range] / 120));
+  const window = { start, end, step };
+
   const results = await Promise.allSettled(
-    servers.map((server) => fetchPrometheusFrom(metric, range, server.name, server.client, multiple)),
+    servers.map((server) => fetchPrometheusFrom(metric, window, server.name, server.client, multiple)),
   );
 
   results.forEach((result, index) => {
@@ -421,8 +424,7 @@ export async function fetchMetricSeries(
   };
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function createMetricsRouter(deps: MetricsDeps, cors: any): Router {
+export function createMetricsRouter(deps: MetricsDeps, cors: RequestHandler): Router {
   const router = Router();
 
   router.get('/metrics/catalog', cors, (_req, res) => {
