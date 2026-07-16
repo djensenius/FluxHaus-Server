@@ -73,15 +73,21 @@ import { createCalendarService } from './calendar';
 
 const serverLogger = logger.child({ subsystem: 'server' });
 
-// Parses a request "on" flag, defaulting to true unless the value is an
-// explicit falsy value (boolean false, or strings like "false"/"0"/"off"/"no").
-function parseOnFlag(value: unknown): boolean {
+// Parses a request "on" flag. Returns true/false for recognized values and
+// null for a missing or unrecognized value so callers can reject it with 400.
+function parseOnFlag(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;
-  if (typeof value === 'number') return value !== 0;
-  if (typeof value === 'string') {
-    return !['false', '0', 'off', 'no'].includes(value.trim().toLowerCase());
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return null;
   }
-  return value !== false;
+  if (typeof value === 'string') {
+    const v = value.trim().toLowerCase();
+    if (['true', '1', 'on', 'yes'].includes(v)) return true;
+    if (['false', '0', 'off', 'no'].includes(v)) return false;
+  }
+  return null;
 }
 
 const port = process.env.PORT || 8888;
@@ -675,8 +681,13 @@ export async function createServer(): Promise<Express> {
       res.status(403).send('Forbidden');
       return;
     }
+    const on = parseOnFlag(req.body?.on);
+    if (on === null) {
+      res.status(400).send('on flag is required');
+      return;
+    }
     try {
-      const result = await blueair.setFan(parseOnFlag(req.body?.on));
+      const result = await blueair.setFan(on);
       res.send(result);
     } catch (err) {
       serverLogger.error({ err }, 'airPurifierFan failed');
@@ -689,9 +700,14 @@ export async function createServer(): Promise<Express> {
       res.status(403).send('Forbidden');
       return;
     }
-    const percentage = Number(req.body?.percentage);
-    if (!Number.isFinite(percentage)) {
+    const raw = req.body?.percentage;
+    if (raw === undefined || raw === null || raw === '') {
       res.status(400).send('percentage is required');
+      return;
+    }
+    const percentage = Number(raw);
+    if (!Number.isFinite(percentage)) {
+      res.status(400).send('percentage must be a number');
       return;
     }
     try {
@@ -731,18 +747,28 @@ export async function createServer(): Promise<Express> {
       res.status(403).send('Forbidden');
       return;
     }
-    try {
-      if (req.body?.brightness !== undefined) {
-        const brightness = Number(req.body.brightness);
-        if (!Number.isFinite(brightness)) {
-          res.status(400).send('brightness must be a number');
-          return;
-        }
-        const result = await blueair.setBrightness(brightness);
-        res.send(result);
+    if (req.body?.brightness !== undefined) {
+      const brightness = Number(req.body.brightness);
+      if (!Number.isFinite(brightness)) {
+        res.status(400).send('brightness must be a number');
         return;
       }
-      const result = await blueair.setLight(parseOnFlag(req.body?.on));
+      try {
+        const result = await blueair.setBrightness(brightness);
+        res.send(result);
+      } catch (err) {
+        serverLogger.error({ err }, 'airPurifierLight failed');
+        res.status(502).send('Air purifier light control failed');
+      }
+      return;
+    }
+    const on = parseOnFlag(req.body?.on);
+    if (on === null) {
+      res.status(400).send('on flag or brightness is required');
+      return;
+    }
+    try {
+      const result = await blueair.setLight(on);
       res.send(result);
     } catch (err) {
       serverLogger.error({ err }, 'airPurifierLight failed');

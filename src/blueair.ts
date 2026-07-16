@@ -26,18 +26,20 @@ export interface BlueairConfig {
   pollInterval?: number;
 }
 
-const EMPTY_STATUS: BlueairStatus = {
-  timestamp: new Date(0),
-  online: false,
-  fanOn: false,
-  fanSpeed: null,
-  presetMode: null,
-  presetModes: [],
-  lightOn: false,
-  brightness: null,
-  pm25: null,
-  filterLife: null,
-};
+function emptyStatus(): BlueairStatus {
+  return {
+    timestamp: new Date(0),
+    online: false,
+    fanOn: false,
+    fanSpeed: null,
+    presetMode: null,
+    presetModes: [],
+    lightOn: false,
+    brightness: null,
+    pm25: null,
+    filterLife: null,
+  };
+}
 
 function toNumber(value: unknown): number | null {
   const parsed = typeof value === 'number' ? value : parseFloat(String(value));
@@ -61,7 +63,7 @@ function brightnessToPercent(value: unknown): number | null {
 }
 
 export default class Blueair {
-  public cachedStatus: BlueairStatus = EMPTY_STATUS;
+  public cachedStatus: BlueairStatus = emptyStatus();
 
   public onStatusChange?: (status: BlueairStatus) => void;
 

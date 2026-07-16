@@ -287,6 +287,14 @@ describe('Server', () => {
       .expect(200);
   });
 
+  it('should reject air purifier fan control without an on flag', async () => {
+    await request(app)
+      .post('/airPurifierFan')
+      .set('Authorization', oidcAuthHeader)
+      .send({})
+      .expect(400);
+  });
+
   it('should validate the air purifier preset mode', async () => {
     await request(app)
       .post('/airPurifierPreset')
