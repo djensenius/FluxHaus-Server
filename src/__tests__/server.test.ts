@@ -311,6 +311,14 @@ describe('Server', () => {
       .expect(400);
   });
 
+  it('should reject air purifier light control without brightness or on flag', async () => {
+    await request(app)
+      .post('/airPurifierLight')
+      .set('Authorization', oidcAuthHeader)
+      .send({ brightness: null })
+      .expect(400);
+  });
+
   it('should control the air purifier light for admin', async () => {
     await request(app)
       .post('/airPurifierLight')

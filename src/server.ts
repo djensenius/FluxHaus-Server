@@ -747,8 +747,9 @@ export async function createServer(): Promise<Express> {
       res.status(403).send('Forbidden');
       return;
     }
-    if (req.body?.brightness !== undefined) {
-      const brightness = Number(req.body.brightness);
+    const rawBrightness = req.body?.brightness;
+    if (rawBrightness !== undefined && rawBrightness !== null && rawBrightness !== '') {
+      const brightness = Number(rawBrightness);
       if (!Number.isFinite(brightness)) {
         res.status(400).send('brightness must be a number');
         return;
