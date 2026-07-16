@@ -204,6 +204,32 @@ INFLUXDB_BUCKET=fluxhaus
 
 If not configured, InfluxDB integration is silently disabled. Connect to an existing InfluxDB instance — no need to run one in docker-compose.
 
+## Metrics dashboard
+
+The app renders a Grafana-style dashboard from a server-defined catalog. Clients
+only reference metric ids — raw Flux/PromQL never leaves the server. Definitions
+live in `src/metrics.ts` (`METRIC_CATALOG`) and are exposed via:
+
+- `GET /metrics/catalog` — list of `{ id, title, unit, group }`
+- `GET /metrics/series?metric=<id>&range=<1h|6h|24h|7d|30d>` — time-series data
+
+Catalog groups:
+
+- **Environment** — indoor + outdoor temperature/humidity (Environment Canada),
+  indoor air quality (Blue Pure PM2.5), and outdoor air quality (AQHI). Outdoor
+  readings are relabelled **"Outside"** via each metric's `seriesRename` map so the
+  app can colour them consistently across charts.
+- **Energy** — live power draw (W) and cumulative energy (kWh) for the computer
+  station, media centre, and server hardware.
+- **Outdoor** — the full weather-tab detail set: outdoor temperature/humidity,
+  dew point, humidex, UV index, AQHI, and U.S./Chinese AQI (IQAir).
+- **Car**, **System**, **Network**, **Power** (UPS), **UniFi** — host and vehicle
+  telemetry from InfluxDB/Prometheus.
+
+Outdoor/environment series read Home Assistant data already flowing into InfluxDB
+(measurements keyed by unit, e.g. `climate`, `°C`, `μg/m³`, `UV index`, and
+`state` for index-style sensors) — no extra collector or env vars required.
+
 ## Calendar setup
 
 Calendars are available in both the MCP server and the AI command endpoint. The server keeps the existing Home Assistant calendar access and adds optional providers for iCloud, Microsoft 365, and subscribed ICS feeds.

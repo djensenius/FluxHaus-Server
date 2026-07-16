@@ -38,6 +38,32 @@ describe('metrics router', () => {
     expect(res.body.error).toMatch(/Unknown metric/);
   });
 
+  it('applies seriesRename to relabel the outdoor series as "Outside"', async () => {
+    const influxdb = {
+      configured: true,
+      query: jest.fn().mockResolvedValue([
+        {
+          _time: '2024-01-01T00:00:00Z', _value: '18.2', friendly_name: 'Environment Canada Temperature',
+        },
+      ]),
+    };
+    const app = buildApp({ influxdb: influxdb as never, bucket: 'fluxhaus' });
+    const res = await request(app).get('/metrics/series?metric=temperature').expect(200);
+    expect(res.body.series).toEqual([
+      { name: 'Outside', points: [{ t: '2024-01-01T00:00:00Z', v: 18.2 }] },
+    ]);
+  });
+
+  it('exposes Energy and Outdoor metric groups in the catalog', async () => {
+    const app = buildApp({});
+    const res = await request(app).get('/metrics/catalog').expect(200);
+    const groups = new Set(res.body.metrics.map((m: { group: string }) => m.group));
+    expect(groups.has('Energy')).toBe(true);
+    expect(groups.has('Outdoor')).toBe(true);
+    const ids = res.body.metrics.map((m: { id: string }) => m.id);
+    expect(ids).toEqual(expect.arrayContaining(['power_draw', 'aqhi', 'outdoor_air_quality']));
+  });
+
   it('returns 200 with series for a valid influx metric', async () => {
     const influxdb = {
       configured: true,
