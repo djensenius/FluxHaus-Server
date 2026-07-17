@@ -12,10 +12,11 @@ export const ECCC_INFLUX_FRIENDLY_NAME = 'Environment Canada AQHI';
 export const OPEN_METEO_INFLUX_ENTITY_ID = 'aqhi_open_meteo';
 export const OPEN_METEO_INFLUX_FRIENDLY_NAME = 'Open-Meteo';
 
-// Outdoor PM2.5 (µg/m³) from Open-Meteo, written so it appears alongside the
-// indoor Blue Pure sensor on the app's "Air Quality (PM2.5)" chart. The
-// measurement must byte-match the greek-mu unit HA writes (see metrics.ts);
-// build it from code points to avoid editor-encoding mistakes.
+// Outdoor PM2.5 from Open-Meteo, written so it appears alongside the indoor
+// Blue Pure sensor on the app's "Air Quality (PM2.5)" chart. The measurement
+// must byte-match the unit Home Assistant writes, which uses U+03BC (Greek
+// small letter mu) followed by "g/m" and U+00B3 (superscript three). It is
+// built from code points below to avoid editor-encoding mistakes.
 export const PM25_INFLUX_MEASUREMENT = '\u03BCg/m\u00B3';
 export const OPEN_METEO_PM25_ENTITY_ID = 'pm25_open_meteo';
 export const OPEN_METEO_PM25_FRIENDLY_NAME = 'Open-Meteo';
