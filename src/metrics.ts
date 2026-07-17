@@ -123,8 +123,8 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     measurement: 'state',
     field: 'value',
     seriesTag: 'friendly_name',
-    entityIds: ['patio_environment_canada_aqhi'],
-    seriesRename: { 'Environment Canada AQHI': 'Outside' },
+    entityIds: ['patio_environment_canada_aqhi', 'aqhi_open_meteo'],
+    seriesRename: { 'Environment Canada AQHI': 'Environment Canada' },
   },
   {
     id: 'car_battery',
@@ -257,8 +257,8 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     measurement: 'state',
     field: 'value',
     seriesTag: 'friendly_name',
-    entityIds: ['patio_environment_canada_aqhi'],
-    seriesRename: { 'Environment Canada AQHI': 'Outside' },
+    entityIds: ['patio_environment_canada_aqhi', 'aqhi_open_meteo'],
+    seriesRename: { 'Environment Canada AQHI': 'Environment Canada' },
   },
   {
     id: 'us_aqi',

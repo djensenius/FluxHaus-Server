@@ -27,6 +27,7 @@ import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import { createMetricsRouter } from './metrics';
 import Blueair from './blueair';
+import AirQuality from './air-quality';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
 import liveActivityTestRouter from './routes/live-activity-test.routes';
@@ -1556,6 +1557,19 @@ export async function createServer(): Promise<Express> {
   });
 
   startMonitor(allServices.homeAssistantClient, 30_000);
+
+  // Air Quality Health Index collector: stores the official Environment Canada
+  // AQHI (polled from HA) and a computed AQHI (from free Open-Meteo pollutant
+  // data) into InfluxDB on a 10-minute cadence, so the app's AQHI chart has a
+  // dense series instead of the sparse points HA writes only on state change.
+  // eslint-disable-next-line no-new
+  new AirQuality({
+    client: homeAssistantClient,
+    latitude: process.env.AQHI_LATITUDE ? parseFloat(process.env.AQHI_LATITUDE) : undefined,
+    longitude: process.env.AQHI_LONGITUDE ? parseFloat(process.env.AQHI_LONGITUDE) : undefined,
+    ecccEntityId: process.env.AQHI_ECCC_ENTITY_ID?.trim() || undefined,
+  });
+
   setAlertCallback((rule, _entity, message) => {
     serverLogger.info({ ruleId: rule.id, message }, 'Alert triggered');
     // TODO: send push notification when simple alert push is implemented
