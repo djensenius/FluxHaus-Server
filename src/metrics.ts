@@ -112,7 +112,8 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     measurement: 'μg/m³',
     field: 'value',
     seriesTag: 'friendly_name',
-    entityIds: ['blue_pure_pm_2_5'],
+    entityIds: ['blue_pure_pm_2_5', 'pm25_open_meteo'],
+    seriesRename: { 'Blue Pure PM 2.5': 'Indoor', 'Open-Meteo': 'Outdoor' },
   },
   {
     id: 'outdoor_air_quality',
