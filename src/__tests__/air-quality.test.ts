@@ -98,4 +98,20 @@ describe('AirQuality collector', () => {
     expect(value as number).toBeGreaterThanOrEqual(1);
     expect(value as number).toBeLessThan(11);
   });
+
+  it('normalizes a bare ECCC entity id and ignores NaN coordinates', async () => {
+    aq = new AirQuality({
+      client: mockClient,
+      fetchFn: mockFetch,
+      ecccEntityId: 'patio_environment_canada_aqhi',
+      latitude: NaN,
+      longitude: NaN,
+      pollInterval: 60_000,
+    });
+    await aq.collect();
+    expect(mockClient.getState).toHaveBeenCalledWith('sensor.patio_environment_canada_aqhi');
+    const url = String((mockFetch as jest.Mock).mock.calls[0][0]);
+    expect(url).toContain('latitude=43.4468');
+    expect(url).toContain('longitude=-80.4906');
+  });
 });

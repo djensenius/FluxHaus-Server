@@ -19,6 +19,10 @@ const DEFAULT_LONGITUDE = -80.4906;
 
 const OPEN_METEO_URL = 'https://air-quality-api.open-meteo.com/v1/air-quality';
 
+// Abort the Open-Meteo request if it hangs, so overlapping 10-minute collects
+// can't accumulate in-flight fetches.
+const OPEN_METEO_TIMEOUT_MS = 10_000;
+
 // Molar-volume conversion (µg/m³ -> ppb) at 25 °C, 1013 hPa: ppb = µg/m³ × 24.45 / MW.
 const MOLAR_VOLUME = 24.45;
 const MW_O3 = 48.0;
@@ -30,6 +34,14 @@ export function ozoneUgm3ToPpb(ugm3: number): number {
 
 export function no2Ugm3ToPpb(ugm3: number): number {
   return (ugm3 * MOLAR_VOLUME) / MW_NO2;
+}
+
+// Ensure the configured ECCC sensor id includes a Home Assistant domain;
+// `/api/states/<id>` requires a `<domain>.<object_id>` entity id.
+function normalizeEntityId(entityId?: string): string {
+  const trimmed = entityId?.trim();
+  if (!trimmed) return `sensor.${ECCC_INFLUX_ENTITY_ID}`;
+  return trimmed.includes('.') ? trimmed : `sensor.${trimmed}`;
 }
 
 /**
@@ -92,9 +104,9 @@ export default class AirQuality {
 
   constructor(config: AirQualityConfig) {
     this.client = config.client;
-    this.latitude = config.latitude ?? DEFAULT_LATITUDE;
-    this.longitude = config.longitude ?? DEFAULT_LONGITUDE;
-    this.ecccEntityId = config.ecccEntityId || `sensor.${ECCC_INFLUX_ENTITY_ID}`;
+    this.latitude = Number.isFinite(config.latitude) ? (config.latitude as number) : DEFAULT_LATITUDE;
+    this.longitude = Number.isFinite(config.longitude) ? (config.longitude as number) : DEFAULT_LONGITUDE;
+    this.ecccEntityId = normalizeEntityId(config.ecccEntityId);
     this.fetchFn = config.fetchFn ?? fetch;
     this.startPolling(config.pollInterval ?? 1000 * 60 * 10);
   }
@@ -160,7 +172,14 @@ export default class AirQuality {
       forecast_days: '1',
       timezone: 'GMT',
     });
-    const response = await this.fetchFn(`${OPEN_METEO_URL}?${params.toString()}`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), OPEN_METEO_TIMEOUT_MS);
+    let response: Response;
+    try {
+      response = await this.fetchFn(`${OPEN_METEO_URL}?${params.toString()}`, { signal: controller.signal });
+    } finally {
+      clearTimeout(timeout);
+    }
     if (!response.ok) {
       aqLogger.warn({ status: response.status }, 'Open-Meteo air-quality request failed');
       return null;
@@ -169,14 +188,15 @@ export default class AirQuality {
     const { hourly } = body;
     if (!hourly?.time?.length) return null;
 
-    // Find the most recent hour at or before now.
+    // Find the most recent hour at or before now. Open-Meteo returns forecast
+    // hours too, so bail out rather than computing AQHI from future samples.
     const now = Date.now();
     let endIndex = -1;
     for (let i = 0; i < hourly.time.length; i += 1) {
       if (new Date(`${hourly.time[i]}Z`).getTime() <= now) endIndex = i;
       else break;
     }
-    if (endIndex < 0) endIndex = hourly.time.length - 1;
+    if (endIndex < 0) return null;
 
     const pm25 = trailingAverage(hourly.pm2_5, endIndex);
     const no2 = trailingAverage(hourly.nitrogen_dioxide, endIndex);
