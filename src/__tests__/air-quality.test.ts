@@ -89,14 +89,26 @@ describe('AirQuality collector', () => {
     const entities = (writePoint as jest.Mock).mock.calls.map((c) => c[2].entity_id);
     expect(entities).toContain('aqhi_open_meteo');
     expect(entities).toContain('patio_environment_canada_aqhi');
+    expect(entities).toContain('pm25_open_meteo');
   });
 
-  it('computes a plausible AQHI from Open-Meteo data', async () => {
+  it('writes outdoor PM2.5 under the greek-mu measurement HA uses', async () => {
     aq = new AirQuality({ client: mockClient, fetchFn: mockFetch, pollInterval: 60_000 });
-    const value = await aq.fetchOpenMeteoAqhi();
-    expect(value).not.toBeNull();
-    expect(value as number).toBeGreaterThanOrEqual(1);
-    expect(value as number).toBeLessThan(11);
+    await aq.collect();
+
+    const pm25Call = (writePoint as jest.Mock).mock.calls.find((c) => c[2].entity_id === 'pm25_open_meteo');
+    expect(pm25Call).toBeDefined();
+    expect(pm25Call[0]).toBe('\u03BCg/m\u00B3');
+    expect(pm25Call[1].value).toBe(10);
+  });
+
+  it('computes a plausible AQHI and PM2.5 from Open-Meteo data', async () => {
+    aq = new AirQuality({ client: mockClient, fetchFn: mockFetch, pollInterval: 60_000 });
+    const readings = await aq.fetchOpenMeteoReadings();
+    expect(readings).not.toBeNull();
+    expect(readings!.aqhi).toBeGreaterThanOrEqual(1);
+    expect(readings!.aqhi).toBeLessThan(11);
+    expect(readings!.pm25).toBe(10);
   });
 
   it('normalizes a bare ECCC entity id and ignores NaN coordinates', async () => {

@@ -12,6 +12,15 @@ export const ECCC_INFLUX_FRIENDLY_NAME = 'Environment Canada AQHI';
 export const OPEN_METEO_INFLUX_ENTITY_ID = 'aqhi_open_meteo';
 export const OPEN_METEO_INFLUX_FRIENDLY_NAME = 'Open-Meteo';
 
+// Outdoor PM2.5 from Open-Meteo, written so it appears alongside the indoor
+// Blue Pure sensor on the app's "Air Quality (PM2.5)" chart. The measurement
+// must byte-match the unit Home Assistant writes, which uses U+03BC (Greek
+// small letter mu) followed by "g/m" and U+00B3 (superscript three). It is
+// built from code points below to avoid editor-encoding mistakes.
+export const PM25_INFLUX_MEASUREMENT = '\u03BCg/m\u00B3';
+export const OPEN_METEO_PM25_ENTITY_ID = 'pm25_open_meteo';
+export const OPEN_METEO_PM25_FRIENDLY_NAME = 'Open-Meteo';
+
 // Default Kitchener, ON coordinates (matches the app's fallback location and
 // the AirVisual/Environment Canada sensors already configured in HA).
 const DEFAULT_LATITUDE = 43.4468;
@@ -64,6 +73,11 @@ interface OpenMeteoHourly {
   pm2_5: (number | null)[];
   nitrogen_dioxide: (number | null)[];
   ozone: (number | null)[];
+}
+
+interface OpenMeteoReadings {
+  aqhi: number;
+  pm25: number;
 }
 
 /**
@@ -133,16 +147,21 @@ export default class AirQuality {
 
   private async collectOpenMeteo(): Promise<void> {
     try {
-      const aqhi = await this.fetchOpenMeteoAqhi();
-      if (aqhi === null) return;
+      const readings = await this.fetchOpenMeteoReadings();
+      if (readings === null) return;
       writePoint(
         'state',
-        { value: aqhi },
+        { value: readings.aqhi },
         { entity_id: OPEN_METEO_INFLUX_ENTITY_ID, friendly_name: OPEN_METEO_INFLUX_FRIENDLY_NAME },
       );
-      aqLogger.debug({ aqhi }, 'Wrote Open-Meteo AQHI');
+      writePoint(
+        PM25_INFLUX_MEASUREMENT,
+        { value: readings.pm25 },
+        { entity_id: OPEN_METEO_PM25_ENTITY_ID, friendly_name: OPEN_METEO_PM25_FRIENDLY_NAME },
+      );
+      aqLogger.debug({ aqhi: readings.aqhi, pm25: readings.pm25 }, 'Wrote Open-Meteo readings');
     } catch (err) {
-      aqLogger.error({ err }, 'Failed to collect Open-Meteo AQHI');
+      aqLogger.error({ err }, 'Failed to collect Open-Meteo readings');
     }
   }
 
@@ -162,8 +181,11 @@ export default class AirQuality {
     }
   }
 
-  /** Compute AQHI from the latest Open-Meteo pollutant data. Public for testing. */
-  public async fetchOpenMeteoAqhi(): Promise<number | null> {
+  /**
+   * Fetch the latest Open-Meteo pollutant data and derive the computed AQHI
+   * plus the outdoor PM2.5 concentration (3-hour average). Public for testing.
+   */
+  public async fetchOpenMeteoReadings(): Promise<OpenMeteoReadings | null> {
     const params = new URLSearchParams({
       latitude: String(this.latitude),
       longitude: String(this.longitude),
@@ -203,6 +225,9 @@ export default class AirQuality {
     const o3 = trailingAverage(hourly.ozone, endIndex);
     if (pm25 === null || no2 === null || o3 === null) return null;
 
-    return computeAqhi(ozoneUgm3ToPpb(o3), no2Ugm3ToPpb(no2), pm25);
+    return {
+      aqhi: computeAqhi(ozoneUgm3ToPpb(o3), no2Ugm3ToPpb(no2), pm25),
+      pm25: Math.round(pm25 * 10) / 10,
+    };
   }
 }
