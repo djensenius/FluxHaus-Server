@@ -171,6 +171,27 @@ describe('Car', () => {
     );
   });
 
+  it('omits unavailable battery telemetry while preserving the last status value', async () => {
+    await car.setStatus();
+    expect(car.status?.evStatus.batteryStatus).toBe(75);
+    jest.mocked(writePoint).mockClear();
+    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      if (entityId === `sensor.${entityPrefix}_ev_battery_level`) {
+        return Promise.resolve({ state: 'unavailable' });
+      }
+      return Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' });
+    });
+
+    await car.setStatus();
+
+    expect(car.status?.evStatus.batteryStatus).toBe(75);
+    expect(writePoint).toHaveBeenCalledWith(
+      'car',
+      expect.not.objectContaining({ battery_level: expect.any(Number) }),
+      { vehicle: entityPrefix },
+    );
+  });
+
   it('should load cached status on startup', () => {
     const cachedStatus = {
       timestamp: '2025-01-17T17:25:52.000Z',

@@ -220,10 +220,13 @@ export default class Car {
       const evModeRange = parseInt(evRange, 10) || 0;
       const totalAvailableRange = parseInt(totalRange, 10) || 0;
 
+      const parsedBatteryLevel = Number.parseFloat(batteryLevel);
       const evStatus: EVStatus = {
         timestamp: timestamp.toISOString(),
         batteryCharge: charging === 'on',
-        batteryStatus: parseInt(batteryLevel, 10) || 0,
+        batteryStatus: Number.isFinite(parsedBatteryLevel)
+          ? parsedBatteryLevel
+          : this.status?.evStatus.batteryStatus ?? 0,
         batteryPlugin: pluggedIn === 'on' ? 1 : 0,
         drvDistance: [{
           rangeByFuel: {
@@ -285,11 +288,14 @@ export default class Car {
   ) {
     const fields: Record<string, number | boolean> = {
       odometer: this.odometer,
-      battery_level: parseInt(batteryLevel, 10) || 0,
       ev_range: evRange,
       total_range: totalRange,
       charging: charging === 'on',
     };
+    const parsedBattery = Number.parseFloat(batteryLevel);
+    if (Number.isFinite(parsedBattery)) {
+      fields.battery_level = parsedBattery;
+    }
     const parsedEnergy = parseFloat(energyState ?? '');
     if (Number.isFinite(parsedEnergy)) {
       fields.energy_total_kwh = this.energyUnit === 'wh'
