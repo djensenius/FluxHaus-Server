@@ -96,6 +96,20 @@ describe('charging session detection', () => {
       batteryAddedPercent: 50,
     });
   });
+
+  it('uses the final state sample to close an open charging session', () => {
+    const sessions = detectChargingSessions([
+      { time: date('2026-09-01T00:00:00Z'), charging: true },
+      { time: date('2026-09-01T02:00:00Z'), charging: true },
+    ], []);
+
+    expect(sessions).toEqual([{
+      start: '2026-09-01T00:00:00.000Z',
+      end: '2026-09-01T02:00:00.000Z',
+      durationHours: 2,
+      batteryAddedPercent: null,
+    }]);
+  });
 });
 
 describe('car analytics calculations', () => {
@@ -133,6 +147,34 @@ describe('car analytics calculations', () => {
       unit: 'kWh/100 km',
     });
     expect(analysis.dataQuality.warnings).toContain('1 invalid odometer deltas were ignored.');
+  });
+
+  it('excludes idle energy deltas from driving efficiency', () => {
+    const analysis = calculateCarAnalytics({
+      telemetry: [
+        {
+          time: date('2026-09-01T00:00:00Z'),
+          odometer: 1000,
+          energyTotalKWh: 500,
+        },
+        {
+          time: date('2026-09-01T01:00:00Z'),
+          odometer: 1000,
+          energyTotalKWh: 510,
+        },
+        {
+          time: date('2026-09-01T02:00:00Z'),
+          odometer: 1050,
+          energyTotalKWh: 520,
+        },
+      ],
+      charging: [],
+      weather: [],
+    }, '7d', date('2026-09-01T00:00:00Z'), date('2026-09-08T00:00:00Z'), '5m');
+
+    expect(analysis.usage.distanceKm).toBe(50);
+    expect(analysis.usage.energyKWh).toBe(10);
+    expect(analysis.usage.efficiency.value).toBe(20);
   });
 
   it('returns a labeled battery proxy and compares cold with mild driving', () => {
@@ -317,6 +359,12 @@ describe('CarAnalyticsService', () => {
       date('2026-09-01T00:00:00Z'),
       date('2026-09-02T00:00:00Z'),
     )).toContain('r._field == "charging"');
+    expect(buildChargingQuery(
+      'fluxhaus',
+      'kia',
+      date('2026-09-01T00:00:00Z'),
+      date('2026-09-02T00:00:00Z'),
+    )).toContain('union(tables: [initial, changes, latest])');
     expect(buildEarliestCarQuery(
       'fluxhaus',
       'kia',

@@ -357,7 +357,10 @@ changes = raw
   |> difference(nonNegative: false)
   |> filter(fn: (r) => r._value != 0)
 
-union(tables: [initial, changes])
+latest = raw
+  |> last()
+
+union(tables: [initial, changes, latest])
   |> map(fn: (r) => ({ r with _value: r._value > 0 }))
   |> keep(columns: ["_time", "_value"])
   |> sort(columns: ["_time"])`;
@@ -601,10 +604,10 @@ function calculateUsage(
       accumulator.invalidOdometerDeltas += 1;
       return;
     }
-    if (energyDelta > 0) accumulator.energyKWh += energyDelta;
     if (distance === 0) return;
 
     accumulator.distanceKm += distance;
+    if (energyDelta > 0) accumulator.energyKWh += energyDelta;
     const midpoint = new Date((previous.time.getTime() + current.time.getTime()) / 2);
     const temperature = nearestTemperature(midpoint, weather, maximumWeatherDistanceMs);
     const band = temperature === null ? null : temperatureBand(temperature);
