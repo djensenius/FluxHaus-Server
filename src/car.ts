@@ -65,6 +65,8 @@ export interface CarConfig {
   client: HomeAssistantClient;
   entityPrefix: string;
   pollInterval?: number;
+  energyEntityId?: string;
+  energyUnit?: string;
 }
 
 function dateToCompactString(date: Date): string {
@@ -80,9 +82,25 @@ export default class Car {
 
   private entityPrefix: string;
 
+  private energyEntityId?: string;
+
+  private energyUnit: 'wh' | 'kwh';
+
   constructor(carConfig: CarConfig) {
     this.client = carConfig.client;
     this.entityPrefix = carConfig.entityPrefix;
+    const energyUnit = carConfig.energyUnit?.toLowerCase() ?? 'kwh';
+    if (energyUnit !== 'wh' && energyUnit !== 'kwh') {
+      carLogger.error(
+        { energyUnit: carConfig.energyUnit },
+        'CAR_ENERGY_UNIT must be Wh or kWh; energy telemetry disabled',
+      );
+      this.energyEntityId = undefined;
+      this.energyUnit = 'kwh';
+    } else {
+      this.energyEntityId = carConfig.energyEntityId;
+      this.energyUnit = energyUnit;
+    }
     this.odometer = 0;
 
     this.loadCachedStatus();
@@ -118,6 +136,16 @@ export default class Car {
   private async getEntityState(entityId: string): Promise<string> {
     const state = await this.client.getState(entityId);
     return state.state;
+  }
+
+  private async getEnergyState(): Promise<string | undefined> {
+    if (!this.energyEntityId) return undefined;
+    try {
+      return await this.getEntityState(this.energyEntityId);
+    } catch (error) {
+      carLogger.warn({ error }, 'Optional car energy telemetry is unavailable');
+      return undefined;
+    }
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -159,6 +187,7 @@ export default class Car {
         engine,
         odometerState,
         lastUpdatedEntity,
+        energyState,
       ] = await Promise.all([
         this.getEntityState(`sensor.${prefix}_ev_battery_level`),
         this.getEntityState(`binary_sensor.${prefix}_ev_battery_charge`),
@@ -177,6 +206,7 @@ export default class Car {
         this.getEntityState(`binary_sensor.${prefix}_engine`),
         this.getEntityState(`sensor.${prefix}_odometer`),
         this.client.getState(`sensor.${prefix}_last_updated_at`),
+        this.getEnergyState(),
       ]);
 
       const lastUpdated = lastUpdatedEntity.last_changed || lastUpdatedEntity.state;
@@ -234,7 +264,13 @@ export default class Car {
       }
 
       this.saveStatusToCache();
-      this.writeToInflux(batteryLevel, evModeRange, totalAvailableRange, charging);
+      this.writeToInflux(
+        batteryLevel,
+        evModeRange,
+        totalAvailableRange,
+        charging,
+        energyState,
+      );
     } catch (error) {
       carLogger.error({ error }, 'Failed to fetch car status from Home Assistant');
     }
@@ -245,16 +281,24 @@ export default class Car {
     evRange: number,
     totalRange: number,
     charging: string,
+    energyState?: string,
   ) {
+    const fields: Record<string, number | boolean> = {
+      odometer: this.odometer,
+      battery_level: parseInt(batteryLevel, 10) || 0,
+      ev_range: evRange,
+      total_range: totalRange,
+      charging: charging === 'on',
+    };
+    const parsedEnergy = parseFloat(energyState ?? '');
+    if (Number.isFinite(parsedEnergy)) {
+      fields.energy_total_kwh = this.energyUnit === 'wh'
+        ? parsedEnergy / 1000
+        : parsedEnergy;
+    }
     writePoint(
       'car',
-      {
-        odometer: this.odometer,
-        battery_level: parseInt(batteryLevel, 10) || 0,
-        ev_range: evRange,
-        total_range: totalRange,
-        charging: charging === 'on',
-      },
+      fields,
       { vehicle: this.entityPrefix },
     );
   }
@@ -305,4 +349,3 @@ export default class Car {
     }
   };
 }
-

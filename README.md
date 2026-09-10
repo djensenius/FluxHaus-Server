@@ -230,6 +230,51 @@ Outdoor/environment series read Home Assistant data already flowing into InfluxD
 (measurements keyed by unit, e.g. `climate`, `°C`, `μg/m³`, `UV index`, and
 `state` for index-style sensors) — no extra collector or env vars required.
 
+## Car analytics
+
+The authenticated car analytics endpoint calculates historical usage on the
+server so clients and AI providers do not need raw InfluxDB access:
+
+```
+GET /analytics/car?range=30d&comparison=previous&topic=overview
+```
+
+Supported preset ranges are `7d`, `30d`, `90d`, `1y`, and `all`. Explicit
+ISO-8601 `start` and `end` query parameters select a custom period. `all` means
+all data retained by the configured InfluxDB bucket; the server uses adaptive
+five-minute, fifteen-minute, hourly, or daily aggregation based on period length.
+Charging state is queried separately at five-minute resolution so averaging
+cannot erase session transitions.
+
+The response includes:
+
+- charging session count, frequency, duration, and battery gained;
+- distance calculated from validated odometer deltas;
+- measured `kWh/100 km` efficiency when cumulative energy telemetry exists;
+- an explicitly labeled `%/100 km` battery-use estimate otherwise;
+- outdoor-temperature bands and weather-impact comparisons;
+- previous-period changes, coverage, sample counts, and warnings;
+- the requested and effective retained-data periods and timezone.
+
+Measured efficiency is optional. Configure a monotonic Home Assistant energy
+sensor and its unit:
+
+```
+CAR_ENERGY_ENTITY_ID=sensor.kia_energy_total
+CAR_ENERGY_UNIT=kWh
+```
+
+`CAR_ENERGY_UNIT` accepts `Wh` or `kWh`; stored InfluxDB values are normalized
+to `energy_total_kwh`. If the sensor is absent or has insufficient coverage,
+the API never presents a battery-based estimate as measured energy efficiency.
+The outdoor series defaults to
+`patio_environment_canada_temperature` and can be changed with
+`CAR_ANALYTICS_OUTDOOR_TEMPERATURE_ENTITY_ID`.
+
+Ask FluxHaus exposes the same deterministic calculation through the
+`get_car_analytics` tool. Historical car questions should use this tool rather
+than the generic `influxdb_query` tool.
+
 ## Calendar setup
 
 Calendars are available in both the MCP server and the AI command endpoint. The server keeps the existing Home Assistant calendar access and adds optional providers for iCloud, Microsoft 365, and subscribed ICS feeds.

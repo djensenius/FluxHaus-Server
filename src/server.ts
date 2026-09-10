@@ -16,6 +16,7 @@ import auditMiddleware from './middleware/audit.middleware';
 import { csrfMiddleware, issueCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
 import createMcpOAuthRouter from './routes/mcp-oauth.routes';
+import createCarAnalyticsRouter from './routes/car-analytics.routes';
 import {
   closePool, getPool, initDatabase, initPool,
 } from './db';
@@ -72,6 +73,7 @@ import { closeApns, initApns } from './apns';
 import { ensureAllChannels } from './apns-channels';
 import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from './live-activity-hooks';
 import { createCalendarService } from './calendar';
+import { CarAnalyticsService } from './car-analytics';
 
 const serverLogger = logger.child({ subsystem: 'server' });
 
@@ -277,6 +279,8 @@ export async function createServer(): Promise<Express> {
   const carConfig: CarConfig = {
     client: homeAssistantClient,
     entityPrefix: process.env.CAR_ENTITY_PREFIX || 'kia',
+    energyEntityId: process.env.CAR_ENERGY_ENTITY_ID?.trim(),
+    energyUnit: process.env.CAR_ENERGY_UNIT?.trim(),
   };
 
   const car = new Car(carConfig);
@@ -339,6 +343,13 @@ export async function createServer(): Promise<Express> {
     token: (process.env.INFLUXDB_TOKEN || '').trim(),
     org: (process.env.INFLUXDB_ORG || 'fluxhaus').trim(),
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+  });
+  const carAnalytics = new CarAnalyticsService({
+    influxdb,
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+    vehicle: carConfig.entityPrefix,
+    outdoorTemperatureEntityId:
+      process.env.CAR_ANALYTICS_OUTDOOR_TEMPERATURE_ENTITY_ID?.trim(),
   });
 
   const portainer = new PortainerClient({
@@ -424,6 +435,7 @@ export async function createServer(): Promise<Express> {
     pihole,
     kagi,
     calendar,
+    carAnalytics,
   };
 
   app.get('/', cors(corsOptions), async (req, res) => {
@@ -1546,6 +1558,7 @@ export async function createServer(): Promise<Express> {
     ],
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
   }, cors(corsOptions)));
+  app.use(createCarAnalyticsRouter(carAnalytics, cors(corsOptions)));
   app.use('/gt3', gt3Router);
 
   // Push test GUI (admin only)
