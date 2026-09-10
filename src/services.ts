@@ -21,6 +21,7 @@ import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
 import { KagiClient } from './clients/kagi';
 import CalendarService, { createCalendarService } from './calendar';
+import { CarAnalyticsService } from './car-analytics';
 import logger from './logger';
 
 const servicesLogger = logger.child({ subsystem: 'services' });
@@ -52,6 +53,7 @@ export interface FluxHausServices {
   pihole?: PiHoleClient;
   kagi?: KagiClient;
   calendar?: CalendarService;
+  carAnalytics?: CarAnalyticsService;
 }
 
 export async function createServices(): Promise<FluxHausServices> {
@@ -79,6 +81,8 @@ export async function createServices(): Promise<FluxHausServices> {
   const carConfig: CarConfig = {
     client: homeAssistantClient,
     entityPrefix: process.env.CAR_ENTITY_PREFIX || 'kia',
+    energyEntityId: process.env.CAR_ENERGY_ENTITY_ID?.trim(),
+    energyUnit: process.env.CAR_ENERGY_UNIT?.trim(),
   };
   const car = new Car(carConfig);
   await car.setStatus();
@@ -94,6 +98,19 @@ export async function createServices(): Promise<FluxHausServices> {
   });
 
   const calendar = createCalendarService(homeAssistantClient);
+  const influxdb = new InfluxDBClient({
+    url: (process.env.INFLUXDB_URL || '').trim(),
+    token: (process.env.INFLUXDB_TOKEN || '').trim(),
+    org: (process.env.INFLUXDB_ORG || 'fluxhaus').trim(),
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+  });
+  const carAnalytics = new CarAnalyticsService({
+    influxdb,
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+    vehicle: carConfig.entityPrefix,
+    outdoorTemperatureEntityId:
+      process.env.CAR_ANALYTICS_OUTDOOR_TEMPERATURE_ENTITY_ID?.trim(),
+  });
 
   return {
     homeAssistantClient,
@@ -122,12 +139,7 @@ export async function createServices(): Promise<FluxHausServices> {
       user: (process.env.GRAFANA_USER || '').trim(),
       password: (process.env.GRAFANA_PASSWORD || '').trim(),
     }),
-    influxdb: new InfluxDBClient({
-      url: (process.env.INFLUXDB_URL || '').trim(),
-      token: (process.env.INFLUXDB_TOKEN || '').trim(),
-      org: (process.env.INFLUXDB_ORG || 'fluxhaus').trim(),
-      bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
-    }),
+    influxdb,
     portainer: new PortainerClient({
       url: (process.env.PORTAINER_URL || '').trim(),
       apiKey: (process.env.PORTAINER_API_KEY || '').trim(),
@@ -179,5 +191,6 @@ export async function createServices(): Promise<FluxHausServices> {
       apiKey: (process.env.KAGI_API_KEY || '').trim(),
     }),
     calendar,
+    carAnalytics,
   };
 }

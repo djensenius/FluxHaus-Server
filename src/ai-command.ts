@@ -28,7 +28,9 @@ const SYSTEM_PROMPT = 'You are FluxHaus, an AI assistant for a smart home. '
   + 'Always use your tools to fulfill requests about the home — never guess '
   + 'device states or act without calling a tool first. For status queries, '
   + 'call the relevant get_ tools (e.g. get_car_status, get_robot_status, '
-  + 'get_appliance_status, get_entity_state). For questions that require '
+  + 'get_appliance_status, get_entity_state). For historical car usage, charging, '
+  + 'efficiency, or weather-impact questions, call get_car_analytics instead of '
+  + 'writing an InfluxDB query. For questions that require '
   + 'up-to-date information from the internet (news, weather, facts, prices, '
   + 'etc.), use the web_search tool. To look at images or camera feeds, use '
   + 'the view_image tool. To create images from descriptions, use generate_image. '
@@ -178,11 +180,46 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'get_car_status',
-    description: 'Get the current car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer.'
-      + ' For historical driving stats (distance over time), query InfluxDB. Home Assistant logs odometer in the'
-      + ' "home_assistant" bucket (entity_id "sensor.*_odometer"). Also available in the default bucket as "car"'
-      + ' measurement (fields: odometer, battery_level, ev_range, total_range, charging; tag: vehicle).',
+    description: 'Get the current car status: battery level, EV range, doors, locks, HVAC, trunk, hood, odometer.',
     parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_car_analytics',
+    description: 'Get deterministic historical car usage, charging frequency, efficiency, weather impact, '
+      + 'and previous-period comparisons. Efficiency is measured in kWh when available and otherwise explicitly '
+      + 'reported as a battery-use estimate.',
+    parameters: {
+      type: 'object',
+      properties: {
+        range: {
+          type: 'string',
+          description: 'History range. Defaults to 30d.',
+          enum: ['7d', '30d', '90d', '1y', 'all'],
+        },
+        topic: {
+          type: 'string',
+          description: 'The aspect of car history the user asked about.',
+          enum: ['overview', 'charging', 'efficiency', 'weather', 'comparison'],
+        },
+        comparison: {
+          type: 'string',
+          description: 'Compare with the immediately preceding equivalent period.',
+          enum: ['previous', 'none'],
+        },
+        timezone: {
+          type: 'string',
+          description: 'IANA timezone for the response period, if the user supplied one.',
+        },
+        start: {
+          type: 'string',
+          description: 'ISO-8601 custom period start. Supply together with end instead of range.',
+        },
+        end: {
+          type: 'string',
+          description: 'ISO-8601 custom period end. Supply together with start instead of range.',
+        },
+      },
+    },
   },
   {
     name: 'get_robot_status',
@@ -1434,6 +1471,17 @@ async function executeToolInner(
 
   case 'get_car_status':
     return JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
+
+  case 'get_car_analytics':
+    if (!services.carAnalytics?.configured) return 'Car analytics is not configured';
+    return JSON.stringify(await services.carAnalytics.analyze({
+      range: args.range,
+      topic: args.topic,
+      comparison: args.comparison,
+      timezone: args.timezone,
+      start: args.start,
+      end: args.end,
+    }), null, 2);
 
   case 'get_robot_status':
     return JSON.stringify({

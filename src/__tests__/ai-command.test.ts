@@ -60,6 +60,12 @@ describe('executeTool', () => {
       cameraURL: '',
       romperURL: '',
       gymURL: '',
+      carAnalytics: {
+        configured: true,
+        analyze: jest.fn().mockResolvedValue({
+          summary: 'You charged twice and drove 100 km.',
+        }),
+      } as any,
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
   });
@@ -177,6 +183,44 @@ describe('executeTool', () => {
     expect(parsed.odometer).toBe(12345);
   });
 
+  it('get_car_analytics uses the deterministic analytics service', async () => {
+    const result = await executeTool(
+      'get_car_analytics',
+      { range: '30d', topic: 'charging' },
+      mockServices,
+    );
+    const parsed = JSON.parse(result);
+    expect(parsed.summary).toBe('You charged twice and drove 100 km.');
+    expect(mockServices.carAnalytics!.analyze).toHaveBeenCalledWith({
+      range: '30d',
+      topic: 'charging',
+      comparison: undefined,
+      timezone: undefined,
+      start: undefined,
+      end: undefined,
+    });
+  });
+
+  it('get_car_analytics forwards a custom date period', async () => {
+    await executeTool(
+      'get_car_analytics',
+      {
+        start: '2026-08-01T00:00:00Z',
+        end: '2026-08-15T00:00:00Z',
+        topic: 'efficiency',
+      },
+      mockServices,
+    );
+    expect(mockServices.carAnalytics!.analyze).toHaveBeenCalledWith({
+      range: undefined,
+      topic: 'efficiency',
+      comparison: undefined,
+      timezone: undefined,
+      start: '2026-08-01T00:00:00Z',
+      end: '2026-08-15T00:00:00Z',
+    });
+  });
+
   it('get_robot_status returns robot statuses', async () => {
     mockBroombot.cachedStatus = { batteryLevel: 90, running: false };
     mockMopbot.cachedStatus = { batteryLevel: 60, running: true };
@@ -277,6 +321,11 @@ describe('executeAICommand', () => {
 
       const result = await executeAICommand('Lock my car', mockServices);
       expect(result).toBe('Car locked successfully.');
+      const request = mockCreate.mock.calls[0][0];
+      expect(request.tools).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'get_car_analytics' }),
+      ]));
+      expect(request.system).toContain('get_car_analytics');
     });
 
     it('executes tool_use and returns final text', async () => {
@@ -340,6 +389,13 @@ describe('executeAICommand', () => {
 
       const result = await executeAICommand('Start broombot', mockServices);
       expect(result).toBe('Broombot started.');
+      const request = mockCreate.mock.calls[0][0];
+      expect(request.tools).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          function: expect.objectContaining({ name: 'get_car_analytics' }),
+        }),
+      ]));
+      expect(request.messages[0].content).toContain('get_car_analytics');
     });
 
     it('includes Copilot-Integration-Id header', async () => {

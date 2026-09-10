@@ -1,9 +1,11 @@
 import fs from 'fs';
 import Car, { CarConfig } from '../car';
 import { HomeAssistantClient } from '../homeassistant-client';
+import { writePoint } from '../influx';
 
 jest.mock('fs');
 jest.mock('../homeassistant-client');
+jest.mock('../influx', () => ({ writePoint: jest.fn() }));
 
 describe('Car', () => {
   let car: Car;
@@ -100,6 +102,93 @@ describe('Car', () => {
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       'cache/carStatus.json',
       expect.any(String),
+    );
+  });
+
+  it('writes optional cumulative energy telemetry in kWh', async () => {
+    const energyEntityId = 'sensor.kia_energy_total';
+    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      if (entityId === energyEntityId) return Promise.resolve({ state: '12500' });
+      return Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' });
+    });
+
+    const energyCar = new Car({
+      client: mockClient,
+      entityPrefix,
+      energyEntityId,
+      energyUnit: 'Wh',
+    });
+
+    await energyCar.setStatus();
+
+    expect(mockClient.getState).toHaveBeenCalledWith(energyEntityId);
+    expect(writePoint).toHaveBeenCalledWith(
+      'car',
+      expect.objectContaining({ energy_total_kwh: 12.5 }),
+      { vehicle: entityPrefix },
+    );
+  });
+
+  it('disables energy telemetry for an unsupported unit', async () => {
+    const energyEntityId = 'sensor.kia_energy_total';
+    const energyCar = new Car({
+      client: mockClient,
+      entityPrefix,
+      energyEntityId,
+      energyUnit: 'joules',
+    });
+
+    await energyCar.setStatus();
+
+    expect(mockClient.getState).not.toHaveBeenCalledWith(energyEntityId);
+    expect(writePoint).toHaveBeenCalledWith(
+      'car',
+      expect.not.objectContaining({ energy_total_kwh: expect.any(Number) }),
+      { vehicle: entityPrefix },
+    );
+  });
+
+  it('continues core car polling when the optional energy sensor fails', async () => {
+    const energyEntityId = 'sensor.kia_energy_total';
+    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      if (entityId === energyEntityId) return Promise.reject(new Error('entity unavailable'));
+      return Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' });
+    });
+    const energyCar = new Car({
+      client: mockClient,
+      entityPrefix,
+      energyEntityId,
+      energyUnit: 'kWh',
+    });
+
+    await energyCar.setStatus();
+
+    expect(energyCar.status?.evStatus.batteryStatus).toBe(75);
+    expect(writePoint).toHaveBeenCalledWith(
+      'car',
+      expect.not.objectContaining({ energy_total_kwh: expect.any(Number) }),
+      { vehicle: entityPrefix },
+    );
+  });
+
+  it('omits unavailable battery telemetry while preserving the last status value', async () => {
+    await car.setStatus();
+    expect(car.status?.evStatus.batteryStatus).toBe(75);
+    jest.mocked(writePoint).mockClear();
+    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      if (entityId === `sensor.${entityPrefix}_ev_battery_level`) {
+        return Promise.resolve({ state: 'unavailable' });
+      }
+      return Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' });
+    });
+
+    await car.setStatus();
+
+    expect(car.status?.evStatus.batteryStatus).toBe(75);
+    expect(writePoint).toHaveBeenCalledWith(
+      'car',
+      expect.not.objectContaining({ battery_level: expect.any(Number) }),
+      { vehicle: entityPrefix },
     );
   });
 
