@@ -114,7 +114,7 @@ describe('Miele', () => {
           remainingTime: [0, 0],
           programPhase: { value_localized: '' },
           ProgramID: { value_localized: '' },
-          status: { value_localized: 'Off' },
+          status: { value_localized: 'OFF' },
         },
       },
     };

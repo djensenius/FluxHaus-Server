@@ -66,7 +66,7 @@ describe('live-activity-hooks (consolidated)', () => {
         timeRunning: 30,
         timeRemaining: 60,
         programName: 'main_wash',
-        status: 'In use',
+        status: 'in_use',
         inUse: true,
       });
       expect(mockGetChannelId).toHaveBeenCalledWith('consolidated');
@@ -78,6 +78,7 @@ describe('live-activity-hooks (consolidated)', () => {
       expect(contentState.devices[0].name).toBe('Washer');
       expect(contentState.devices[0].running).toBe(true);
       expect(contentState.devices[0].programName).toBe('Main Wash');
+      expect(contentState.devices[0].trailingText).toBe('Main Wash · 1h');
     });
 
     it('sends end event when no devices running', async () => {

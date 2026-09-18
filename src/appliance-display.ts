@@ -4,7 +4,7 @@ export default function formatApplianceDisplayText(
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
   const normalized = trimmed.replace(/_+/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!trimmed.includes('_') && /[A-Z]/.test(normalized)) {
+  if (!trimmed.includes('_') && /[A-Z]/.test(normalized) && /[a-z]/.test(normalized)) {
     return normalized;
   }
   return normalized.replace(

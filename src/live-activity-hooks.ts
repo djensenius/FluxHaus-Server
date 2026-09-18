@@ -75,7 +75,7 @@ function buildMieleContentState(
   const programName = formatApplianceDisplayText(device.programName);
   const status = formatApplianceDisplayText(device.status);
   let trailingText = `${programName ?? ''} · ${remainingText}`;
-  if (status && status !== 'In use') {
+  if (status && status.toLowerCase() !== 'in use') {
     trailingText = `${status} · ${trailingText}`;
   }
 
