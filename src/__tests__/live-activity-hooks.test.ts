@@ -300,7 +300,7 @@ describe('live-activity-hooks (consolidated)', () => {
   });
 
   describe('delayed start - Miele', () => {
-    it('treats Programmed status as not running', async () => {
+    it('treats programmed identifier status as not running', async () => {
       jest.setSystemTime(Date.now() + 600_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
@@ -309,7 +309,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Washing machine',
         timeRunning: 0,
         timeRemaining: 120,
-        status: 'Programmed',
+        status: 'programmed',
         inUse: true,
       });
 
@@ -321,7 +321,7 @@ describe('live-activity-hooks (consolidated)', () => {
       }
     });
 
-    it('treats Waiting to start status as not running', async () => {
+    it('treats waiting-to-start identifier status as not running', async () => {
       jest.setSystemTime(Date.now() + 600_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
@@ -330,7 +330,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Tumble dryer',
         timeRunning: 0,
         timeRemaining: 90,
-        status: 'Waiting to start',
+        status: 'waiting_to_start',
         inUse: true,
       });
 

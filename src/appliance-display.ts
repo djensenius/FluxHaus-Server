@@ -3,10 +3,8 @@ export default function formatApplianceDisplayText(
 ): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
-
   const normalized = trimmed.replace(/_+/g, ' ').replace(/\s+/g, ' ').trim();
-  const firstLetter = normalized.match(/[A-Za-z]/)?.[0];
-  if (!trimmed.includes('_') && firstLetter && firstLetter === firstLetter.toUpperCase()) {
+  if (!trimmed.includes('_') && /[A-Z]/.test(normalized)) {
     return normalized;
   }
   return normalized.replace(

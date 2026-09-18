@@ -81,7 +81,10 @@ function buildMieleContentState(
 
   // Treat delayed/programmed states as not running — the Live Activity
   // should only appear once the appliance actually starts its cycle.
-  const isDelayed = device.status === 'Programmed' || device.status === 'Waiting to start';
+  const normalizedStatus = status?.toLowerCase();
+  const isDelayed = normalizedStatus === 'programmed'
+    || normalizedStatus === 'waiting to start'
+    || normalizedStatus === 'delayed start';
   const running = !isDelayed && (device.timeRemaining ?? 0) > 0;
 
   return {
