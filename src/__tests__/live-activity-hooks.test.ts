@@ -65,8 +65,8 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Washing machine',
         timeRunning: 30,
         timeRemaining: 60,
-        programName: 'Cottons',
-        status: 'In use',
+        programName: 'main_wash',
+        status: 'in_use',
         inUse: true,
       });
       expect(mockGetChannelId).toHaveBeenCalledWith('consolidated');
@@ -77,6 +77,8 @@ describe('live-activity-hooks (consolidated)', () => {
       expect(contentState.devices).toHaveLength(1);
       expect(contentState.devices[0].name).toBe('Washer');
       expect(contentState.devices[0].running).toBe(true);
+      expect(contentState.devices[0].programName).toBe('Main Wash');
+      expect(contentState.devices[0].trailingText).toBe('Main Wash · 1h');
     });
 
     it('sends end event when no devices running', async () => {
@@ -299,7 +301,7 @@ describe('live-activity-hooks (consolidated)', () => {
   });
 
   describe('delayed start - Miele', () => {
-    it('treats Programmed status as not running', async () => {
+    it('treats programmed identifier status as not running', async () => {
       jest.setSystemTime(Date.now() + 600_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
@@ -308,7 +310,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Washing machine',
         timeRunning: 0,
         timeRemaining: 120,
-        status: 'Programmed',
+        status: 'programmed',
         inUse: true,
       });
 
@@ -320,7 +322,7 @@ describe('live-activity-hooks (consolidated)', () => {
       }
     });
 
-    it('treats Waiting to start status as not running', async () => {
+    it('treats waiting-to-start identifier status as not running', async () => {
       jest.setSystemTime(Date.now() + 600_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
@@ -329,7 +331,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Tumble dryer',
         timeRunning: 0,
         timeRemaining: 90,
-        status: 'Waiting to start',
+        status: 'waiting_to_start',
         inUse: true,
       });
 

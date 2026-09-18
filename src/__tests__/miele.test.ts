@@ -102,8 +102,8 @@ describe('Miele', () => {
         state: {
           elapsedTime: [1, 30],
           remainingTime: [0, 45],
-          programPhase: { value_localized: 'Wash' },
-          ProgramID: { value_localized: 'Cottons' },
+          programPhase: { value_localized: 'main_wash' },
+          ProgramID: { value_localized: 'cottons_eco' },
           status: { value_localized: 'Running' },
         },
       },
@@ -114,7 +114,7 @@ describe('Miele', () => {
           remainingTime: [0, 0],
           programPhase: { value_localized: '' },
           ProgramID: { value_localized: '' },
-          status: { value_localized: 'Off' },
+          status: { value_localized: 'OFF' },
         },
       },
     };
@@ -123,6 +123,8 @@ describe('Miele', () => {
     miele.parseMessage(mockData);
 
     expect(miele.washer.status).toBe('Running');
+    expect(miele.washer.step).toBe('Main Wash');
+    expect(miele.washer.programName).toBe('Cottons Eco');
     expect(miele.washer.inUse).toBe(true);
     expect(miele.dryer.status).toBe('Off');
     expect(miele.dryer.inUse).toBe(false);

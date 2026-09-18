@@ -197,6 +197,28 @@ describe('HomeAssistantMiele', () => {
     expect(miele.washer.timeRemaining).toBeUndefined();
   });
 
+  it('should humanize identifier-style appliance text', async () => {
+    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      if (entityId === 'sensor.washing_machine') {
+        return Promise.resolve({ state: 'custom_cycle' });
+      }
+      if (entityId === 'sensor.washing_machine_program') {
+        return Promise.resolve({ state: 'quick_wash' });
+      }
+      if (entityId === 'sensor.washing_machine_program_phase') {
+        return Promise.resolve({ state: 'main_wash' });
+      }
+      return Promise.resolve({ state: 'off' });
+    });
+
+    miele = new HomeAssistantMiele({ client: mockClient });
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+
+    expect(miele.washer.status).toBe('Custom Cycle');
+    expect(miele.washer.programName).toBe('Quick Wash');
+    expect(miele.washer.step).toBe('Main Wash');
+  });
+
   it('should parse HH:MM time format', async () => {
     mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
       if (entityId === 'sensor.washing_machine') {
