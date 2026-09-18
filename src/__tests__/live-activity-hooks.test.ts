@@ -65,7 +65,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Washing machine',
         timeRunning: 30,
         timeRemaining: 60,
-        programName: 'Cottons',
+        programName: 'main_wash',
         status: 'In use',
         inUse: true,
       });
@@ -77,6 +77,7 @@ describe('live-activity-hooks (consolidated)', () => {
       expect(contentState.devices).toHaveLength(1);
       expect(contentState.devices[0].name).toBe('Washer');
       expect(contentState.devices[0].running).toBe(true);
+      expect(contentState.devices[0].programName).toBe('Main Wash');
     });
 
     it('sends end event when no devices running', async () => {

@@ -1,6 +1,7 @@
 import { HomeAssistantClient } from './homeassistant-client';
 import { MieleDevice } from './types/types';
 import logger from './logger';
+import formatApplianceDisplayText from './appliance-display';
 
 const mieleLogger = logger.child({ subsystem: 'homeassistant-miele' });
 
@@ -145,19 +146,20 @@ export default class HomeAssistantMiele {
 
     // Status — normalize to lowercase/underscore to match STATUS_MAP keys
     // (HA Miele integration reports states like "running", "not_connected", etc.)
-    const rawStatus = (statusResult?.state || 'off').toLowerCase().replace(/\s+/g, '_');
-    const status = STATUS_MAP[rawStatus] || statusResult?.state || 'Off';
+    const rawStatusValue = statusResult?.state || 'off';
+    const rawStatus = rawStatusValue.toLowerCase().replace(/\s+/g, '_');
+    const status = STATUS_MAP[rawStatus] || formatApplianceDisplayText(rawStatusValue) || 'Off';
     const inUse = status !== 'Off' && status !== 'Not Connected';
 
     // Program name
     const pnState = programNameResult?.state;
     const programName = (pnState && pnState !== 'unknown' && pnState !== 'unavailable')
-      ? pnState : undefined;
+      ? formatApplianceDisplayText(pnState) : undefined;
 
     // Program phase / step
     const ppState = programPhaseResult?.state;
     const step = (ppState && ppState !== 'unknown' && ppState !== 'unavailable')
-      ? ppState : undefined;
+      ? formatApplianceDisplayText(ppState) : undefined;
 
     // Time values (in minutes)
     const timeRunning = this.parseTimeMinutes(elapsedTimeResult?.state);

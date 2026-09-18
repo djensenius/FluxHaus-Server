@@ -11,6 +11,7 @@ import { getChannelId } from './apns-channels';
 import { getApnsTokensForDeviceType, getSubscribedDeviceTokens } from './la-subscriptions';
 import { getAllActivityTokens, getAllApnsTokens } from './push-token-store';
 import logger from './logger';
+import formatApplianceDisplayText from './appliance-display';
 
 const laLogger = logger.child({ subsystem: 'live-activity-hooks' });
 
@@ -71,9 +72,11 @@ function buildMieleContentState(
   }
 
   const remainingText = formatTimeRemaining((device.timeRemaining ?? 0) * 60);
-  let trailingText = `${device.programName ?? ''} · ${remainingText}`;
-  if (device.status && device.status !== 'In use') {
-    trailingText = `${device.status} · ${trailingText}`;
+  const programName = formatApplianceDisplayText(device.programName);
+  const status = formatApplianceDisplayText(device.status);
+  let trailingText = `${programName ?? ''} · ${remainingText}`;
+  if (status && status !== 'In use') {
+    trailingText = `${status} · ${trailingText}`;
   }
 
   // Treat delayed/programmed states as not running — the Live Activity
@@ -89,7 +92,7 @@ function buildMieleContentState(
       trailingText,
       shortText: `${device.timeRemaining ?? 0}m`,
       running,
-      programName: device.programName,
+      programName,
     },
   };
 }

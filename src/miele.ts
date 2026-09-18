@@ -6,6 +6,7 @@ import { MieleDevice } from './types/types';
 import { MieleRoot } from './types/miele';
 import { getToken, saveToken } from './token-store';
 import logger from './logger';
+import formatApplianceDisplayText from './appliance-display';
 
 const mieleLogger = logger.child({ subsystem: 'miele' });
 
@@ -117,16 +118,16 @@ export default class Miele {
 
   public parseMessage(parsedData: MieleRoot): void {
     Object.values(parsedData).filter((dev) => dev.state).forEach((device) => {
+      const status = formatApplianceDisplayText(device.state.status.value_localized) || 'Off';
       const myDevice: MieleDevice = {
         name: device.ident.type.value_localized,
         timeRunning: device.state.elapsedTime.length > 0
           ? (device.state.elapsedTime[0] * 60) + device.state.elapsedTime[1] : 0,
         timeRemaining: (device.state.remainingTime[0] * 60) + device.state.remainingTime[1],
-        step: device.state.programPhase.value_localized,
-        programName: device.state.ProgramID.value_localized,
-        status: device.state.status.value_localized,
-        inUse:
-          device.state.status.value_localized !== 'Off' && device.state.status.value_localized !== 'Not Connected',
+        step: formatApplianceDisplayText(device.state.programPhase.value_localized),
+        programName: formatApplianceDisplayText(device.state.ProgramID.value_localized),
+        status,
+        inUse: status !== 'Off' && status !== 'Not Connected',
       };
 
       if (device.ident.type.value_localized === 'Washing machine') {
