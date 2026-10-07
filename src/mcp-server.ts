@@ -70,8 +70,7 @@ export default function createMcpServer(
 ): McpServer {
   const {
     homeAssistantClient,
-    broombot,
-    mopbot,
+    cleanbot,
     car,
     cameraURL,
   } = services;
@@ -139,14 +138,13 @@ export default function createMcpServer(
   server.resource(
     'robots-status',
     'fluxhaus://robots/status',
-    { description: 'Status of robot vacuums (Broombot and Mopbot)', mimeType: 'application/json' },
+    { description: 'Status of Cleanbot', mimeType: 'application/json' },
     async () => ({
       contents: [{
         uri: 'fluxhaus://robots/status',
         mimeType: 'application/json',
         text: JSON.stringify({
-          broombot: broombot.cachedStatus,
-          mopbot: mopbot.cachedStatus,
+          cleanbot: cleanbot.cachedStatus,
         }, null, 2),
       }],
     }),
@@ -304,28 +302,36 @@ export default function createMcpServer(
   server.tool(
     'start_robot',
     'Start a robot vacuum',
-    { robot: z.enum(['broombot', 'mopbot']).describe('Which robot to start') },
-    async ({ robot }) => {
-      if (robot === 'broombot') {
-        await broombot.turnOn();
-      } else {
-        await mopbot.turnOn();
-      }
-      return { content: [{ type: 'text' as const, text: `${robot} started` }] };
+    { robot: z.enum(['cleanbot']).describe('Which robot to start') },
+    async () => {
+      await cleanbot.turnOn();
+      return { content: [{ type: 'text' as const, text: 'cleanbot started' }] };
     },
   );
 
   server.tool(
     'stop_robot',
     'Stop a robot vacuum and return it to base',
-    { robot: z.enum(['broombot', 'mopbot']).describe('Which robot to stop') },
-    async ({ robot }) => {
-      if (robot === 'broombot') {
-        await broombot.turnOff();
-      } else {
-        await mopbot.turnOff();
+    { robot: z.enum(['cleanbot']).describe('Which robot to stop') },
+    async () => {
+      await cleanbot.turnOff();
+      return { content: [{ type: 'text' as const, text: 'cleanbot returning to base' }] };
+    },
+  );
+
+  server.tool(
+    'clean_room',
+    'Tell Cleanbot to clean a specific room',
+    { room: z.string().describe('Room name to clean') },
+    async ({ room }) => {
+      const normalizedRoom = room.trim().toLowerCase();
+      const match = cleanbot.cachedStatus.rooms?.find((r) => r.name.toLowerCase() === normalizedRoom);
+      if (!match) {
+        const rooms = cleanbot.cachedStatus.rooms?.map((r) => r.name).join(', ') || 'unknown';
+        return { content: [{ type: 'text' as const, text: `Unknown room. Known rooms: ${rooms}` }] };
       }
-      return { content: [{ type: 'text' as const, text: `${robot} returning to base` }] };
+      await cleanbot.cleanRooms([match.id]);
+      return { content: [{ type: 'text' as const, text: `Cleanbot started cleaning ${match.name}` }] };
     },
   );
 
@@ -421,13 +427,13 @@ export default function createMcpServer(
 
   server.tool(
     'get_robot_status',
-    'Get the status of robot vacuums (Broombot and Mopbot): battery, running, charging, bin full',
+    'Get Cleanbot status: battery, running, charging, progress, estimated time remaining, '
+      + 'current room, base station, and maintenance details',
     async () => ({
       content: [{
         type: 'text' as const,
         text: JSON.stringify({
-          broombot: broombot.cachedStatus,
-          mopbot: mopbot.cachedStatus,
+          cleanbot: cleanbot.cachedStatus,
         }, null, 2),
       }],
     }),
@@ -743,7 +749,7 @@ export default function createMcpServer(
           type: 'text' as const,
           text: JSON.stringify({
             car: { status: car.status, odometer: car.odometer },
-            robots: { broombot: broombot.cachedStatus, mopbot: mopbot.cachedStatus },
+            robots: { cleanbot: cleanbot.cachedStatus },
             appliances: {
               washer: mieleClient.washer,
               dryer: mieleClient.dryer,
@@ -2104,8 +2110,7 @@ export default function createMcpServer(
     async () => {
       const carData = JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
       const robotData = JSON.stringify({
-        broombot: broombot.cachedStatus,
-        mopbot: mopbot.cachedStatus,
+        cleanbot: cleanbot.cachedStatus,
       }, null, 2);
       const leavingText = 'I am leaving home. Here is the current FluxHaus status:\n\n'
         + `Car:\n${carData}\n\n`
@@ -2130,8 +2135,7 @@ export default function createMcpServer(
     async () => {
       const carData = JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
       const robotData = JSON.stringify({
-        broombot: broombot.cachedStatus,
-        mopbot: mopbot.cachedStatus,
+        cleanbot: cleanbot.cachedStatus,
       }, null, 2);
       let miele = null;
       if (fs.existsSync('cache/miele.json')) {

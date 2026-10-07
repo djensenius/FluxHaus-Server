@@ -65,6 +65,71 @@ describe('HomeAssistantRobot', () => {
     expect(robot.cachedStatus.docking).toBe(false);
   });
 
+  it('should parse Cleanbot progress, rooms, base station status, and maintenance sensors', async () => {
+    mockClient.getState.mockImplementation((id) => {
+      const states: Record<string, unknown> = {
+        [entityId]: {
+          state: 'cleaning',
+          attributes: {
+            battery: 84,
+            cleaning_mode: 'Sweeping',
+            suction_level: 'Standard',
+          },
+        },
+        'sensor.v70_ultra_complete_cleaning_progress': { state: '50', attributes: {} },
+        'sensor.v70_ultra_complete_cleaning_time': { state: '10', attributes: {} },
+        'sensor.v70_ultra_complete_cleaned_area': { state: '12', attributes: {} },
+        'sensor.v70_ultra_complete_current_room': {
+          state: 'Kitchen',
+          attributes: { room_id: 2 },
+        },
+        'sensor.v70_ultra_complete_clean_water_tank_status': { state: 'installed', attributes: {} },
+        'sensor.v70_ultra_complete_dirty_water_tank_status': { state: 'installed', attributes: {} },
+        'sensor.v70_ultra_complete_dust_bag_status': { state: 'installed', attributes: {} },
+        'sensor.v70_ultra_complete_filter_left': { state: '75', attributes: {} },
+        'camera.v70_ultra_complete_map': {
+          state: 'ok',
+          attributes: {
+            rooms: {
+              2: { room_id: 2, name: 'Kitchen', icon: 'mdi:chef-hat' },
+              4: { room_id: 4, name: 'Living Room', icon: 'mdi:sofa' },
+            },
+          },
+        },
+      };
+      if (id === '') {
+        return Promise.resolve(Object.entries(states).map(([stateEntityId, state]) => ({
+          ...(state as object),
+          entity_id: stateEntityId,
+        })));
+      }
+      return states[id] ? Promise.resolve(states[id]) : Promise.reject(new Error('Unknown entity'));
+    });
+
+    robot = new HomeAssistantRobot({
+      name: 'Cleanbot',
+      entityId,
+      entityPrefix: 'v70_ultra_complete',
+      client: mockClient,
+    });
+
+    await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
+
+    expect(robot.cachedStatus.progressPercent).toBe(50);
+    expect(robot.cachedStatus.elapsedMinutes).toBe(10);
+    expect(robot.cachedStatus.estimatedRemainingMinutes).toBe(10);
+    expect(robot.cachedStatus.cleanedArea).toBe(12);
+    expect(robot.cachedStatus.currentRoom).toBe('Kitchen');
+    expect(robot.cachedStatus.currentRoomId).toBe(2);
+    expect(robot.cachedStatus.cleanWaterTankStatus).toBe('installed');
+    expect(robot.cachedStatus.dustBagStatus).toBe('installed');
+    expect(robot.cachedStatus.maintenance?.filterPercent).toBe(75);
+    expect(robot.cachedStatus.rooms).toEqual([
+      { id: 2, name: 'Kitchen', icon: 'mdi:chef-hat' },
+      { id: 4, name: 'Living Room', icon: 'mdi:sofa' },
+    ]);
+  });
+
   it('should use battery entity if provided', async () => {
     const batteryEntityId = 'sensor.test_battery';
     mockClient.getState.mockImplementation((id) => {
@@ -151,7 +216,7 @@ describe('HomeAssistantRobot', () => {
 
     expect(mockClient.callService).toHaveBeenCalledWith('vacuum', 'start', { entity_id: entityId });
     // Should trigger a poll
-    expect(mockClient.getState).toHaveBeenCalledTimes(2); // 1 from init, 1 from turnOn
+    expect(mockClient.getState).toHaveBeenCalledWith(entityId);
   });
 
   it('should handle poll errors gracefully', async () => {
@@ -302,7 +367,7 @@ describe('HomeAssistantRobot', () => {
   });
 
   it('should calculate timeStarted from cleaning_time attribute', async () => {
-    const cleaningTime = 60; // 1 minute
+    const cleaningTime = 60; // minutes
     mockClient.getState.mockResolvedValue({
       state: 'cleaning',
       attributes: {
@@ -324,7 +389,7 @@ describe('HomeAssistantRobot', () => {
 
     expect(robot.cachedStatus.running).toBe(true);
     expect(robot.cachedStatus.timeStarted).toBeDefined();
-    expect(robot.cachedStatus.timeStarted?.getTime()).toBe(now - cleaningTime * 1000);
+    expect(robot.cachedStatus.timeStarted?.getTime()).toBe(now - cleaningTime * 60 * 1000);
 
     jest.restoreAllMocks();
   });

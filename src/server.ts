@@ -254,27 +254,15 @@ export async function createServer(): Promise<Express> {
   });
 
   serverLogger.info('Using Home Assistant for robots');
-  const broombot = new HomeAssistantRobot({
-    name: 'Broombot',
-    entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
-    batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
+  const cleanbot = new HomeAssistantRobot({
+    name: 'Cleanbot',
+    entityId: (process.env.CLEANBOT_ENTITY_ID || 'vacuum.v70_ultra_complete').trim(),
+    batteryEntityId: (process.env.CLEANBOT_BATTERY_ENTITY_ID || 'sensor.v70_ultra_complete_battery_level').trim(),
     client: homeAssistantClient,
   });
-  broombot.onStatusChange = (name, status) => {
+  cleanbot.onStatusChange = (name, status) => {
     onRobotStatusChange(name, status).catch(() => {});
   };
-
-  const mopbot = new HomeAssistantRobot({
-    name: 'Mopbot',
-    entityId: (process.env.MOPBOT_ENTITY_ID || 'vacuum.mopbot').trim(),
-    batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
-    client: homeAssistantClient,
-  });
-  mopbot.onStatusChange = (name, status) => {
-    onRobotStatusChange(name, status).catch(() => {});
-  };
-
-  let cleanTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const carConfig: CarConfig = {
     client: homeAssistantClient,
@@ -410,8 +398,7 @@ export async function createServer(): Promise<Express> {
   // Shared services object — used by MCP, /command, and /voice endpoints
   const allServices = {
     homeAssistantClient,
-    broombot,
-    mopbot,
+    cleanbot,
     car,
     mieleClient,
     dishwasher,
@@ -513,38 +500,45 @@ export async function createServer(): Promise<Express> {
     }
 
     let data = {};
+    const robotData = (robot: HomeAssistantRobot): Record<string, unknown> => {
+      const RobotClass = HomeAssistantRobot;
+      const out: Record<string, unknown> = {
+        bin: RobotClass.binStatus(robot.cachedStatus),
+        binFull: robot.cachedStatus.binFull,
+        running: RobotClass.runningStatus(robot.cachedStatus),
+        charging: RobotClass.chargingStatus(robot.cachedStatus),
+        docking: RobotClass.dockingStatus(robot.cachedStatus),
+        docked: RobotClass.dockedStatus(robot.cachedStatus),
+        battery: RobotClass.batteryStatus(robot.cachedStatus),
+        timestamp: robot.cachedStatus.timestamp,
+        paused: robot.cachedStatus.paused,
+        timeStarted: robot.cachedStatus.timeStarted,
+        progressPercent: robot.cachedStatus.progressPercent,
+        elapsedMinutes: robot.cachedStatus.elapsedMinutes,
+        estimatedRemainingMinutes: robot.cachedStatus.estimatedRemainingMinutes,
+        cleanedArea: robot.cachedStatus.cleanedArea,
+        cleaningMode: robot.cachedStatus.cleaningMode,
+        suctionLevel: robot.cachedStatus.suctionLevel,
+        currentRoom: robot.cachedStatus.currentRoom,
+        currentRoomId: robot.cachedStatus.currentRoomId,
+        cleanWaterTankStatus: robot.cachedStatus.cleanWaterTankStatus,
+        dirtyWaterTankStatus: robot.cachedStatus.dirtyWaterTankStatus,
+        dustBagStatus: robot.cachedStatus.dustBagStatus,
+        detergentStatus: robot.cachedStatus.detergentStatus,
+        lowWaterWarning: robot.cachedStatus.lowWaterWarning,
+        autoEmptyStatus: robot.cachedStatus.autoEmptyStatus,
+        drainageStatus: robot.cachedStatus.drainageStatus,
+        selfWashBaseStatus: robot.cachedStatus.selfWashBaseStatus,
+        maintenance: robot.cachedStatus.maintenance,
+        rooms: robot.cachedStatus.rooms,
+      };
+      const batteryLevel = RobotClass.batteryLevelStatus(robot.cachedStatus);
+      if (batteryLevel !== undefined) out.batteryLevel = batteryLevel;
+      return out;
+    };
 
     if (role === 'admin') {
-      const RobotClass = HomeAssistantRobot;
-      const broomData: Record<string, unknown> = {
-        bin: RobotClass.binStatus(broombot.cachedStatus),
-        binFull: broombot.cachedStatus.binFull,
-        running: RobotClass.runningStatus(broombot.cachedStatus),
-        charging: RobotClass.chargingStatus(broombot.cachedStatus),
-        docking: RobotClass.dockingStatus(broombot.cachedStatus),
-        docked: RobotClass.dockedStatus(broombot.cachedStatus),
-        battery: RobotClass.batteryStatus(broombot.cachedStatus),
-        timestamp: broombot.cachedStatus.timestamp,
-        paused: broombot.cachedStatus.paused,
-        timeStarted: broombot.cachedStatus.timeStarted,
-      };
-      const bBattLevel = RobotClass.batteryLevelStatus(broombot.cachedStatus);
-      if (bBattLevel !== undefined) broomData.batteryLevel = bBattLevel;
-
-      const mopData: Record<string, unknown> = {
-        bin: RobotClass.binStatus(mopbot.cachedStatus),
-        binFull: mopbot.cachedStatus.binFull,
-        running: RobotClass.runningStatus(mopbot.cachedStatus),
-        charging: RobotClass.chargingStatus(mopbot.cachedStatus),
-        docking: RobotClass.dockingStatus(mopbot.cachedStatus),
-        docked: RobotClass.dockedStatus(mopbot.cachedStatus),
-        battery: RobotClass.batteryStatus(mopbot.cachedStatus),
-        timestamp: mopbot.cachedStatus.timestamp,
-        paused: mopbot.cachedStatus.paused,
-        timeStarted: mopbot.cachedStatus.timeStarted,
-      };
-      const mBattLevel = RobotClass.batteryLevelStatus(mopbot.cachedStatus);
-      if (mBattLevel !== undefined) mopData.batteryLevel = mBattLevel;
+      const cleanbotData = robotData(cleanbot);
 
       data = {
         version,
@@ -557,8 +551,7 @@ export async function createServer(): Promise<Express> {
         boschAppliance: process.env.boschAppliance,
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
         favouriteScenes: process.env.favouriteScenes?.split(', ') ?? [],
-        broombot: broomData,
-        mopbot: mopData,
+        cleanbot: cleanbotData,
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
@@ -585,44 +578,14 @@ export async function createServer(): Promise<Express> {
         rhizomeData,
       };
     } else if (role === 'demo') {
-      const RobotClass = HomeAssistantRobot;
-      const broomData: Record<string, unknown> = {
-        bin: RobotClass.binStatus(broombot.cachedStatus),
-        binFull: broombot.cachedStatus.binFull,
-        running: RobotClass.runningStatus(broombot.cachedStatus),
-        charging: RobotClass.chargingStatus(broombot.cachedStatus),
-        docking: RobotClass.dockingStatus(broombot.cachedStatus),
-        docked: RobotClass.dockedStatus(broombot.cachedStatus),
-        battery: RobotClass.batteryStatus(broombot.cachedStatus),
-        timestamp: broombot.cachedStatus.timestamp,
-        paused: broombot.cachedStatus.paused,
-        timeStarted: broombot.cachedStatus.timeStarted,
-      };
-      const bBattLevel = RobotClass.batteryLevelStatus(broombot.cachedStatus);
-      if (bBattLevel !== undefined) broomData.batteryLevel = bBattLevel;
-
-      const mopData: Record<string, unknown> = {
-        bin: RobotClass.binStatus(mopbot.cachedStatus),
-        binFull: mopbot.cachedStatus.binFull,
-        running: RobotClass.runningStatus(mopbot.cachedStatus),
-        charging: RobotClass.chargingStatus(mopbot.cachedStatus),
-        docking: RobotClass.dockingStatus(mopbot.cachedStatus),
-        docked: RobotClass.dockedStatus(mopbot.cachedStatus),
-        battery: RobotClass.batteryStatus(mopbot.cachedStatus),
-        timestamp: mopbot.cachedStatus.timestamp,
-        paused: mopbot.cachedStatus.paused,
-        timeStarted: mopbot.cachedStatus.timeStarted,
-      };
-      const mBattLevel = RobotClass.batteryLevelStatus(mopbot.cachedStatus);
-      if (mBattLevel !== undefined) mopData.batteryLevel = mBattLevel;
+      const cleanbotData = robotData(cleanbot);
 
       data = {
         version,
         timestamp: new Date(),
         favouriteHomeKit: process.env.favouriteHomeKit!.split(', '),
         favouriteScenes: process.env.favouriteScenes?.split(', ') ?? [],
-        broombot: broomData,
-        mopbot: mopData,
+        cleanbot: cleanbotData,
         car: car.status,
         carEvStatus: evStatus,
         carOdometer: car.odometer,
@@ -638,59 +601,90 @@ export async function createServer(): Promise<Express> {
     res.end(JSON.stringify(data));
   });
 
-  // Route handler for turning on mopbot
-  app.post('/turnOnMopbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
+  // Route handler for turning on Cleanbot
+  app.post('/turnOnCleanbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
-      await mopbot.turnOn();
+      await cleanbot.turnOn();
     }
-    res.send('Mopbot is turned on.');
+    res.send('Cleanbot is turned on.');
   });
 
-  // Route handler for turning off mopbot
-  app.post('/turnOffMopbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
+  // Route handler for turning off Cleanbot
+  app.post('/turnOffCleanbot', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
-      await mopbot.turnOff();
+      await cleanbot.turnOff();
     }
-    res.send('Mopbot is turned off.');
+    res.send('Cleanbot is turned off.');
   });
 
-  // Route handler for turning on broombot
-  app.post('/turnOnBroombot', cors(corsOptions), csrfMiddleware, async (req, res) => {
-    if (req.user?.role === 'admin') {
-      await broombot.turnOn();
+  app.post('/cleanbot/rooms', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
     }
-    res.send('Broombot is turned on.');
-  });
+    const requestedRooms: unknown[] = Array.isArray(req.body?.rooms) ? req.body.rooms : [];
+    const requestedSegments: unknown[] = Array.isArray(req.body?.segments) ? req.body.segments : [];
+    if (requestedRooms.length === 0 && requestedSegments.length === 0) {
+      res.status(400).json({ error: 'rooms or segments are required', knownRooms: cleanbot.cachedStatus.rooms ?? [] });
+      return;
+    }
 
-  // Route handler for turning off broombot
-  app.post('/turnOffBroombot', cors(corsOptions), csrfMiddleware, async (req, res) => {
-    if (req.user?.role === 'admin') {
-      await broombot.turnOff();
+    const knownRooms = cleanbot.cachedStatus.rooms ?? [];
+    const unknownRooms: string[] = [];
+    const invalidSegments: unknown[] = [];
+    const roomIds = [
+      ...requestedSegments.flatMap((id) => {
+        const segment = Number(id);
+        if (Number.isInteger(segment) && segment > 0) return [segment];
+        invalidSegments.push(id);
+        return [];
+      }),
+      ...requestedRooms.flatMap((roomName) => {
+        const normalized = String(roomName).trim().toLowerCase();
+        const room = knownRooms.find((r) => r.name.toLowerCase() === normalized);
+        if (room) return [room.id];
+        unknownRooms.push(String(roomName));
+        return [];
+      }),
+    ].filter((id, index, ids) => ids.indexOf(id) === index);
+
+    if (unknownRooms.length > 0 || invalidSegments.length > 0) {
+      res.status(400).json({
+        error: 'invalid rooms or segments',
+        unknownRooms,
+        invalidSegments,
+        knownRooms,
+      });
+      return;
     }
-    res.send('Broombot is turned off.');
+
+    let repeats = 1;
+    if (req.body?.repeats !== undefined) {
+      repeats = Number(req.body.repeats);
+      if (!Number.isInteger(repeats) || repeats < 1 || repeats > 3) {
+        res.status(400).json({ error: 'repeats must be an integer between 1 and 3' });
+        return;
+      }
+    }
+
+    await cleanbot.cleanRooms(roomIds, repeats);
+    res.json({ status: 'started', segments: roomIds });
   });
 
   // Route handler for starting a deep clean
   app.post('/turnOnDeepClean', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
-      await broombot.turnOn();
+      await cleanbot.turnOn();
     }
-    cleanTimeout = setTimeout(() => {
-      mopbot.turnOn();
-    }, 1200000);
-    res.send('Broombot is turned on.');
+    res.send('Cleanbot is turned on.');
   });
 
   // Route handler for stopping a deep clean
   app.post('/turnOffDeepClean', cors(corsOptions), csrfMiddleware, async (req, res) => {
     if (req.user?.role === 'admin') {
-      await broombot.turnOff();
+      await cleanbot.turnOff();
     }
-    if (cleanTimeout) {
-      clearTimeout(cleanTimeout);
-    }
-    await mopbot.turnOff();
-    res.send('Broombot is turned off.');
+    res.send('Cleanbot is turned off.');
   });
 
   // Blue Pure air purifier controls

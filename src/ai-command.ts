@@ -117,7 +117,7 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         robot: {
           type: 'string',
           description: 'Which robot to start',
-          enum: ['broombot', 'mopbot'],
+          enum: ['cleanbot'],
         },
       },
       required: ['robot'],
@@ -132,10 +132,22 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
         robot: {
           type: 'string',
           description: 'Which robot to stop',
-          enum: ['broombot', 'mopbot'],
+          enum: ['cleanbot'],
         },
       },
       required: ['robot'],
+    },
+  },
+  {
+    name: 'clean_room',
+    description: 'Tell Cleanbot to clean a specific room, such as Kitchen, Bathroom, Living Room, '
+      + 'Master Bedroom, Office, or Hallway',
+    parameters: {
+      type: 'object',
+      properties: {
+        room: { type: 'string', description: 'Room name to clean' },
+      },
+      required: ['room'],
     },
   },
   {
@@ -223,7 +235,8 @@ const TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: 'get_robot_status',
-    description: 'Get the status of robot vacuums (Broombot and Mopbot): battery, running, charging, bin full',
+    description: 'Get Cleanbot status: battery, running, charging, progress, estimated time remaining, '
+      + 'current room, base station, and maintenance details',
     parameters: { type: 'object', properties: {} },
   },
   {
@@ -1374,7 +1387,7 @@ async function executeToolInner(
   userSub?: string,
 ): Promise<string> {
   const {
-    car, broombot, mopbot, homeAssistantClient, mieleClient, dishwasher,
+    car, cleanbot, homeAssistantClient, mieleClient, dishwasher,
   } = services;
 
   switch (name) {
@@ -1417,20 +1430,23 @@ async function executeToolInner(
     return 'Car resync initiated';
 
   case 'start_robot':
-    if (args.robot === 'broombot') {
-      await broombot.turnOn();
-    } else {
-      await mopbot.turnOn();
-    }
-    return `${args.robot} started`;
+    await cleanbot.turnOn();
+    return 'cleanbot started';
 
   case 'stop_robot':
-    if (args.robot === 'broombot') {
-      await broombot.turnOff();
-    } else {
-      await mopbot.turnOff();
+    await cleanbot.turnOff();
+    return 'cleanbot returning to base';
+
+  case 'clean_room': {
+    const roomName = String(args.room || '').trim();
+    const room = cleanbot.cachedStatus.rooms?.find((r) => r.name.toLowerCase() === roomName.toLowerCase());
+    if (!room) {
+      const rooms = cleanbot.cachedStatus.rooms?.map((r) => r.name).join(', ') || 'unknown';
+      return `I could not find that room. Known rooms: ${rooms}`;
     }
-    return `${args.robot} returning to base`;
+    await cleanbot.cleanRooms([room.id]);
+    return `Cleanbot started cleaning ${room.name}`;
+  }
 
   case 'list_entities': {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -1485,8 +1501,7 @@ async function executeToolInner(
 
   case 'get_robot_status':
     return JSON.stringify({
-      broombot: broombot.cachedStatus,
-      mopbot: mopbot.cachedStatus,
+      cleanbot: cleanbot.cachedStatus,
     }, null, 2);
 
   case 'get_appliance_status':

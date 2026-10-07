@@ -3,7 +3,7 @@ import logger from './logger';
 
 const subLogger = logger.child({ subsystem: 'la-subscriptions' });
 
-const ALL_DEVICE_TYPES = ['dishwasher', 'washer', 'dryer', 'broombot', 'mopbot'];
+const ALL_DEVICE_TYPES = ['dishwasher', 'washer', 'dryer', 'cleanbot'];
 
 export interface SubscriptionPreferences {
   deviceTypes: string[];

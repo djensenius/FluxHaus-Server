@@ -14,8 +14,7 @@ describe('executeTool', () => {
   /* eslint-disable @typescript-eslint/no-explicit-any */
   let mockServices: FluxHausServices;
   let mockCar: any;
-  let mockBroombot: any;
-  let mockMopbot: any;
+  let mockCleanbot: any;
   let mockHaClient: any;
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -31,14 +30,10 @@ describe('executeTool', () => {
       status: {},
       odometer: 0,
     };
-    mockBroombot = {
+    mockCleanbot = {
       turnOn: jest.fn().mockResolvedValue(undefined),
       turnOff: jest.fn().mockResolvedValue(undefined),
-      cachedStatus: {},
-    };
-    mockMopbot = {
-      turnOn: jest.fn().mockResolvedValue(undefined),
-      turnOff: jest.fn().mockResolvedValue(undefined),
+      cleanRooms: jest.fn().mockResolvedValue(undefined),
       cachedStatus: {},
     };
     mockHaClient = {
@@ -52,8 +47,7 @@ describe('executeTool', () => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     mockServices = {
       homeAssistantClient: mockHaClient,
-      broombot: mockBroombot,
-      mopbot: mockMopbot,
+      cleanbot: mockCleanbot,
       car: mockCar,
       mieleClient: { washer: { status: 'Idle' }, dryer: { status: 'Running' } } as any,
       dishwasher: { dishwasher: { operationState: 'Run', programProgress: 50 } } as any,
@@ -121,28 +115,30 @@ describe('executeTool', () => {
     expect(result).toBe('Car resync initiated');
   });
 
-  it('start_robot starts broombot', async () => {
-    const result = await executeTool('start_robot', { robot: 'broombot' }, mockServices);
-    expect(mockBroombot.turnOn).toHaveBeenCalled();
-    expect(result).toBe('broombot started');
+  it('start_robot starts cleanbot', async () => {
+    const result = await executeTool('start_robot', { robot: 'cleanbot' }, mockServices);
+    expect(mockCleanbot.turnOn).toHaveBeenCalled();
+    expect(result).toBe('cleanbot started');
   });
 
-  it('start_robot starts mopbot', async () => {
-    const result = await executeTool('start_robot', { robot: 'mopbot' }, mockServices);
-    expect(mockMopbot.turnOn).toHaveBeenCalled();
-    expect(result).toBe('mopbot started');
+  it('stop_robot stops cleanbot', async () => {
+    const result = await executeTool('stop_robot', { robot: 'cleanbot' }, mockServices);
+    expect(mockCleanbot.turnOff).toHaveBeenCalled();
+    expect(result).toBe('cleanbot returning to base');
   });
 
-  it('stop_robot stops broombot', async () => {
-    const result = await executeTool('stop_robot', { robot: 'broombot' }, mockServices);
-    expect(mockBroombot.turnOff).toHaveBeenCalled();
-    expect(result).toBe('broombot returning to base');
+  it('clean_room starts a room clean by name', async () => {
+    mockCleanbot.cachedStatus.rooms = [{ id: 2, name: 'Kitchen' }];
+    const result = await executeTool('clean_room', { room: 'Kitchen' }, mockServices);
+    expect(mockCleanbot.cleanRooms).toHaveBeenCalledWith([2]);
+    expect(result).toBe('Cleanbot started cleaning Kitchen');
   });
 
-  it('stop_robot stops mopbot', async () => {
-    const result = await executeTool('stop_robot', { robot: 'mopbot' }, mockServices);
-    expect(mockMopbot.turnOff).toHaveBeenCalled();
-    expect(result).toBe('mopbot returning to base');
+  it('clean_room reports known rooms when the room is unknown', async () => {
+    mockCleanbot.cachedStatus.rooms = [{ id: 2, name: 'Kitchen' }];
+    const result = await executeTool('clean_room', { room: 'Garage' }, mockServices);
+    expect(mockCleanbot.cleanRooms).not.toHaveBeenCalled();
+    expect(result).toContain('Known rooms: Kitchen');
   });
 
   it('list_entities returns filtered entities', async () => {
@@ -222,12 +218,11 @@ describe('executeTool', () => {
   });
 
   it('get_robot_status returns robot statuses', async () => {
-    mockBroombot.cachedStatus = { batteryLevel: 90, running: false };
-    mockMopbot.cachedStatus = { batteryLevel: 60, running: true };
+    mockCleanbot.cachedStatus = { batteryLevel: 90, running: true };
     const result = await executeTool('get_robot_status', {}, mockServices);
     const parsed = JSON.parse(result);
-    expect(parsed.broombot.batteryLevel).toBe(90);
-    expect(parsed.mopbot.running).toBe(true);
+    expect(parsed.cleanbot.batteryLevel).toBe(90);
+    expect(parsed.cleanbot.running).toBe(true);
   });
 
   it('get_appliance_status returns appliance data', async () => {
@@ -281,8 +276,7 @@ describe('executeAICommand', () => {
         callService: jest.fn().mockResolvedValue({}),
         getState: jest.fn().mockResolvedValue([]),
       } as any,
-      broombot: { turnOn: jest.fn(), turnOff: jest.fn(), cachedStatus: {} } as any,
-      mopbot: { turnOn: jest.fn(), turnOff: jest.fn(), cachedStatus: {} } as any,
+      cleanbot: { turnOn: jest.fn(), turnOff: jest.fn(), cachedStatus: {} } as any,
       car: mockCar,
       mieleClient: {} as any,
       dishwasher: {} as any,
@@ -380,15 +374,15 @@ describe('executeAICommand', () => {
       const mockCreate = jest.fn().mockResolvedValue({
         choices: [{
           finish_reason: 'stop',
-          message: { content: 'Broombot started.', tool_calls: undefined },
+          message: { content: 'Cleanbot started.', tool_calls: undefined },
         }],
       });
       (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
         chat: { completions: { create: mockCreate } },
       }));
 
-      const result = await executeAICommand('Start broombot', mockServices);
-      expect(result).toBe('Broombot started.');
+      const result = await executeAICommand('Start cleanbot', mockServices);
+      expect(result).toBe('Cleanbot started.');
       const request = mockCreate.mock.calls[0][0];
       expect(request.tools).toEqual(expect.arrayContaining([
         expect.objectContaining({

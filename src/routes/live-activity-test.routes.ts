@@ -32,8 +32,7 @@ const DEVICE_CONFIGS: Record<string, { name: string; icon: string; programs: str
   dishwasher: { name: 'Dishwasher', icon: 'dishwasher', programs: ['Auto2', 'Intensive', 'Eco 50', 'Quick 45'] },
   washer: { name: 'Washer', icon: 'washer', programs: ['Cottons', 'Darks', 'Delicates', 'Quick Wash'] },
   dryer: { name: 'Dryer', icon: 'dryer', programs: ['Cottons', 'Synthetics', 'Express', 'Shirts'] },
-  broombot: { name: 'BroomBot', icon: 'fan', programs: ['Clean'] },
-  mopbot: { name: 'MopBot', icon: 'humidifier.and.droplets', programs: ['Clean'] },
+  cleanbot: { name: 'Cleanbot', icon: 'robotic.vacuum.fill', programs: ['Clean'] },
 };
 
 function formatTimeRemaining(seconds: number): string {
@@ -46,7 +45,7 @@ function formatTimeRemaining(seconds: number): string {
 
 function buildContentState(sim: SimulationState): LiveActivityContentState {
   const remainingSeconds = Math.max(0, sim.totalSeconds - sim.elapsedSeconds);
-  const isRobot = sim.activityType === 'broombot' || sim.activityType === 'mopbot';
+  const isRobot = sim.activityType === 'cleanbot';
 
   return {
     device: {
@@ -336,11 +335,11 @@ const TEST_PAGE_HTML = /* html */ `<!DOCTYPE html>
 <script>
 var COLORS = {
   Dishwasher:'#0a84ff', Washer:'#32d2ff', Dryer:'#ff9f0a',
-  BroomBot:'#30d158', MopBot:'#64d2b1'
+  Cleanbot:'#30d158'
 };
 var ICONS = {
   dishwasher:'\\u{1F37D}\\u{FE0F}', washer:'\\u{1F455}',
-  dryer:'\\u{1F300}', broombot:'\\u{1F916}', mopbot:'\\u{1F9F9}'
+  dryer:'\\u{1F300}', cleanbot:'\\u{1F916}'
 };
 var csrfToken = '%%CSRF_TOKEN%%';
 var statusData = null;

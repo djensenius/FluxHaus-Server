@@ -21,8 +21,7 @@ describe('MCP Server', () => {
   /* eslint-disable @typescript-eslint/no-explicit-any */
   let mockServices: FluxHausServices;
   let mockCar: any;
-  let mockBroombot: any;
-  let mockMopbot: any;
+  let mockCleanbot: any;
   let mockHaClient: any;
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
@@ -53,16 +52,11 @@ describe('MCP Server', () => {
       resync: jest.fn().mockResolvedValue(undefined),
     };
 
-    mockBroombot = {
+    mockCleanbot = {
       cachedStatus: { running: false, docked: true, batteryLevel: 100 },
       turnOn: jest.fn().mockResolvedValue(undefined),
       turnOff: jest.fn().mockResolvedValue(undefined),
-    };
-
-    mockMopbot = {
-      cachedStatus: { running: false, docked: true, batteryLevel: 100 },
-      turnOn: jest.fn().mockResolvedValue(undefined),
-      turnOff: jest.fn().mockResolvedValue(undefined),
+      cleanRooms: jest.fn().mockResolvedValue(undefined),
     };
 
     mockHaClient = {
@@ -73,8 +67,7 @@ describe('MCP Server', () => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     mockServices = {
       homeAssistantClient: mockHaClient,
-      broombot: mockBroombot,
-      mopbot: mockMopbot,
+      cleanbot: mockCleanbot,
       car: mockCar,
       mieleClient: {
         washer: {}, dryer: {}, getActivePrograms: jest.fn(), listenEvents: jest.fn(),
@@ -157,8 +150,8 @@ describe('MCP Server', () => {
       const resource = getResources(server)['fluxhaus://robots/status'];
       const result = await resource.readCallback(new URL('fluxhaus://robots/status'), {});
       const parsed = JSON.parse(result.contents[0].text as string);
-      expect(parsed.broombot.batteryLevel).toBe(100);
-      expect(parsed.mopbot.docked).toBe(true);
+      expect(parsed.cleanbot.batteryLevel).toBe(100);
+      expect(parsed.cleanbot.docked).toBe(true);
     });
 
     it('camera-url resource returns camera URL', async () => {
@@ -352,25 +345,34 @@ describe('MCP Server', () => {
       expect(result.content[0].text).toBe('Car resync initiated');
     });
 
-    it('start_robot tool starts broombot', async () => {
+    it('start_robot tool starts cleanbot', async () => {
       const server = createMcpServer(mockServices);
-      const result = await getTools(server).start_robot.handler({ robot: 'broombot' }, {});
-      expect(mockBroombot.turnOn).toHaveBeenCalled();
-      expect(result.content[0].text).toBe('broombot started');
+      const result = await getTools(server).start_robot.handler({ robot: 'cleanbot' }, {});
+      expect(mockCleanbot.turnOn).toHaveBeenCalled();
+      expect(result.content[0].text).toBe('cleanbot started');
     });
 
-    it('start_robot tool starts mopbot', async () => {
+    it('stop_robot tool stops cleanbot', async () => {
       const server = createMcpServer(mockServices);
-      const result = await getTools(server).start_robot.handler({ robot: 'mopbot' }, {});
-      expect(mockMopbot.turnOn).toHaveBeenCalled();
-      expect(result.content[0].text).toBe('mopbot started');
+      const result = await getTools(server).stop_robot.handler({ robot: 'cleanbot' }, {});
+      expect(mockCleanbot.turnOff).toHaveBeenCalled();
+      expect(result.content[0].text).toBe('cleanbot returning to base');
     });
 
-    it('stop_robot tool stops broombot', async () => {
+    it('clean_room tool trims and starts a room clean', async () => {
+      mockCleanbot.cachedStatus.rooms = [{ id: 2, name: 'Kitchen' }];
       const server = createMcpServer(mockServices);
-      const result = await getTools(server).stop_robot.handler({ robot: 'broombot' }, {});
-      expect(mockBroombot.turnOff).toHaveBeenCalled();
-      expect(result.content[0].text).toBe('broombot returning to base');
+      const result = await getTools(server).clean_room.handler({ room: ' Kitchen ' }, {});
+      expect(mockCleanbot.cleanRooms).toHaveBeenCalledWith([2]);
+      expect(result.content[0].text).toBe('Cleanbot started cleaning Kitchen');
+    });
+
+    it('clean_room tool reports known rooms when unknown', async () => {
+      mockCleanbot.cachedStatus.rooms = [{ id: 2, name: 'Kitchen' }];
+      const server = createMcpServer(mockServices);
+      const result = await getTools(server).clean_room.handler({ room: 'Garage' }, {});
+      expect(mockCleanbot.cleanRooms).not.toHaveBeenCalled();
+      expect(result.content[0].text).toContain('Known rooms: Kitchen');
     });
 
     it('call_ha_service tool calls HA callService', async () => {
@@ -426,13 +428,12 @@ describe('MCP Server', () => {
     });
 
     it('get_robot_status tool returns robot data', async () => {
-      mockBroombot.cachedStatus = { batteryLevel: 100 };
-      mockMopbot.cachedStatus = { batteryLevel: 50, running: true };
+      mockCleanbot.cachedStatus = { batteryLevel: 100, running: true };
       const server = createMcpServer(mockServices);
       const result = await getTools(server).get_robot_status.handler({}, {});
       const parsed = JSON.parse(result.content[0].text as string);
-      expect(parsed.broombot.batteryLevel).toBe(100);
-      expect(parsed.mopbot.running).toBe(true);
+      expect(parsed.cleanbot.batteryLevel).toBe(100);
+      expect(parsed.cleanbot.running).toBe(true);
     });
 
     it('get_appliance_status tool returns appliance data', async () => {
