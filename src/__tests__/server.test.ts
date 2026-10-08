@@ -84,8 +84,7 @@ const oidcAuthHeader = 'Bearer test-oidc-token';
 describe('Server', () => {
   let app: express.Express;
   /* eslint-disable @typescript-eslint/no-explicit-any */
-  let mockBroombot: any;
-  let mockMopbot: any;
+  let mockCleanbot: any;
   let mockCar: any;
   let mockMiele: any;
   let mockHomeConnect: any;
@@ -109,20 +108,13 @@ describe('Server', () => {
     (fs.existsSync as jest.Mock).mockReturnValue(true);
     (fs.readFileSync as jest.Mock).mockReturnValue('{}');
 
-    mockBroombot = {
-      cachedStatus: { batteryLevel: 100 },
+    mockCleanbot = {
+      cachedStatus: { batteryLevel: 100, rooms: [{ id: 2, name: 'Kitchen' }] },
       turnOn: jest.fn(),
       turnOff: jest.fn(),
+      cleanRooms: jest.fn(),
     };
-    mockMopbot = {
-      cachedStatus: { batteryLevel: 100 },
-      turnOn: jest.fn(),
-      turnOff: jest.fn(),
-    };
-    (HomeAssistantRobot as unknown as jest.Mock).mockImplementation((config) => {
-      if (config.name === 'Broombot') return mockBroombot;
-      return mockMopbot;
-    });
+    (HomeAssistantRobot as unknown as jest.Mock).mockImplementation(() => mockCleanbot);
     // Mock static methods
     /* eslint-disable @typescript-eslint/no-explicit-any */
     (HomeAssistantRobot as any).batteryLevelStatus = jest.fn().mockReturnValue(100);
@@ -175,8 +167,7 @@ describe('Server', () => {
       .expect(200);
 
     expect(response.body).toHaveProperty('timestamp');
-    expect(response.body).toHaveProperty('broombot');
-    expect(response.body).toHaveProperty('mopbot');
+    expect(response.body).toHaveProperty('cleanbot');
     expect(response.body).toHaveProperty('car');
   });
 
@@ -200,7 +191,7 @@ describe('Server', () => {
       .set('Authorization', oidcAuthHeader)
       .expect(200);
 
-    expect(response.body.broombot).not.toHaveProperty('batteryLevel');
+    expect(response.body.cleanbot).not.toHaveProperty('batteryLevel');
   });
 
   it('should return data for rhizome user', async () => {
@@ -210,7 +201,7 @@ describe('Server', () => {
       .expect(200);
 
     expect(response.body).toHaveProperty('rhizomeSchedule');
-    expect(response.body).not.toHaveProperty('broombot');
+    expect(response.body).not.toHaveProperty('cleanbot');
   });
 
   it('should return data for demo user', async () => {
@@ -219,40 +210,52 @@ describe('Server', () => {
       .set('Authorization', basicAuthHeader('demo', 'demopassword'))
       .expect(200);
 
-    expect(response.body).toHaveProperty('broombot');
+    expect(response.body).toHaveProperty('cleanbot');
     expect(response.body).not.toHaveProperty('mieleClientId'); // Admin only
   });
 
-  it('should turn on broombot', async () => {
+  it('should turn on cleanbot', async () => {
     await request(app)
-      .post('/turnOnBroombot')
+      .post('/turnOnCleanbot')
       .set('Authorization', oidcAuthHeader)
       .expect(200);
-    expect(mockBroombot.turnOn).toHaveBeenCalled();
+    expect(mockCleanbot.turnOn).toHaveBeenCalled();
   });
 
-  it('should turn off broombot', async () => {
+  it('should turn off cleanbot', async () => {
     await request(app)
-      .post('/turnOffBroombot')
+      .post('/turnOffCleanbot')
       .set('Authorization', oidcAuthHeader)
       .expect(200);
-    expect(mockBroombot.turnOff).toHaveBeenCalled();
+    expect(mockCleanbot.turnOff).toHaveBeenCalled();
   });
 
-  it('should turn on mopbot', async () => {
+
+  it('should clean a room by name', async () => {
     await request(app)
-      .post('/turnOnMopbot')
+      .post('/cleanbot/rooms')
       .set('Authorization', oidcAuthHeader)
+      .send({ rooms: ['Kitchen'] })
       .expect(200);
-    expect(mockMopbot.turnOn).toHaveBeenCalled();
+    expect(mockCleanbot.cleanRooms).toHaveBeenCalledWith([2], 1);
   });
 
-  it('should turn off mopbot', async () => {
+  it('should reject unknown cleanbot rooms', async () => {
     await request(app)
-      .post('/turnOffMopbot')
+      .post('/cleanbot/rooms')
       .set('Authorization', oidcAuthHeader)
-      .expect(200);
-    expect(mockMopbot.turnOff).toHaveBeenCalled();
+      .send({ rooms: ['Garage'] })
+      .expect(400);
+    expect(mockCleanbot.cleanRooms).not.toHaveBeenCalled();
+  });
+
+  it('should reject cleanbot room repeats above three', async () => {
+    await request(app)
+      .post('/cleanbot/rooms')
+      .set('Authorization', oidcAuthHeader)
+      .send({ rooms: ['Kitchen'], repeats: 4 })
+      .expect(400);
+    expect(mockCleanbot.cleanRooms).not.toHaveBeenCalled();
   });
 
   it('should control the air purifier fan for admin', async () => {
@@ -334,10 +337,7 @@ describe('Server', () => {
       .set('Authorization', oidcAuthHeader)
       .expect(200);
 
-    expect(mockBroombot.turnOn).toHaveBeenCalled();
-
-    jest.advanceTimersByTime(1200000);
-    expect(mockMopbot.turnOn).toHaveBeenCalled();
+    expect(mockCleanbot.turnOn).toHaveBeenCalled();
     jest.useRealTimers();
   });
 
@@ -347,8 +347,7 @@ describe('Server', () => {
       .set('Authorization', oidcAuthHeader)
       .expect(200);
 
-    expect(mockBroombot.turnOff).toHaveBeenCalled();
-    expect(mockMopbot.turnOff).toHaveBeenCalled();
+    expect(mockCleanbot.turnOff).toHaveBeenCalled();
   });
 
   it('should start car', async () => {

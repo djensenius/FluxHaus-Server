@@ -6,14 +6,13 @@ import logger from './logger';
 
 const channelLogger = logger.child({ subsystem: 'apns-channels' });
 
-const ACTIVITY_TYPES = ['dishwasher', 'washer', 'dryer', 'broombot', 'mopbot', 'consolidated'];
+const ACTIVITY_TYPES = ['dishwasher', 'washer', 'dryer', 'cleanbot', 'consolidated'];
 
 const DISPLAY_NAMES: Record<string, string> = {
   dishwasher: 'Dishwasher',
   washer: 'Washer',
   dryer: 'Dryer',
-  broombot: 'BroomBot',
-  mopbot: 'MopBot',
+  cleanbot: 'Cleanbot',
   consolidated: 'All Appliances',
 };
 

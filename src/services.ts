@@ -28,8 +28,7 @@ const servicesLogger = logger.child({ subsystem: 'services' });
 
 export interface FluxHausServices {
   homeAssistantClient: HomeAssistantClient;
-  broombot: HomeAssistantRobot;
-  mopbot: HomeAssistantRobot;
+  cleanbot: HomeAssistantRobot;
   car: Car;
   mieleClient: HomeAssistantMiele;
   dishwasher: HomeAssistantDishwasher;
@@ -64,17 +63,10 @@ export async function createServices(): Promise<FluxHausServices> {
 
   // eslint-disable-next-line no-console
   servicesLogger.info('Using Home Assistant for robots');
-  const broombot = new HomeAssistantRobot({
-    name: 'Broombot',
-    entityId: (process.env.BROOMBOT_ENTITY_ID || 'vacuum.broombot').trim(),
-    batteryEntityId: (process.env.BROOMBOT_BATTERY_ENTITY_ID || '').trim(),
-    client: homeAssistantClient,
-  });
-
-  const mopbot = new HomeAssistantRobot({
-    name: 'Mopbot',
-    entityId: (process.env.MOPBOT_ENTITY_ID || 'vacuum.mopbot').trim(),
-    batteryEntityId: (process.env.MOPBOT_BATTERY_ENTITY_ID || '').trim(),
+  const cleanbot = new HomeAssistantRobot({
+    name: 'Cleanbot',
+    entityId: (process.env.CLEANBOT_ENTITY_ID || 'vacuum.v70_ultra_complete').trim(),
+    batteryEntityId: (process.env.CLEANBOT_BATTERY_ENTITY_ID || 'sensor.v70_ultra_complete_battery_level').trim(),
     client: homeAssistantClient,
   });
 
@@ -114,8 +106,7 @@ export async function createServices(): Promise<FluxHausServices> {
 
   return {
     homeAssistantClient,
-    broombot,
-    mopbot,
+    cleanbot,
     car,
     mieleClient,
     dishwasher,

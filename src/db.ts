@@ -190,10 +190,22 @@ export async function initDatabase(): Promise<void> {
 
       CREATE TABLE IF NOT EXISTS la_subscriptions (
         user_sub TEXT PRIMARY KEY,
-        device_types JSONB NOT NULL DEFAULT '["dishwasher","washer","dryer","broombot","mopbot"]'::jsonb,
+        device_types JSONB NOT NULL DEFAULT '["dishwasher","washer","dryer","cleanbot"]'::jsonb,
         created_at TIMESTAMPTZ DEFAULT NOW(),
         updated_at TIMESTAMPTZ DEFAULT NOW()
       );
+
+      ALTER TABLE la_subscriptions
+        ALTER COLUMN device_types SET DEFAULT '["dishwasher","washer","dryer","cleanbot"]'::jsonb;
+
+      UPDATE la_subscriptions
+      SET device_types = (
+        SELECT COALESCE(jsonb_agg(DISTINCT device_type), '[]'::jsonb)
+        FROM jsonb_array_elements_text(device_types || '["cleanbot"]'::jsonb) AS device_type
+        WHERE device_type NOT IN ('broombot', 'mopbot')
+      )
+      WHERE device_types::jsonb ? 'broombot'
+         OR device_types::jsonb ? 'mopbot';
 
       CREATE TABLE IF NOT EXISTS apns_tokens (
         id SERIAL PRIMARY KEY,

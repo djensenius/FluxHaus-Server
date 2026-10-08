@@ -447,10 +447,8 @@ GET /audit?limit=50&offset=0&username=admin&since=2024-01-01T00:00:00Z
 | **Home Assistant** | | |
 | `HOMEASSISTANT_URL` | Home Assistant URL | `http://homeassistant.local:8123` |
 | `HOMEASSISTANT_TOKEN` | Home Assistant Long-Lived Access Token | |
-| `BROOMBOT_ENTITY_ID` | Entity ID for Broombot | `vacuum.broombot` |
-| `BROOMBOT_BATTERY_ENTITY_ID` | Battery sensor entity for Broombot | |
-| `MOPBOT_ENTITY_ID` | Entity ID for Mopbot | `vacuum.mopbot` |
-| `MOPBOT_BATTERY_ENTITY_ID` | Battery sensor entity for Mopbot | |
+| `CLEANBOT_ENTITY_ID` | Entity ID for Cleanbot | `vacuum.v70_ultra_complete` |
+| `CLEANBOT_BATTERY_ENTITY_ID` | Battery sensor entity for Cleanbot | `sensor.v70_ultra_complete_battery_level` |
 | `CAR_ENTITY_PREFIX` | HA entity prefix for the car | `kia` |
 | **AI** | | |
 | `AI_PROVIDER` | AI provider: `anthropic`, `copilot`, `github-copilot`, `zai`, `z.ai`, or `openai` | `anthropic` |
@@ -472,12 +470,12 @@ POST /command
 Authorization: Bearer <token>
 Content-Type: application/json
 
-{ "command": "Lock the car and start the broombot" }
+{ "command": "Lock the car and start cleanbot" }
 ```
 
 Response:
 ```json
-{ "response": "Done! Your car is locked and the broombot is cleaning." }
+{ "response": "Done! Your car is locked and cleanbot is cleaning." }
 ```
 
 Configure the provider with `AI_PROVIDER` (default: `anthropic`) and the matching API key. Default models per provider:

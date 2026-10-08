@@ -126,7 +126,7 @@ describe('live-activity-hooks (consolidated)', () => {
     it('includes robot in consolidated broadcast', async () => {
       jest.setSystemTime(Date.now() + 240_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
-      await onRobotStatusChange('Broombot', {
+      await onRobotStatusChange('Cleanbot', {
         running: true,
         batteryLevel: 75,
         timeStarted: new Date(),
@@ -136,9 +136,10 @@ describe('live-activity-hooks (consolidated)', () => {
         mockMultiDeviceBroadcast.mock.calls.length - 1
       ];
       const contentState = lastCall[1];
-      const bot = contentState.devices.find((d: { name: string }) => d.name === 'Broombot');
+      const bot = contentState.devices.find((d: { name: string }) => d.name === 'Cleanbot');
       expect(bot).toBeDefined();
       expect(bot.running).toBe(true);
+      expect(bot.icon).toBe('robotic.vacuum.fill');
     });
   });
 
@@ -201,8 +202,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Tumble dryer', timeRunning: 0, timeRemaining: 0, inUse: false,
       });
       await onDishwasherStatusChange({ operationState: 'Inactive', doorState: 'Closed' });
-      await onRobotStatusChange('broombot', { running: false });
-      await onRobotStatusChange('mopbot', { running: false });
+      await onRobotStatusChange('cleanbot', { running: false });
       // Now start washer
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
@@ -235,8 +235,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Tumble dryer', timeRunning: 0, timeRemaining: 0, inUse: false,
       });
       await onDishwasherStatusChange({ operationState: 'Inactive', doorState: 'Closed' });
-      await onRobotStatusChange('broombot', { running: false });
-      await onRobotStatusChange('mopbot', { running: false });
+      await onRobotStatusChange('cleanbot', { running: false });
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });

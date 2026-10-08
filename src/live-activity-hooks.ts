@@ -163,7 +163,7 @@ function buildRobotContentState(
   status: { running?: boolean; batteryLevel?: number; timeStarted?: Date },
 ): LiveActivityContentState {
   const running = status.running ?? false;
-  const icon = name.toLowerCase().includes('mop') ? 'humidifier.and.droplets' : 'fan';
+  const icon = name.toLowerCase().includes('clean') ? 'robotic.vacuum.fill' : 'fan';
   const statusText = running ? 'Cleaning' : 'Off';
 
   return {
@@ -213,7 +213,7 @@ async function broadcastConsolidated(force = false): Promise<void> {
 async function broadcastConsolidatedImpl(force = false): Promise<void> {
   // Don't send push-to-start until all device types have been initialized
   // (or timeout elapsed), to prevent false starts on server restart.
-  const allTypesInitialized = ['washer', 'dryer', 'dishwasher', 'broombot', 'mopbot']
+  const allTypesInitialized = ['washer', 'dryer', 'dishwasher', 'cleanbot']
     .every((dt) => initializedDeviceTypes.has(dt));
   const initTimedOut = Date.now() - moduleLoadedAt > INITIALIZATION_TIMEOUT_MS;
   const allInitialized = allTypesInitialized || initTimedOut;
@@ -292,8 +292,7 @@ const DISPLAY_NAMES: Record<string, string> = {
   washer: 'Washer',
   dryer: 'Dryer',
   dishwasher: 'Dishwasher',
-  broombot: 'BroomBot',
-  mopbot: 'MopBot',
+  cleanbot: 'Cleanbot',
 };
 
 /**
