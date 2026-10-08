@@ -55,7 +55,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.78.0",
     "@influxdata/influxdb-client": "^1.35.0",
-    "@modelcontextprotocol/sdk": "^1.27.1",
+    "@modelcontextprotocol/sdk": "^1.31.0",
     "@mozilla/readability": "^0.6.0",
     "@parse/node-apn": "^8.1.0",
     "@types/connect-pg-simple": "^7.0.3",
