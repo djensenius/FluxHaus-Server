@@ -354,7 +354,7 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     unit: 'W',
     group: 'Power',
     source: 'prometheus',
-    promql: 'nut_real_power_watts',
+    promql: '(nut_real_power_watts > 0) or on(instance, job, ups) nut_power_watts',
     seriesLabel: 'ups',
   },
   {
