@@ -2,7 +2,7 @@ import { NextFunction, Request, Response } from 'express';
 import { createHash } from 'crypto';
 import { AuthenticatedUser } from '../types/auth';
 import { isOidcEnabled, validateBearerToken } from './oidc.middleware';
-import { serverOrigin, verifyMcpToken } from '../mcp-auth';
+import { mcpResource, serverOrigin, verifyMcpToken } from '../mcp-auth';
 import { logEvent } from '../audit';
 import { writePoint } from '../influx';
 import logger from '../logger';
@@ -29,6 +29,7 @@ export function requireRole(...roles: string[]) {
 }
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const isMcpPath = (path: string | undefined): boolean => /^\/mcp\/?$/i.test(path || '');
 
 /**
  * Block all state-mutating requests from non-OIDC users (no `sub` claim).
@@ -55,6 +56,47 @@ export async function authMiddleware(
   // OPTIONS (CORS preflight) is never authenticated
   if (req.method === 'OPTIONS') {
     next();
+    return;
+  }
+
+  // MCP HTTP is protected by audience-bound MCP Bearer tokens only. Do not
+  // accept browser cookies, sessions, or generic OIDC access tokens on /mcp.
+  if (isMcpPath(req.path)) {
+    const authHeader = req.headers.authorization || '';
+    if (authHeader.startsWith('Bearer ')) {
+      const token = authHeader.slice(7);
+      const mcpClaims = await verifyMcpToken(token, mcpResource(req));
+      if (mcpClaims) {
+        req.user = {
+          role: 'admin',
+          username: mcpClaims.preferred_username
+            || mcpClaims.email
+            || mcpClaims.sub,
+          sub: mcpClaims.sub,
+          email: mcpClaims.email,
+        };
+        authLogger.debug({ username: req.user.username }, 'MCP token auth success');
+        next();
+        return;
+      }
+      authLogger.warn(
+        {
+          route: req.path,
+          method: req.method,
+          userAgent: req.headers['user-agent'],
+          clientIP: req.ip,
+          tokenHashPrefix: createHash('sha256').update(token).digest('hex').slice(0, 12),
+        },
+        'MCP bearer token rejected',
+      );
+    }
+
+    const origin = serverOrigin(req);
+    res.setHeader(
+      'WWW-Authenticate',
+      `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
+    );
+    res.status(401).json({ message: 'Unauthorized' });
     return;
   }
 
@@ -88,26 +130,7 @@ export async function authMiddleware(
   if (authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice(7);
 
-    // 3a. Check for self-issued MCP JWT (signed with SESSION_SECRET)
-    const mcpClaims = await verifyMcpToken(token);
-    if (mcpClaims) {
-      req.user = {
-        role: 'admin',
-        username: mcpClaims.preferred_username
-          || mcpClaims.email
-          || mcpClaims.sub,
-        sub: mcpClaims.sub,
-        email: mcpClaims.email,
-      };
-      authLogger.debug(
-        { username: req.user.username },
-        'MCP token auth success',
-      );
-      next();
-      return;
-    }
-
-    // 3b. OIDC Bearer token validation
+    // 3a. OIDC Bearer token validation
     const claims = await validateBearerToken(token);
     if (claims) {
       req.user = {

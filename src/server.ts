@@ -96,6 +96,20 @@ function parseOnFlag(value: unknown): boolean | null {
 
 const port = process.env.PORT || 8888;
 
+function configuredMcpOrigins(): string[] {
+  return (process.env.MCP_ALLOWED_ORIGINS || process.env.CORS_ORIGINS
+    || 'http://localhost:8080,https://haus.fluxhaus.io,https://claude.ai,https://github.com,https://github.dev,https://vscode.dev')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+}
+
+function isAllowedMcpOrigin(origin: string | undefined, allowedOrigins: string[]): boolean {
+  // Non-browser MCP clients generally omit Origin; allow them and rely on Bearer auth.
+  if (!origin) return true;
+  return allowedOrigins.includes(origin);
+}
+
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
 
@@ -1474,13 +1488,38 @@ export async function createServer(): Promise<Express> {
     res.end();
   });
 
-  // MCP HTTP endpoint (Streamable HTTP transport, stateless mode)
-  // Uses open CORS so Claude and other remote MCP clients can connect.
+  // MCP HTTP endpoint (Streamable HTTP transport, stateless mode).
   // CSRF is exempted via CSRF_EXEMPT_PATHS in csrf.middleware.ts since
-  // MCP clients use Bearer tokens, not cookies.
-  const mcpCors = cors();
-  app.options('/mcp', mcpCors);
-  app.post('/mcp', mcpCors, async (req, res) => {
+  // MCP clients use Bearer tokens, not cookies. Browser-origin requests are
+  // explicitly allowlisted to mitigate DNS rebinding against local/home MCP.
+  const mcpAllowedOrigins = configuredMcpOrigins();
+  const mcpCors = cors({
+    allowedHeaders: [
+      'Accept',
+      'Authorization',
+      'Content-Type',
+      'MCP-Protocol-Version',
+      'Mcp-Method',
+      'Mcp-Name',
+    ],
+    origin: (origin, callback) => {
+      if (isAllowedMcpOrigin(origin, mcpAllowedOrigins)) return callback(null, true);
+      return callback(new Error('Origin not allowed for MCP'), false);
+    },
+  });
+  const rejectInvalidMcpOrigin = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+    if (!isAllowedMcpOrigin(req.headers.origin, mcpAllowedOrigins)) {
+      res.status(403).json({
+        jsonrpc: '2.0',
+        error: { code: -32000, message: 'Origin not allowed for MCP' },
+        id: null,
+      });
+      return;
+    }
+    next();
+  };
+  app.options('/mcp', rejectInvalidMcpOrigin, mcpCors);
+  app.post('/mcp', rejectInvalidMcpOrigin, mcpCors, async (req, res) => {
     if (!req.user?.sub) {
       res.status(403).json({
         jsonrpc: '2.0',
@@ -1513,7 +1552,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // GET /mcp — not supported in stateless mode (per MCP Streamable HTTP spec)
-  app.get('/mcp', mcpCors, (_req, res) => {
+  app.get('/mcp', rejectInvalidMcpOrigin, mcpCors, (_req, res) => {
     res.status(405).set('Allow', 'POST').json({
       jsonrpc: '2.0',
       error: { code: -32000, message: 'Method not allowed in stateless mode' },
@@ -1522,7 +1561,7 @@ export async function createServer(): Promise<Express> {
   });
 
   // DELETE /mcp — not supported in stateless mode
-  app.delete('/mcp', mcpCors, (_req, res) => {
+  app.delete('/mcp', rejectInvalidMcpOrigin, mcpCors, (_req, res) => {
     res.status(405).set('Allow', 'POST').json({
       jsonrpc: '2.0',
       error: { code: -32000, message: 'Method not allowed in stateless mode' },

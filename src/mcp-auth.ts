@@ -19,6 +19,13 @@ export function serverOrigin(
   return `${proto}://${req.get('host')}`;
 }
 
+/** Canonical OAuth resource identifier for this server's MCP endpoint. */
+export function mcpResource(
+  req: { protocol: string; get(name: string): string | undefined },
+): string {
+  return `${serverOrigin(req)}/mcp`;
+}
+
 export interface McpTokenClaims {
   sub: string;
   email?: string;
@@ -27,12 +34,19 @@ export interface McpTokenClaims {
 
 /**
  * Verify a self-issued MCP JWT. Returns user claims if valid, null otherwise.
+ * The token must be audience-bound to the expected MCP resource and issued by
+ * this server origin.
  */
 export async function verifyMcpToken(
   token: string,
+  expectedResource: string,
 ): Promise<McpTokenClaims | null> {
   try {
-    const { payload } = await jwtVerify(token, getMcpSigningKey());
+    const issuer = new URL(expectedResource).origin;
+    const { payload } = await jwtVerify(token, getMcpSigningKey(), {
+      audience: expectedResource,
+      issuer,
+    });
     if (payload.sub && (payload as JWTPayload & { type?: string }).type === 'mcp') {
       return {
         sub: payload.sub as string,
