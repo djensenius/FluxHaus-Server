@@ -491,7 +491,7 @@ Configure the provider with `AI_PROVIDER` (default: `anthropic`) and the matchin
 
 FluxHaus ships a [Model Context Protocol](https://modelcontextprotocol.io) server so AI assistants like Claude Desktop can control your home directly.
 
-### Running the MCP server
+### Running the local stdio MCP server
 
 ```bash
 node dist/mcp.js
@@ -517,7 +517,29 @@ Add the following to your `claude_desktop_config.json`:
 }
 ```
 
-The MCP server exposes the same tools as the `/command` endpoint (lock/unlock/start/stop car, control robots, activate Home Assistant scenes, list appliance status).
+### Remote MCP over HTTP
+
+The main web server also exposes a Streamable HTTP MCP endpoint at:
+
+```text
+https://<your-fluxhaus-host>/mcp
+```
+
+Remote MCP uses Bearer tokens issued by the built-in MCP OAuth proxy routes. Configure OIDC (`OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`) and a strong `SESSION_SECRET`. The OAuth protected-resource metadata is available at both:
+
+```text
+/.well-known/oauth-protected-resource
+/.well-known/oauth-protected-resource/mcp
+```
+
+Security notes:
+
+- MCP access tokens are audience-bound to the `/mcp` resource and are not accepted as general REST admin tokens.
+- Browser-origin calls to `/mcp` are restricted by `MCP_ALLOWED_ORIGINS` (falls back to `CORS_ORIGINS`). Non-browser MCP clients usually omit `Origin` and authenticate with Bearer tokens. Defaults/examples include Claude and GitHub Copilot surfaces (`https://claude.ai`, `https://github.com`, `https://github.dev`, `https://vscode.dev`).
+- MCP OAuth dynamic client registration only accepts redirect URI origins listed in `MCP_ALLOWED_REDIRECT_ORIGINS`. Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`, any port) are always accepted for local clients such as Copilot CLI; GitHub/Copilot web origins are included in the defaults/examples.
+- Web/image fetching tools reject localhost, `.local`, loopback, link-local, and private-network URLs to reduce SSRF risk from model-controlled URL fetches.
+
+The MCP server exposes FluxHaus home, car, calendar, media, infrastructure, web, and image tools. Several high-value read tools return `structuredContent` in addition to text for modern MCP clients, and sensitive/state-changing tools are annotated with MCP tool hints.
 
 ## Breaking Changes
 

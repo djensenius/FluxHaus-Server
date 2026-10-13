@@ -1,6 +1,7 @@
 import { NextFunction, Request, Response } from 'express';
 import { authMiddleware, requireOidcForMutations, requireRole } from '../auth.middleware';
 import { validateBearerToken } from '../oidc.middleware';
+import { verifyMcpToken } from '../../mcp-auth';
 
 jest.mock('../oidc.middleware', () => ({
   validateBearerToken: jest.fn(),
@@ -9,11 +10,12 @@ jest.mock('../oidc.middleware', () => ({
 
 jest.mock('../../mcp-auth', () => ({
   verifyMcpToken: jest.fn().mockResolvedValue(null),
+  mcpResource: jest.fn().mockReturnValue('http://localhost:8888/mcp'),
   serverOrigin: jest.fn().mockReturnValue('http://localhost:8888'),
 }));
 
-function mockReq(headers: Record<string, string> = {}): Partial<Request> {
-  return { headers } as Partial<Request>;
+function mockReq(headers: Record<string, string> = {}, path = '/test'): Partial<Request> {
+  return { headers, path } as Partial<Request>;
 }
 
 function mockRes(): Partial<Response> {
@@ -29,6 +31,8 @@ describe('authMiddleware', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (verifyMcpToken as jest.Mock).mockResolvedValue(null);
+    (validateBearerToken as jest.Mock).mockResolvedValue(null);
     process.env.BASIC_AUTH_PASSWORD = 'adminpass';
     process.env.RHIZOME_PASSWORD = 'rhizomepass';
     process.env.DEMO_PASSWORD = 'demopass';
@@ -58,6 +62,52 @@ describe('authMiddleware', () => {
       email: 'admin@example.com',
     });
     expect(next).toHaveBeenCalled();
+  });
+
+  it('should authenticate /mcp with an audience-bound MCP token only', async () => {
+    (verifyMcpToken as jest.Mock).mockResolvedValue({
+      sub: 'user-123',
+      email: 'admin@example.com',
+      preferred_username: 'adminuser',
+    });
+    const req = mockReq({ authorization: 'Bearer mcp-token' }, '/mcp') as Request;
+    const res = mockRes() as Response;
+    await authMiddleware(req, res, next);
+    expect(verifyMcpToken).toHaveBeenCalledWith('mcp-token', 'http://localhost:8888/mcp');
+    expect(validateBearerToken).not.toHaveBeenCalled();
+    expect(req.user).toEqual({
+      role: 'admin',
+      username: 'adminuser',
+      sub: 'user-123',
+      email: 'admin@example.com',
+    });
+    expect(next).toHaveBeenCalled();
+  });
+
+  it('should reject generic OIDC bearer tokens on /mcp', async () => {
+    (verifyMcpToken as jest.Mock).mockResolvedValue(null);
+    (validateBearerToken as jest.Mock).mockResolvedValue({ sub: 'oidc-user' });
+    const req = mockReq({ authorization: 'Bearer oidc-token' }, '/mcp') as Request;
+    const res = mockRes() as Response;
+    await authMiddleware(req, res, next);
+    expect(validateBearerToken).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(res.setHeader).toHaveBeenCalledWith(
+      'WWW-Authenticate',
+      'Bearer resource_metadata="http://localhost:8888/.well-known/oauth-protected-resource/mcp"',
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each(['/mcp/', '/MCP'])('should apply MCP-only auth to equivalent path %s', async (path) => {
+    (verifyMcpToken as jest.Mock).mockResolvedValue(null);
+    (validateBearerToken as jest.Mock).mockResolvedValue({ sub: 'oidc-user' });
+    const req = mockReq({ authorization: 'Bearer oidc-token' }, path) as Request;
+    const res = mockRes() as Response;
+    await authMiddleware(req, res, next);
+    expect(validateBearerToken).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('should reject invalid Bearer token', async () => {

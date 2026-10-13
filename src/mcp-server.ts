@@ -1,4 +1,7 @@
+import dns from 'dns/promises';
 import fs from 'fs';
+import net from 'net';
+import { Agent } from 'undici';
 // eslint-disable-next-line import/extensions
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { Readability } from '@mozilla/readability';
@@ -8,6 +11,165 @@ import { FluxHausServices } from './services';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
+
+const READ_ONLY_CLOSED = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+const READ_ONLY_OPEN = {
+  readOnlyHint: true,
+  destructiveHint: false,
+  idempotentHint: true,
+  openWorldHint: true,
+};
+
+const WRITE_CLOSED = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+  openWorldHint: false,
+};
+
+const GENERATIVE_OPEN = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: true,
+};
+
+const IDEMPOTENT_WRITE_CLOSED = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: true,
+  openWorldHint: false,
+};
+
+function jsonResult(data: unknown) {
+  return {
+    content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
+    structuredContent: data as Record<string, unknown>,
+  };
+}
+
+function isBlockedIPv4(hostname: string): boolean {
+  const octets = hostname.split('.').map((part) => Number.parseInt(part, 10));
+  if (octets.length !== 4 || octets.some((part) => Number.isNaN(part))) return false;
+  const [first, second] = octets;
+  return first === 0
+    || first === 10
+    || first === 127
+    || (first === 100 && second >= 64 && second <= 127)
+    || (first === 169 && second === 254)
+    || (first === 172 && second >= 16 && second <= 31)
+    || (first === 192 && (second === 0 || second === 168))
+    || (first === 198 && (second === 18 || second === 19))
+    || first >= 224;
+}
+
+function isBlockedIPv6(hostname: string): boolean {
+  const normalized = hostname.toLowerCase();
+  return normalized === '::1'
+    || normalized === '::'
+    || normalized.startsWith('64:ff9b:')
+    || normalized.startsWith('2002:')
+    || normalized.startsWith('fc')
+    || normalized.startsWith('fd')
+    || normalized.startsWith('fe8')
+    || normalized.startsWith('fe9')
+    || normalized.startsWith('fea')
+    || normalized.startsWith('feb')
+    || normalized.startsWith('fec')
+    || normalized.startsWith('fed')
+    || normalized.startsWith('fee')
+    || normalized.startsWith('fef')
+    || normalized.startsWith('ff')
+    || normalized.startsWith('::ffff:');
+}
+
+function isBlockedAddress(address: string): boolean {
+  const normalized = address.replace(/^\[|\]$/g, '').toLowerCase();
+  const ipVersion = net.isIP(normalized);
+  return (ipVersion === 4 && isBlockedIPv4(normalized))
+    || (ipVersion === 6 && isBlockedIPv6(normalized));
+}
+
+const publicLookupAgent = new Agent({
+  connect: {
+    // Re-validate the address used by undici at connection time to reduce DNS
+    // rebinding risk between preflight validation and fetch().
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    lookup: (hostname: string, options: any, callback: any) => {
+      dns.lookup(hostname, options)
+        .then((result) => {
+          if (Array.isArray(result)) {
+            if (result.length === 0 || result.some((record) => isBlockedAddress(record.address))) {
+              callback(new Error('URL resolved to a private or loopback address'));
+              return;
+            }
+            callback(null, result);
+            return;
+          }
+          const address = typeof result === 'string' ? result : result.address;
+          const family = typeof result === 'string' ? net.isIP(result) : result.family;
+          if (!address || isBlockedAddress(address)) {
+            callback(new Error('URL resolved to a private or loopback address'), address, family);
+            return;
+          }
+          callback(null, address, family);
+        })
+        .catch((err) => callback(err, undefined as unknown as string, undefined as unknown as number));
+    },
+  },
+} as unknown as ConstructorParameters<typeof Agent>[0]);
+
+async function validatePublicHttpUrl(rawUrl: string): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    throw new Error('URL must be a valid absolute URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('URL must use http or https');
+  }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) {
+    throw new Error('URL must use a public hostname');
+  }
+  if (isBlockedAddress(hostname)) {
+    throw new Error('URL must not target a private or loopback address');
+  }
+  const records = await dns.lookup(hostname, { all: true, verbatim: true });
+  if (records.length === 0 || records.some((record) => isBlockedAddress(record.address))) {
+    throw new Error('URL must resolve to a public address');
+  }
+  return parsed;
+}
+
+async function fetchPublicHttpUrl(rawUrl: string | URL, init: RequestInit, maxRedirects = 5): Promise<Response> {
+  let currentUrl = rawUrl.toString();
+  for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
+    // eslint-disable-next-line no-await-in-loop
+    const publicUrl = await validatePublicHttpUrl(currentUrl);
+    // eslint-disable-next-line no-await-in-loop
+    const resp = await fetch(publicUrl, {
+      ...init,
+      redirect: 'manual',
+      // undici extension used by Node's global fetch
+      dispatcher: publicLookupAgent,
+    } as RequestInit & { dispatcher: Agent });
+    if (![301, 302, 303, 307, 308].includes(resp.status)) return resp;
+    const location = resp.headers.get('location');
+    // eslint-disable-next-line no-await-in-loop
+    await resp.body?.cancel();
+    if (!location) return resp;
+    currentUrl = new URL(location, publicUrl).toString();
+  }
+  throw new Error('Too many redirects');
+}
 
 // Wraps server.tool so every handler gets try/catch, logging, and timing.
 function wrapToolHandlers(server: McpServer): McpServer['tool'] {
@@ -212,12 +374,12 @@ export default function createMcpServer(
 
   // ── Tools ─────────────────────────────────────────────────────────────────────
 
-  server.tool('lock_car', 'Lock the car doors', async () => {
+  server.tool('lock_car', 'Lock the car doors', IDEMPOTENT_WRITE_CLOSED, async () => {
     const result = await car.lock();
     return { content: [{ type: 'text' as const, text: result }] };
   });
 
-  server.tool('unlock_car', 'Unlock the car doors', async () => {
+  server.tool('unlock_car', 'Unlock the car doors', IDEMPOTENT_WRITE_CLOSED, async () => {
     const result = await car.unlock();
     return { content: [{ type: 'text' as const, text: result }] };
   });
@@ -258,6 +420,7 @@ export default function createMcpServer(
         .optional()
         .describe('Rear-right seat heater level (0=off, 1-3)'),
     },
+    WRITE_CLOSED,
     async (args) => {
       const config: {
         temperature?: number;
@@ -288,13 +451,13 @@ export default function createMcpServer(
     },
   );
 
-  server.tool('stop_car', 'Stop the car climate control', async () => {
+  server.tool('stop_car', 'Stop the car climate control', IDEMPOTENT_WRITE_CLOSED, async () => {
     const result = await car.stop();
     setTimeout(() => car.resync(), 5000);
     return { content: [{ type: 'text' as const, text: result }] };
   });
 
-  server.tool('resync_car', 'Force a status sync from the car', async () => {
+  server.tool('resync_car', 'Force a status sync from the car', IDEMPOTENT_WRITE_CLOSED, async () => {
     await car.resync();
     return { content: [{ type: 'text' as const, text: 'Car resync initiated' }] };
   });
@@ -303,6 +466,7 @@ export default function createMcpServer(
     'start_robot',
     'Start a robot vacuum',
     { robot: z.enum(['cleanbot']).describe('Which robot to start') },
+    IDEMPOTENT_WRITE_CLOSED,
     async () => {
       await cleanbot.turnOn();
       return { content: [{ type: 'text' as const, text: 'cleanbot started' }] };
@@ -313,6 +477,7 @@ export default function createMcpServer(
     'stop_robot',
     'Stop a robot vacuum and return it to base',
     { robot: z.enum(['cleanbot']).describe('Which robot to stop') },
+    IDEMPOTENT_WRITE_CLOSED,
     async () => {
       await cleanbot.turnOff();
       return { content: [{ type: 'text' as const, text: 'cleanbot returning to base' }] };
@@ -323,6 +488,7 @@ export default function createMcpServer(
     'clean_room',
     'Tell Cleanbot to clean a specific room',
     { room: z.string().describe('Room name to clean') },
+    WRITE_CLOSED,
     async ({ room }) => {
       const normalizedRoom = room.trim().toLowerCase();
       const match = cleanbot.cachedStatus.rooms?.find((r) => r.name.toLowerCase() === normalizedRoom);
@@ -343,6 +509,7 @@ export default function createMcpServer(
         'Entity domain filter (e.g. light, switch, scene, climate). Omit to list all.',
       ),
     },
+    READ_ONLY_CLOSED,
     async ({ domain }) => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       let allStates: any[] = await homeAssistantClient.getState('');
@@ -355,12 +522,7 @@ export default function createMcpServer(
         state: s.state,
         name: s.attributes?.friendly_name ?? s.entity_id,
       }));
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({ entities }, null, 2),
-        }],
-      };
+      return jsonResult({ entities });
     },
   );
 
@@ -369,20 +531,16 @@ export default function createMcpServer(
     'Get the current state and attributes of a Home Assistant entity',
     // eslint-disable-next-line camelcase
     { entity_id: z.string().describe('Entity ID (e.g. light.bedroom, switch.porch)') },
+    READ_ONLY_CLOSED,
     // eslint-disable-next-line camelcase
     async ({ entity_id }) => {
       // eslint-disable-next-line camelcase
       const state = await homeAssistantClient.getState(entity_id);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            entity_id: state.entity_id,
-            state: state.state,
-            attributes: state.attributes,
-          }, null, 2),
-        }],
-      };
+      return jsonResult({
+        entity_id: state.entity_id,
+        state: state.state,
+        attributes: state.attributes,
+      });
     },
   );
 
@@ -397,6 +555,7 @@ export default function createMcpServer(
       color_temp: z.number().optional().describe('Color temperature in mireds, for lights only'),
       temperature: z.number().optional().describe('Target temperature, for climate entities only'),
     },
+    WRITE_CLOSED,
     async ({
       // eslint-disable-next-line @typescript-eslint/no-shadow
       domain, service, entity_id: entityId, ...extraData
@@ -417,43 +576,31 @@ export default function createMcpServer(
     + ' For historical driving stats (distance over time), query InfluxDB. Home Assistant logs odometer in the'
     + ' "home_assistant" bucket (entity_id "sensor.*_odometer"). Also available in the default bucket as "car"'
     + ' measurement (fields: odometer, battery_level, ev_range, total_range, charging; tag: vehicle).',
-    async () => ({
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2),
-      }],
-    }),
+    READ_ONLY_CLOSED,
+    async () => jsonResult({ status: car.status, odometer: car.odometer }),
   );
 
   server.tool(
     'get_robot_status',
     'Get Cleanbot status: battery, running, charging, progress, estimated time remaining, '
       + 'current room, base station, and maintenance details',
-    async () => ({
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          cleanbot: cleanbot.cachedStatus,
-        }, null, 2),
-      }],
+    READ_ONLY_CLOSED,
+    async () => jsonResult({
+      cleanbot: cleanbot.cachedStatus,
     }),
   );
 
   server.tool(
     'get_appliance_status',
     'Get the status of home appliances: washer, dryer (Miele), and dishwasher (HomeConnect)',
+    READ_ONLY_CLOSED,
     async () => {
       const { mieleClient, dishwasher } = services;
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            washer: mieleClient.washer,
-            dryer: mieleClient.dryer,
-            dishwasher: dishwasher.dishwasher,
-          }, null, 2),
-        }],
-      };
+      return jsonResult({
+        washer: mieleClient.washer,
+        dryer: mieleClient.dryer,
+        dishwasher: dishwasher.dishwasher,
+      });
     },
   );
 
@@ -465,16 +612,12 @@ export default function createMcpServer(
       start: z.string().describe('Start time as ISO 8601 timestamp (e.g. 2025-03-01T00:00:00Z)'),
       end: z.string().optional().describe('End time as ISO 8601 timestamp. Defaults to now.'),
     },
+    READ_ONLY_CLOSED,
     // eslint-disable-next-line camelcase
     async ({ entity_id, start, end }) => {
       // eslint-disable-next-line camelcase
       const history = await homeAssistantClient.getHistory(entity_id, start, end);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(history, null, 2),
-        }],
-      };
+      return jsonResult({ history });
     },
   );
 
@@ -486,16 +629,12 @@ export default function createMcpServer(
       end: z.string().optional().describe('End time as ISO 8601 timestamp. Defaults to now.'),
       entity_id: z.string().optional().describe('Filter to a specific entity ID'), // eslint-disable-line camelcase
     },
+    READ_ONLY_CLOSED,
     // eslint-disable-next-line camelcase
     async ({ start, end, entity_id }) => {
       // eslint-disable-next-line camelcase
       const logbook = await homeAssistantClient.getLogbook(start, end, entity_id);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(logbook, null, 2),
-        }],
-      };
+      return jsonResult({ logbook });
     },
   );
 
@@ -510,29 +649,21 @@ export default function createMcpServer(
       start: z.string().describe('Start time as ISO 8601 timestamp'),
       end: z.string().describe('End time as ISO 8601 timestamp'),
     },
+    READ_ONLY_CLOSED,
     // eslint-disable-next-line camelcase
     async ({ calendar_id, start, end }) => {
       const events = await services.calendar?.listEvents(start, end, calendar_id, userSub) || [];
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(events, null, 2),
-        }],
-      };
+      return jsonResult({ events });
     },
   );
 
   server.tool(
     'list_calendars',
     'List all available calendars across Home Assistant, iCloud, Microsoft 365, and subscriptions',
+    READ_ONLY_CLOSED,
     async () => {
       const calendars = await services.calendar?.listCalendars(userSub) || [];
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(calendars, null, 2),
-        }],
-      };
+      return jsonResult({ calendars });
     },
   );
 
@@ -544,28 +675,20 @@ export default function createMcpServer(
       end: z.string().describe('End time as ISO 8601 timestamp'),
       calendarId: z.string().optional().describe('Optional calendar ID from list_calendars'),
     },
+    READ_ONLY_CLOSED,
     async ({ start, end, calendarId }) => {
       const events = await services.calendar?.listEvents(start, end, calendarId, userSub) || [];
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(events, null, 2),
-        }],
-      };
+      return jsonResult({ events });
     },
   );
 
   server.tool(
     'get_today_agenda',
     'Get today\'s agenda, using the default calendar when one is set',
+    READ_ONLY_CLOSED,
     async () => {
       const events = await services.calendar?.getTodayAgenda(userSub) || [];
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(events, null, 2),
-        }],
-      };
+      return jsonResult({ events });
     },
   );
 
@@ -583,6 +706,7 @@ export default function createMcpServer(
       timezone: z.string().optional().describe('IANA timezone name, e.g. America/Toronto'),
       url: z.string().optional().describe('Optional related URL'),
     },
+    WRITE_CLOSED,
     async ({
       title,
       start,
@@ -606,12 +730,7 @@ export default function createMcpServer(
         timezone,
         url,
       }, userSub);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(event, null, 2),
-        }],
-      };
+      return jsonResult({ event });
     },
   );
 
@@ -631,6 +750,7 @@ export default function createMcpServer(
       timezone: z.string().optional().describe('Updated timezone'),
       url: z.string().optional().describe('Updated related URL'),
     },
+    WRITE_CLOSED,
     async ({
       eventId,
       title,
@@ -653,12 +773,7 @@ export default function createMcpServer(
         timezone,
         url,
       }, userSub);
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify(event, null, 2),
-        }],
-      };
+      return jsonResult({ event });
     },
   );
 
@@ -670,6 +785,7 @@ export default function createMcpServer(
         'Event ID returned by list_events or create_calendar_event',
       ),
     },
+    WRITE_CLOSED,
     async ({ eventId }) => {
       if (!services.calendar) return calendarUnavailable();
       await services.calendar?.deleteEvent(eventId, userSub);
@@ -691,6 +807,7 @@ export default function createMcpServer(
         + "| selectattr('state', 'eq', 'on') | list | count }} lights on\")",
       ),
     },
+    READ_ONLY_CLOSED,
     async ({ template }) => {
       if (template.length > MAX_TEMPLATE_LENGTH) {
         const msg = `Template too long (${template.length} chars, max ${MAX_TEMPLATE_LENGTH})`;
@@ -725,6 +842,7 @@ export default function createMcpServer(
         + 'Use list_entities with domain "scene" to discover scenes.',
       ),
     },
+    IDEMPOTENT_WRITE_CLOSED,
     async ({ entity_id: entityId }) => {
       await homeAssistantClient.callService('scene', 'turn_on', { entity_id: entityId });
       return { content: [{ type: 'text' as const, text: `Activated scene: ${entityId}` }] };
@@ -734,6 +852,7 @@ export default function createMcpServer(
   server.tool(
     'get_home_summary',
     'Get a full summary of the home: car, robots, appliances, and active HA entities — useful for a quick overview',
+    READ_ONLY_CLOSED,
     async () => {
       const { mieleClient, dishwasher } = services;
       let miele = null;
@@ -744,22 +863,17 @@ export default function createMcpServer(
       if (fs.existsSync('cache/homeconnect.json')) {
         homeconnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
       }
-      return {
-        content: [{
-          type: 'text' as const,
-          text: JSON.stringify({
-            car: { status: car.status, odometer: car.odometer },
-            robots: { cleanbot: cleanbot.cachedStatus },
-            appliances: {
-              washer: mieleClient.washer,
-              dryer: mieleClient.dryer,
-              dishwasher: dishwasher.dishwasher,
-            },
-            miele,
-            homeconnect,
-          }, null, 2),
-        }],
-      };
+      return jsonResult({
+        car: { status: car.status, odometer: car.odometer },
+        robots: { cleanbot: cleanbot.cachedStatus },
+        appliances: {
+          washer: mieleClient.washer,
+          dryer: mieleClient.dryer,
+          dishwasher: dishwasher.dishwasher,
+        },
+        miele,
+        homeconnect,
+      });
     },
   );
 
@@ -1946,12 +2060,13 @@ export default function createMcpServer(
       limit: z.number().min(1).max(20).optional()
         .describe('Maximum number of results to return (default 5)'),
     },
+    READ_ONLY_OPEN,
     async ({ query, limit }) => {
       if (!services.kagi?.configured) {
         return { content: [{ type: 'text' as const, text: 'Kagi web search is not configured (set KAGI_API_KEY)' }] };
       }
       const data = await services.kagi.search(query, limit ?? 5);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+      return jsonResult({ results: data });
     },
   );
 
@@ -1961,11 +2076,12 @@ export default function createMcpServer(
     {
       url: z.string().describe('URL of the web page to read'),
     },
+    READ_ONLY_OPEN,
     async ({ url }) => {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15_000);
       try {
-        const resp = await fetch(url, {
+        const resp = await fetchPublicHttpUrl(url, {
           signal: controller.signal,
           headers: { Accept: 'text/html,text/plain,application/json' },
         });
@@ -2003,12 +2119,14 @@ export default function createMcpServer(
       engine: z.enum(['agnes', 'cecil', 'muriel']).optional()
         .describe('Summarizer engine: agnes (fast), cecil (balanced, default), muriel (high-quality)'),
     },
+    READ_ONLY_OPEN,
     async ({ url, engine }) => {
       if (!services.kagi?.configured) {
         return { content: [{ type: 'text' as const, text: 'Kagi is not configured (set KAGI_API_KEY)' }] };
       }
-      const data = await services.kagi.summarize(url, engine || 'cecil');
-      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+      const publicUrl = await validatePublicHttpUrl(url);
+      const data = await services.kagi.summarize(publicUrl.toString(), engine || 'cecil');
+      return jsonResult({ summary: data });
     },
   );
 
@@ -2016,16 +2134,50 @@ export default function createMcpServer(
 
   server.tool(
     'view_image',
-    'Fetch and analyze an image from a URL. Use this to look at camera feeds, photos, or any image.',
+    'Fetch an image from a public URL and return it as MCP image content. Use this to inspect photos or public images.',
     {
       url: z.string().describe('URL of the image to view'),
       question: z.string().optional()
         .describe('Optional question about the image'),
     },
+    READ_ONLY_OPEN,
     async ({ url }) => {
-      const text = `Image available at: ${url}\n\n`
-        + 'Note: MCP does not support inline images. Use this URL to view the image in a browser.';
-      return { content: [{ type: 'text' as const, text }] };
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 15_000);
+      try {
+        const resp = await fetchPublicHttpUrl(url, {
+          signal: controller.signal,
+          headers: { Accept: 'image/*' },
+        });
+        if (!resp.ok) {
+          return {
+            content: [{ type: 'text' as const, text: `Error fetching image: ${resp.status} ${resp.statusText}` }],
+          };
+        }
+        const mimeType = resp.headers.get('content-type')?.split(';')[0].trim() || 'application/octet-stream';
+        if (!mimeType.startsWith('image/')) {
+          return {
+            content: [{ type: 'text' as const, text: `URL did not return an image (content-type: ${mimeType})` }],
+          };
+        }
+        const contentLength = Number.parseInt(resp.headers.get('content-length') || '0', 10);
+        if (contentLength > 5 * 1024 * 1024) {
+          return { content: [{ type: 'text' as const, text: 'Image is too large to return inline (max 5 MB)' }] };
+        }
+        const buffer = Buffer.from(await resp.arrayBuffer());
+        if (buffer.length > 5 * 1024 * 1024) {
+          return { content: [{ type: 'text' as const, text: 'Image is too large to return inline (max 5 MB)' }] };
+        }
+        return {
+          content: [{
+            type: 'image' as const,
+            data: buffer.toString('base64'),
+            mimeType,
+          }],
+        };
+      } finally {
+        clearTimeout(timer);
+      }
     },
   );
 
@@ -2039,6 +2191,7 @@ export default function createMcpServer(
       quality: z.enum(['standard', 'hd']).optional()
         .describe('Image quality (default standard)'),
     },
+    GENERATIVE_OPEN,
     async ({ prompt, size, quality }) => {
       const apiKey = process.env.OPENAI_API_KEY;
       if (!apiKey) {

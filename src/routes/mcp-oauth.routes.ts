@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import cors from 'cors';
 import { SignJWT, decodeJwt } from 'jose';
 import { getOidcIssuer } from '../middleware/oidc.middleware';
-import { getMcpSigningKey, serverOrigin } from '../mcp-auth';
+import { getMcpSigningKey, mcpResource, serverOrigin } from '../mcp-auth';
 import logger from '../logger';
 
 const oauthLogger = logger.child({ subsystem: 'mcp-oauth' });
@@ -16,6 +16,8 @@ interface PendingAuth {
   claudeCodeChallenge: string;
   claudeCodeChallengeMethod: string;
   pkceVerifier: string;
+  resource: string;
+  clientId: string;
   createdAt: number;
 }
 
@@ -29,7 +31,14 @@ interface AuthCode {
   userClaims: UserClaims;
   codeChallenge: string;
   codeChallengeMethod: string;
+  resource: string;
+  clientId: string;
+  redirectUri: string;
   expiresAt: number;
+}
+
+interface RegisteredClient {
+  redirectUris: string[];
 }
 
 // Short-lived in-memory stores (single-instance server)
@@ -57,6 +66,65 @@ function s256(verifier: string): string {
   );
 }
 
+function signClientPayload(payload: string): string {
+  return crypto
+    .createHmac('sha256', Buffer.from(getMcpSigningKey()))
+    .update(payload)
+    .digest('base64url');
+}
+
+function createClientId(redirectUris: string[]): string {
+  const payload = base64url(Buffer.from(JSON.stringify({ redirectUris }), 'utf8'));
+  const signature = signClientPayload(payload);
+  return `mcp-client-v1.${payload}.${signature}`;
+}
+
+function parseClientId(clientId: string): RegisteredClient | null {
+  const match = /^mcp-client-v1\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(clientId);
+  if (!match) return null;
+  const [, payload, signature] = match;
+  const expected = signClientPayload(payload);
+  const provided = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (provided.length !== expectedBuffer.length || !crypto.timingSafeEqual(provided, expectedBuffer)) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as RegisteredClient;
+    if (!Array.isArray(parsed.redirectUris)
+        // eslint-disable-next-line @typescript-eslint/no-use-before-define
+        || parsed.redirectUris.some((uri) => typeof uri !== 'string' || !isAllowedRedirectUri(uri))) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function allowedRedirectOrigins(): string[] {
+  return (process.env.MCP_ALLOWED_REDIRECT_ORIGINS
+    || 'http://localhost,http://127.0.0.1,http://[::1],https://claude.ai,https://github.com,https://github.dev,https://vscode.dev')
+    .split(',')
+    .map((origin) => origin.trim().replace(/\/$/, ''))
+    .filter(Boolean);
+}
+
+function isLoopbackRedirect(uri: URL): boolean {
+  if (uri.protocol !== 'http:') return false;
+  const host = uri.hostname.replace(/^\[|\]$/g, '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+function isAllowedRedirectUri(rawUri: string): boolean {
+  try {
+    const uri = new URL(rawUri);
+    if (isLoopbackRedirect(uri)) return true;
+    const origin = uri.origin.replace(/\/$/, '');
+    return allowedRedirectOrigins().includes(origin);
+  } catch {
+    return false;
+  }
+}
+
 export default function createMcpOAuthRouter(): Router {
   const router = Router();
   const oidcClientId = process.env.OIDC_CLIENT_ID;
@@ -72,7 +140,20 @@ export default function createMcpOAuthRouter(): Router {
     (req, res) => {
       const origin = serverOrigin(req);
       res.json({
-        resource: origin,
+        resource: mcpResource(req),
+        authorization_servers: [origin],
+        bearer_methods_supported: ['header'],
+      });
+    },
+  );
+
+  router.get(
+    '/.well-known/oauth-protected-resource/mcp',
+    openCors,
+    (req, res) => {
+      const origin = serverOrigin(req);
+      res.json({
+        resource: mcpResource(req),
         authorization_servers: [origin],
         bearer_methods_supported: ['header'],
       });
@@ -98,30 +179,38 @@ export default function createMcpOAuthRouter(): Router {
     },
   );
 
-  // RFC 7591 — Dynamic Client Registration (accepts any registration)
+  // RFC 7591 — Dynamic Client Registration (single-instance in-memory store)
   router.options('/register', openCors);
   router.post('/register', openCors, (req, res) => {
     const {
       client_name: clientName,
       redirect_uris: redirectUris,
     } = req.body || {};
-    const clientId = `mcp-client-${base64url(crypto.randomBytes(16))}`;
+    if (!Array.isArray(redirectUris) || redirectUris.length === 0 || redirectUris.length > 10
+        || redirectUris.some((uri) => typeof uri !== 'string' || uri.length > 2048 || !isAllowedRedirectUri(uri))) {
+      res.status(400).json({ error: 'invalid_redirect_uri' });
+      return;
+    }
+    const clientId = createClientId(redirectUris);
     oauthLogger.info({ clientName, clientId }, 'Dynamic client registered');
     res.status(201).json({
       client_id: clientId,
       client_name: clientName || 'MCP Client',
-      redirect_uris: redirectUris || [],
+      redirect_uris: redirectUris,
       token_endpoint_auth_method: 'none',
+      application_type: 'native',
     });
   });
 
   // Authorization endpoint — stores Claude's params, redirects to OIDC
   router.get('/authorize', (req, res) => {
     const {
+      client_id: clientId,
       redirect_uri: redirectUri,
       state,
       code_challenge: codeChallenge,
       code_challenge_method: codeChallengeMethod,
+      resource,
     } = req.query as Record<string, string>;
 
     const issuer = getOidcIssuer();
@@ -129,8 +218,23 @@ export default function createMcpOAuthRouter(): Router {
       res.status(503).json({ error: 'OIDC provider not configured' });
       return;
     }
-    if (!redirectUri || !state || !codeChallenge) {
+    if (!clientId || !redirectUri || !state || !codeChallenge) {
       res.status(400).json({ error: 'Missing required parameters' });
+      return;
+    }
+    const registeredClient = parseClientId(clientId);
+    if (!registeredClient || !registeredClient.redirectUris.includes(redirectUri)) {
+      res.status(400).json({ error: 'invalid_client' });
+      return;
+    }
+    if ((codeChallengeMethod || 'S256') !== 'S256') {
+      res.status(400).json({ error: 'invalid_request', error_description: 'Only S256 PKCE is supported' });
+      return;
+    }
+
+    const expectedResource = mcpResource(req);
+    if (resource && resource !== expectedResource) {
+      res.status(400).json({ error: 'invalid_target' });
       return;
     }
 
@@ -143,6 +247,8 @@ export default function createMcpOAuthRouter(): Router {
       claudeCodeChallenge: codeChallenge,
       claudeCodeChallengeMethod: codeChallengeMethod || 'S256',
       pkceVerifier,
+      resource: expectedResource,
+      clientId,
       createdAt: Date.now(),
     });
 
@@ -279,6 +385,9 @@ export default function createMcpOAuthRouter(): Router {
         userClaims,
         codeChallenge: pending.claudeCodeChallenge,
         codeChallengeMethod: pending.claudeCodeChallengeMethod,
+        resource: pending.resource,
+        clientId: pending.clientId,
+        redirectUri: pending.claudeRedirectUri,
         expiresAt: Date.now() + 5 * 60 * 1000,
       });
 
@@ -306,6 +415,9 @@ export default function createMcpOAuthRouter(): Router {
       grant_type: grantType,
       code,
       code_verifier: codeVerifier,
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      resource,
     } = req.body;
 
     oauthLogger.info({ grantType }, 'Token request received');
@@ -325,18 +437,42 @@ export default function createMcpOAuthRouter(): Router {
     }
     authCodes.delete(code);
 
-    if (stored.codeChallengeMethod === 'S256') {
-      if (s256(codeVerifier) !== stored.codeChallenge) {
-        oauthLogger.warn('PKCE verification failed');
-        res.status(400).json({
-          error: 'invalid_grant',
-          error_description: 'PKCE verification failed',
-        });
-        return;
-      }
+    if (clientId !== stored.clientId || redirectUri !== stored.redirectUri) {
+      oauthLogger.warn('Client or redirect_uri mismatch on MCP token request');
+      res.status(400).json({ error: 'invalid_grant' });
+      return;
     }
 
-    // Issue our own JWT (no token passthrough per MCP spec)
+    if (typeof codeVerifier !== 'string' || !/^[A-Za-z0-9._~-]{43,128}$/.test(codeVerifier)) {
+      oauthLogger.warn('Missing or invalid PKCE verifier');
+      res.status(400).json({
+        error: 'invalid_grant',
+        error_description: 'Missing or invalid PKCE verifier',
+      });
+      return;
+    }
+
+    if (stored.codeChallengeMethod === 'S256' && s256(codeVerifier) !== stored.codeChallenge) {
+      oauthLogger.warn('PKCE verification failed');
+      res.status(400).json({
+        error: 'invalid_grant',
+        error_description: 'PKCE verification failed',
+      });
+      return;
+    }
+
+    if (resource && resource !== stored.resource) {
+      oauthLogger.warn({ resource }, 'Resource mismatch on MCP token request');
+      res.status(400).json({
+        error: 'invalid_target',
+        error_description: 'resource does not match authorization request',
+      });
+      return;
+    }
+
+    // Issue our own JWT (no token passthrough per MCP spec). The token is
+    // audience-bound to the MCP endpoint so it cannot be replayed as a general
+    // FluxHaus admin/API bearer token.
     const jwt = await new SignJWT({
       sub: stored.userClaims.sub,
       email: stored.userClaims.email,
@@ -344,6 +480,8 @@ export default function createMcpOAuthRouter(): Router {
       type: 'mcp',
     })
       .setProtectedHeader({ alg: 'HS256' })
+      .setIssuer(new URL(stored.resource).origin)
+      .setAudience(stored.resource)
       .setIssuedAt()
       .setExpirationTime(`${MCP_TOKEN_EXPIRY_SECONDS}s`)
       .sign(getMcpSigningKey());
