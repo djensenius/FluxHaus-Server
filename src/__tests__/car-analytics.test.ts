@@ -10,14 +10,14 @@ import {
   normalizeCarAnalyticsRequest,
 } from '../car-analytics';
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     }),
   },
 }));
@@ -306,7 +306,7 @@ describe('car analytics calculations', () => {
 
 describe('CarAnalyticsService', () => {
   it('builds only server-owned queries and parses a response', async () => {
-    const query = jest.fn()
+    const query = vi.fn()
       .mockResolvedValueOnce([
         {
           _time: '2026-09-01T00:00:00Z',
@@ -373,7 +373,7 @@ describe('CarAnalyticsService', () => {
   });
 
   it('chooses the all-history window from the earliest retained car sample', async () => {
-    const query = jest.fn()
+    const query = vi.fn()
       .mockResolvedValueOnce([{ _time: '2026-07-01T00:00:00Z' }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])
@@ -400,7 +400,7 @@ describe('CarAnalyticsService', () => {
       { _time: '2026-09-02T00:00:00Z', odometer: '900', battery_level: '80' },
       { _time: '2026-09-02T01:00:00Z', odometer: '905', battery_level: '79' },
     ];
-    const query = jest.fn()
+    const query = vi.fn()
       .mockResolvedValueOnce(currentTelemetry)
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([])

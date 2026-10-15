@@ -13,18 +13,21 @@ import {
 import type { DeviceTokenData, PushTokenData } from '../push-token-store';
 import { getPool } from '../db';
 
-jest.mock('../db');
-jest.mock('../logger', () => ({
-  child: () => ({
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-  }),
+vi.mock('../db');
+vi.mock('../logger', () => ({
+  __esModule: true,
+  default: {
+    child: () => ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    }),
+  },
 }));
 
-const mockQuery = jest.fn();
-(getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+const mockQuery = vi.fn();
+(getPool as vi.Mock).mockReturnValue({ query: mockQuery });
 
 beforeEach(() => {
   mockQuery.mockReset();
@@ -53,7 +56,7 @@ describe('push-token-store', () => {
     });
 
     it('skips when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       await savePushToken(sampleToken);
       expect(mockQuery).not.toHaveBeenCalled();
     });
@@ -76,7 +79,7 @@ describe('push-token-store', () => {
     });
 
     it('returns empty array when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       const result = await getPushTokensByActivityType('dishwasher');
       expect(result).toEqual([]);
     });
@@ -103,7 +106,7 @@ describe('push-token-store', () => {
     });
 
     it('skips when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       await deletePushToken('abc-token-xyz');
       expect(mockQuery).not.toHaveBeenCalled();
     });
@@ -139,7 +142,7 @@ describe('push-token-store', () => {
     });
 
     it('skips when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       await saveDeviceToken(sampleDeviceToken);
       expect(mockQuery).not.toHaveBeenCalled();
     });
@@ -163,7 +166,7 @@ describe('push-token-store', () => {
     });
 
     it('returns empty array when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       const result = await getAllDeviceTokens();
       expect(result).toEqual([]);
     });
@@ -177,7 +180,7 @@ describe('push-token-store', () => {
     });
 
     it('skips when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       await deleteDeviceToken('device-tok-xyz');
       expect(mockQuery).not.toHaveBeenCalled();
     });
@@ -208,7 +211,7 @@ describe('push-token-store', () => {
     });
 
     it('returns empty array when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       const result = await getDeviceTokensByUserAndBundle('user-123', 'bundle');
       expect(result).toEqual([]);
     });
@@ -233,7 +236,7 @@ describe('push-token-store', () => {
     });
 
     it('returns empty array when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       const result = await getApnsTokensByUser('user-123');
       expect(result).toEqual([]);
     });
@@ -258,7 +261,7 @@ describe('push-token-store', () => {
     });
 
     it('returns empty array when pool is null', async () => {
-      (getPool as jest.Mock).mockReturnValueOnce(null);
+      (getPool as vi.Mock).mockReturnValueOnce(null);
       const result = await getDeviceTokensByUser('user-123');
       expect(result).toEqual([]);
     });

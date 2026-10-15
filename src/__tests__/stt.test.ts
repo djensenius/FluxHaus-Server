@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import transcribeAudio from '../stt';
 
-jest.mock('openai');
+vi.mock('openai');
 
 describe('transcribeAudio', () => {
   afterEach(() => {
@@ -15,7 +15,7 @@ describe('transcribeAudio', () => {
     delete process.env.GOOGLE_STT_LANGUAGE;
     delete process.env.GOOGLE_STT_ENCODING;
     delete process.env.GOOGLE_STT_SAMPLE_RATE;
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   describe('OpenAI provider', () => {
@@ -25,10 +25,10 @@ describe('transcribeAudio', () => {
     });
 
     it('transcribes audio buffer and returns text', async () => {
-      const mockCreate = jest.fn().mockResolvedValue({ text: 'Turn on the lights' });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      const mockCreate = vi.fn().mockResolvedValue({ text: 'Turn on the lights' });
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         audio: { transcriptions: { create: mockCreate } },
-      }));
+      }; });
 
       const result = await transcribeAudio(Buffer.from('fake audio'), 'audio.webm');
       expect(result).toBe('Turn on the lights');
@@ -38,10 +38,10 @@ describe('transcribeAudio', () => {
     });
 
     it('defaults filename to audio.webm', async () => {
-      const mockCreate = jest.fn().mockResolvedValue({ text: 'hello' });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      const mockCreate = vi.fn().mockResolvedValue({ text: 'hello' });
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         audio: { transcriptions: { create: mockCreate } },
-      }));
+      }; });
 
       await transcribeAudio(Buffer.from(''));
       const callArg = mockCreate.mock.calls[0][0];
@@ -50,10 +50,10 @@ describe('transcribeAudio', () => {
 
     it('uses STT_MODEL when set', async () => {
       process.env.STT_MODEL = 'whisper-large';
-      const mockCreate = jest.fn().mockResolvedValue({ text: 'hello' });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      const mockCreate = vi.fn().mockResolvedValue({ text: 'hello' });
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         audio: { transcriptions: { create: mockCreate } },
-      }));
+      }; });
 
       await transcribeAudio(Buffer.from(''), 'audio.mp3');
       expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({ model: 'whisper-large' }));
@@ -74,7 +74,7 @@ describe('transcribeAudio', () => {
     });
 
     it('transcribes audio via Azure Speech REST API', async () => {
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({ RecognitionStatus: 'Success', DisplayText: 'Turn on the lights' }),
       } as Response);
@@ -92,7 +92,7 @@ describe('transcribeAudio', () => {
 
     it('uses AZURE_SPEECH_LANGUAGE when set', async () => {
       process.env.AZURE_SPEECH_LANGUAGE = 'fr-FR';
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({ RecognitionStatus: 'Success', DisplayText: 'Bonjour' }),
       } as Response);
@@ -114,7 +114,7 @@ describe('transcribeAudio', () => {
     });
 
     it('throws on non-ok HTTP response', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: false,
         status: 401,
         text: async () => 'Unauthorized',
@@ -125,7 +125,7 @@ describe('transcribeAudio', () => {
     });
 
     it('throws when RecognitionStatus is not Success', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({ RecognitionStatus: 'NoMatch' }),
       } as Response);
@@ -142,7 +142,7 @@ describe('transcribeAudio', () => {
     });
 
     it('transcribes audio via Google Speech-to-Text REST API', async () => {
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({
           results: [{ alternatives: [{ transcript: 'Turn on the lights' }] }],
@@ -158,7 +158,7 @@ describe('transcribeAudio', () => {
     });
 
     it('returns empty string when results are empty', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({ results: [] }),
       } as Response);
@@ -169,7 +169,7 @@ describe('transcribeAudio', () => {
 
     it('uses GOOGLE_STT_LANGUAGE when set', async () => {
       process.env.GOOGLE_STT_LANGUAGE = 'de-DE';
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({ results: [{ alternatives: [{ transcript: 'Hallo' }] }] }),
       } as Response);
@@ -186,7 +186,7 @@ describe('transcribeAudio', () => {
     });
 
     it('throws on non-ok HTTP response', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: false,
         status: 403,
         text: async () => 'Forbidden',
@@ -199,10 +199,10 @@ describe('transcribeAudio', () => {
 
   it('defaults to openai provider when STT_PROVIDER is unset', async () => {
     process.env.OPENAI_API_KEY = 'sk-test';
-    const mockCreate = jest.fn().mockResolvedValue({ text: 'hello' });
-    (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+    const mockCreate = vi.fn().mockResolvedValue({ text: 'hello' });
+    (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
       audio: { transcriptions: { create: mockCreate } },
-    }));
+    }; });
 
     const result = await transcribeAudio(Buffer.from(''));
     expect(result).toBe('hello');

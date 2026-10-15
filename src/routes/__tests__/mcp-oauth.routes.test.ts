@@ -3,8 +3,8 @@ import request from 'supertest';
 import createMcpOAuthRouter from '../mcp-oauth.routes';
 import { getOidcIssuer } from '../../middleware/oidc.middleware';
 
-jest.mock('../../middleware/oidc.middleware', () => ({
-  getOidcIssuer: jest.fn(),
+vi.mock('../../middleware/oidc.middleware', () => ({
+  getOidcIssuer: vi.fn(),
 }));
 
 function app() {
@@ -17,9 +17,9 @@ function app() {
 
 describe('MCP OAuth routes', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     process.env.OIDC_CLIENT_ID = 'oidc-client';
-    (getOidcIssuer as jest.Mock).mockReturnValue({
+    (getOidcIssuer as vi.Mock).mockReturnValue({
       metadata: {
         authorization_endpoint: 'https://auth.example.com/authorize',
         token_endpoint: 'https://auth.example.com/token',

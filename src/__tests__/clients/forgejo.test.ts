@@ -1,25 +1,25 @@
 import { ForgejoClient } from '../../clients/forgejo';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('ForgejoClient', () => {
   const config = { url: 'http://forgejo:3000', token: 'test-token' };
   let client: ForgejoClient;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     client = new ForgejoClient(config);
   });
 
@@ -41,7 +41,7 @@ describe('ForgejoClient', () => {
 
   describe('listRepos', () => {
     it('calls /api/v1/repos/search without owner', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => [{ id: 1, name: 'repo1' }],
       });
@@ -60,7 +60,7 @@ describe('ForgejoClient', () => {
     });
 
     it('calls /api/v1/users/:owner/repos with owner', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => [{ id: 2, name: 'repo2' }],
       });
@@ -76,7 +76,7 @@ describe('ForgejoClient', () => {
 
   describe('listIssues', () => {
     it('defaults state to open', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => [],
       });
@@ -90,7 +90,7 @@ describe('ForgejoClient', () => {
     });
 
     it('uses provided state', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => [],
       });
@@ -106,7 +106,7 @@ describe('ForgejoClient', () => {
 
   describe('listPullRequests', () => {
     it('uses explicit state param', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => [],
       });
@@ -120,7 +120,7 @@ describe('ForgejoClient', () => {
     });
 
     it('defaults state to open', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => [],
       });
@@ -136,7 +136,7 @@ describe('ForgejoClient', () => {
 
   describe('error handling', () => {
     it('throws on error response', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: false,
         status: 404,
         statusText: 'Not Found',

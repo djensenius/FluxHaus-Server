@@ -1,18 +1,18 @@
 import { AudiobookshelfClient } from '../../clients/audiobookshelf';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 const mockConfig = {
   url: 'http://abs:13378',
@@ -20,14 +20,14 @@ const mockConfig = {
 };
 
 function mockFetchOk(data: unknown) {
-  (global.fetch as jest.Mock).mockResolvedValueOnce({
+  (global.fetch as vi.Mock).mockResolvedValueOnce({
     ok: true,
     json: async () => data,
   });
 }
 
 function mockFetchError(status: number, statusText: string) {
-  (global.fetch as jest.Mock).mockResolvedValueOnce({
+  (global.fetch as vi.Mock).mockResolvedValueOnce({
     ok: false,
     status,
     statusText,
@@ -38,7 +38,7 @@ describe('AudiobookshelfClient', () => {
   let client: AudiobookshelfClient;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     client = new AudiobookshelfClient(mockConfig);
   });
 

@@ -7,9 +7,9 @@ import {
 
 function mockRes(): Partial<Response> {
   const res: Partial<Response> = {};
-  res.status = jest.fn().mockReturnValue(res);
-  res.json = jest.fn().mockReturnValue(res);
-  res.cookie = jest.fn().mockReturnValue(res);
+  res.status = vi.fn().mockReturnValue(res);
+  res.json = vi.fn().mockReturnValue(res);
+  res.cookie = vi.fn().mockReturnValue(res);
   return res;
 }
 
@@ -23,7 +23,7 @@ describe('csrfMiddleware', () => {
       session: {},
     } as unknown as Request;
     const res = mockRes() as Response;
-    const next: NextFunction = jest.fn();
+    const next: NextFunction = vi.fn();
 
     csrfMiddleware(req, res, next);
 
@@ -40,7 +40,7 @@ describe('csrfMiddleware', () => {
       session: { csrfToken: 'token-456' },
     } as unknown as Request;
     const res = mockRes() as Response;
-    const next: NextFunction = jest.fn();
+    const next: NextFunction = vi.fn();
 
     csrfMiddleware(req, res, next);
 

@@ -12,7 +12,7 @@ router.get('/alerts', requireRole('admin'), async (_req: Request, res: Response)
 });
 
 router.get('/alerts/:id', requireRole('admin'), async (req: Request, res: Response) => {
-  const rule = await getAlertRule(req.params.id);
+  const rule = await getAlertRule(String(req.params.id));
   if (!rule) {
     res.status(404).json({ error: 'Alert rule not found' });
     return;
@@ -63,7 +63,7 @@ router.post('/alerts', requireRole('admin'), async (req: Request, res: Response)
 });
 
 router.put('/alerts/:id', requireRole('admin'), async (req: Request, res: Response) => {
-  const rule = await updateAlertRule(req.params.id, req.body);
+  const rule = await updateAlertRule(String(req.params.id), req.body);
   if (!rule) {
     res.status(404).json({ error: 'Alert rule not found' });
     return;
@@ -72,7 +72,7 @@ router.put('/alerts/:id', requireRole('admin'), async (req: Request, res: Respon
 });
 
 router.delete('/alerts/:id', requireRole('admin'), async (req: Request, res: Response) => {
-  const deleted = await deleteAlertRule(req.params.id);
+  const deleted = await deleteAlertRule(String(req.params.id));
   if (!deleted) {
     res.status(404).json({ error: 'Alert rule not found' });
     return;

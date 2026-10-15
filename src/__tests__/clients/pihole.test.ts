@@ -1,15 +1,15 @@
 import { PiHoleClient } from '../../clients/pihole';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn(),
+      debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('PiHoleClient', () => {
   const mockConfig = {
@@ -18,7 +18,7 @@ describe('PiHoleClient', () => {
   };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('configured returns true when url and password are set', () => {
@@ -39,7 +39,7 @@ describe('PiHoleClient', () => {
   it('logs in before first request and uses session id', async () => {
     const client = new PiHoleClient(mockConfig);
 
-    (global.fetch as jest.Mock)
+    (global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ session: { sid: 'test-sid-123' } }),
@@ -75,7 +75,7 @@ describe('PiHoleClient', () => {
   it('retries on 401 with re-authentication', async () => {
     const client = new PiHoleClient(mockConfig);
 
-    (global.fetch as jest.Mock)
+    (global.fetch as vi.Mock)
       // Initial login
       .mockResolvedValueOnce({
         ok: true,
@@ -106,7 +106,7 @@ describe('PiHoleClient', () => {
   it('throws on login failure', async () => {
     const client = new PiHoleClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: false,
       status: 403,
       statusText: 'Forbidden',
@@ -120,7 +120,7 @@ describe('PiHoleClient', () => {
   it('throws on request failure', async () => {
     const client = new PiHoleClient(mockConfig);
 
-    (global.fetch as jest.Mock)
+    (global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ session: { sid: 'sid' } }),
@@ -139,7 +139,7 @@ describe('PiHoleClient', () => {
   it('getTopDomains passes count query param', async () => {
     const client = new PiHoleClient(mockConfig);
 
-    (global.fetch as jest.Mock)
+    (global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ session: { sid: 'sid' } }),

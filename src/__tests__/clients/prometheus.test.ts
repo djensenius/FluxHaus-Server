@@ -1,15 +1,15 @@
 import { PrometheusClient } from '../../clients/prometheus';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn(),
+      debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('PrometheusClient', () => {
   const mockConfig = {
@@ -17,7 +17,7 @@ describe('PrometheusClient', () => {
   };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('configured', () => {
@@ -35,14 +35,14 @@ describe('PrometheusClient', () => {
   it('should make requests without Authorization header', async () => {
     const client = new PrometheusClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ status: 'success', data: { result: [] } }),
     });
 
     await client.query('up');
 
-    const { headers } = (global.fetch as jest.Mock).mock.calls[0][1];
+    const { headers } = (global.fetch as vi.Mock).mock.calls[0][1];
     expect(headers).not.toHaveProperty('Authorization');
     expect(headers).toHaveProperty('Content-Type', 'application/json');
   });
@@ -51,7 +51,7 @@ describe('PrometheusClient', () => {
     const client = new PrometheusClient(mockConfig);
     const mockData = { status: 'success', data: { result: [{ value: 1 }] } };
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => mockData,
     });
@@ -68,7 +68,7 @@ describe('PrometheusClient', () => {
   it('should throw on error response', async () => {
     const client = new PrometheusClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: false,
       status: 500,
       statusText: 'Internal Server Error',
@@ -82,14 +82,14 @@ describe('PrometheusClient', () => {
   it('should call queryRange with correct params', async () => {
     const client = new PrometheusClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ status: 'success', data: { result: [] } }),
     });
 
     await client.queryRange('up', '2024-01-01T00:00:00Z', '2024-01-02T00:00:00Z', '60s');
 
-    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+    const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0] as string;
     expect(calledUrl).toContain('/api/v1/query_range');
     expect(calledUrl).toContain('query=up');
     expect(calledUrl).toContain('start=2024-01-01');

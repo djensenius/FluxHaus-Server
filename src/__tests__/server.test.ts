@@ -12,42 +12,42 @@ import { executeAICommand } from '../ai-command';
 import { getPool } from '../db';
 
 // Mock dependencies
-jest.mock('fs');
-jest.mock('../homeassistant-robot');
-jest.mock('../car');
-jest.mock('../miele');
-jest.mock('../homeconnect');
-jest.mock('../homeassistant-client');
-jest.mock('../stt', () => ({
+vi.mock('fs');
+vi.mock('../homeassistant-robot');
+vi.mock('../car');
+vi.mock('../miele');
+vi.mock('../homeconnect');
+vi.mock('../homeassistant-client');
+vi.mock('../stt', () => ({
   __esModule: true,
-  default: jest.fn().mockResolvedValue('Turn on the lights'),
+  default: vi.fn().mockResolvedValue('Turn on the lights'),
 }));
-jest.mock('../tts', () => ({
+vi.mock('../tts', () => ({
   __esModule: true,
-  default: jest.fn().mockResolvedValue(Buffer.from('fake-audio')),
+  default: vi.fn().mockResolvedValue(Buffer.from('fake-audio')),
 }));
-jest.mock('../ai-command', () => ({
-  executeAICommand: jest.fn().mockResolvedValue('Lights are on.'),
+vi.mock('../ai-command', () => ({
+  executeAICommand: vi.fn().mockResolvedValue('Lights are on.'),
 }));
-jest.mock('../db', () => ({
-  initPool: jest.fn(),
-  initDatabase: jest.fn(),
-  closePool: jest.fn(),
-  getPool: jest.fn().mockReturnValue(null),
+vi.mock('../db', () => ({
+  initPool: vi.fn(),
+  initDatabase: vi.fn(),
+  closePool: vi.fn(),
+  getPool: vi.fn().mockReturnValue(null),
 }));
-jest.mock('../influx', () => ({
-  initInflux: jest.fn(),
-  writePoint: jest.fn(),
-  flushWrites: jest.fn(),
-  closeClient: jest.fn(),
+vi.mock('../influx', () => ({
+  initInflux: vi.fn(),
+  writePoint: vi.fn(),
+  flushWrites: vi.fn(),
+  closeClient: vi.fn(),
 }));
-jest.mock('../middleware/oidc.middleware', () => {
+vi.mock('../middleware/oidc.middleware', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports, global-require
   const { Router } = require('express');
   return {
-    initOidc: jest.fn(),
-    getOidcIssuer: jest.fn().mockReturnValue(null),
-    validateBearerToken: jest.fn().mockImplementation(async (token: string) => {
+    initOidc: vi.fn(),
+    getOidcIssuer: vi.fn().mockReturnValue(null),
+    validateBearerToken: vi.fn().mockImplementation(async (token: string) => {
       if (token === 'test-oidc-token') {
         return {
           sub: 'test-user-123',
@@ -57,21 +57,21 @@ jest.mock('../middleware/oidc.middleware', () => {
       }
       return null;
     }),
-    isOidcEnabled: jest.fn().mockReturnValue(false),
-    createAuthRouter: jest.fn().mockReturnValue(Router()),
+    isOidcEnabled: vi.fn().mockReturnValue(false),
+    createAuthRouter: vi.fn().mockReturnValue(Router()),
   };
 });
 
-jest.mock('../mcp-auth', () => ({
-  verifyMcpToken: jest.fn().mockResolvedValue(null),
-  serverOrigin: jest.fn().mockReturnValue('http://localhost:8888'),
-  getMcpSigningKey: jest.fn().mockReturnValue(new Uint8Array(32)),
+vi.mock('../mcp-auth', () => ({
+  verifyMcpToken: vi.fn().mockResolvedValue(null),
+  serverOrigin: vi.fn().mockReturnValue('http://localhost:8888'),
+  getMcpSigningKey: vi.fn().mockReturnValue(new Uint8Array(32)),
 }));
 
 // Mock global fetch
-global.fetch = jest.fn(() => Promise.resolve({
+global.fetch = vi.fn(() => Promise.resolve({
   json: () => Promise.resolve({}),
-})) as jest.Mock;
+})) as vi.Mock;
 
 // Helper: base64 encode basic auth credentials
 function basicAuthHeader(user: string, pass: string): string {
@@ -91,11 +91,11 @@ describe('Server', () => {
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   afterEach(() => {
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   beforeEach(async () => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     process.env.BASIC_AUTH_PASSWORD = 'adminpassword';
     process.env.RHIZOME_PASSWORD = 'rhizomepassword';
     process.env.DEMO_PASSWORD = 'demopassword';
@@ -105,53 +105,53 @@ describe('Server', () => {
     process.env.MODERN_DOG_URL = 'https://moddogkitchener.portal.gingrapp.com/api/v1/reservations';
 
     // Setup mocks
-    (fs.existsSync as jest.Mock).mockReturnValue(true);
-    (fs.readFileSync as jest.Mock).mockReturnValue('{}');
+    (fs.existsSync as vi.Mock).mockReturnValue(true);
+    (fs.readFileSync as vi.Mock).mockReturnValue('{}');
 
     mockCleanbot = {
       cachedStatus: { batteryLevel: 100, rooms: [{ id: 2, name: 'Kitchen' }] },
-      turnOn: jest.fn(),
-      turnOff: jest.fn(),
-      cleanRooms: jest.fn(),
+      turnOn: vi.fn(),
+      turnOff: vi.fn(),
+      cleanRooms: vi.fn(),
     };
-    (HomeAssistantRobot as unknown as jest.Mock).mockImplementation(() => mockCleanbot);
+    (HomeAssistantRobot as unknown as vi.Mock).mockImplementation(function () { return mockCleanbot; });
     // Mock static methods
     /* eslint-disable @typescript-eslint/no-explicit-any */
-    (HomeAssistantRobot as any).batteryLevelStatus = jest.fn().mockReturnValue(100);
-    (HomeAssistantRobot as any).binStatus = jest.fn().mockReturnValue('OK');
-    (HomeAssistantRobot as any).runningStatus = jest.fn().mockReturnValue(false);
-    (HomeAssistantRobot as any).chargingStatus = jest.fn().mockReturnValue(false);
-    (HomeAssistantRobot as any).dockingStatus = jest.fn().mockReturnValue(false);
-    (HomeAssistantRobot as any).dockedStatus = jest.fn().mockReturnValue('Docked');
-    (HomeAssistantRobot as any).batteryStatus = jest.fn().mockReturnValue('Normal');
+    (HomeAssistantRobot as any).batteryLevelStatus = vi.fn().mockReturnValue(100);
+    (HomeAssistantRobot as any).binStatus = vi.fn().mockReturnValue('OK');
+    (HomeAssistantRobot as any).runningStatus = vi.fn().mockReturnValue(false);
+    (HomeAssistantRobot as any).chargingStatus = vi.fn().mockReturnValue(false);
+    (HomeAssistantRobot as any).dockingStatus = vi.fn().mockReturnValue(false);
+    (HomeAssistantRobot as any).dockedStatus = vi.fn().mockReturnValue('Docked');
+    (HomeAssistantRobot as any).batteryStatus = vi.fn().mockReturnValue('Normal');
     /* eslint-enable @typescript-eslint/no-explicit-any */
 
     mockCar = {
       status: {},
       odometer: 1000,
-      setStatus: jest.fn().mockResolvedValue(undefined),
-      start: jest.fn().mockResolvedValue('Started'),
-      stop: jest.fn().mockResolvedValue('Stopped'),
-      lock: jest.fn().mockResolvedValue('Locked'),
-      unlock: jest.fn().mockResolvedValue('Unlocked'),
-      resync: jest.fn(),
+      setStatus: vi.fn().mockResolvedValue(undefined),
+      start: vi.fn().mockResolvedValue('Started'),
+      stop: vi.fn().mockResolvedValue('Stopped'),
+      lock: vi.fn().mockResolvedValue('Locked'),
+      unlock: vi.fn().mockResolvedValue('Unlocked'),
+      resync: vi.fn(),
     };
-    (Car as unknown as jest.Mock).mockImplementation(() => mockCar);
+    (Car as unknown as vi.Mock).mockImplementation(function () { return mockCar; });
 
     mockMiele = {
-      getActivePrograms: jest.fn(),
-      listenEvents: jest.fn(),
+      getActivePrograms: vi.fn(),
+      listenEvents: vi.fn(),
       washer: {},
       dryer: {},
     };
-    (Miele as unknown as jest.Mock).mockImplementation(() => mockMiele);
+    (Miele as unknown as vi.Mock).mockImplementation(function () { return mockMiele; });
 
     mockHomeConnect = {
-      getActiveProgram: jest.fn(),
-      listenEvents: jest.fn(),
+      getActiveProgram: vi.fn(),
+      listenEvents: vi.fn(),
       dishwasher: {},
     };
-    (HomeConnect as unknown as jest.Mock).mockImplementation(() => mockHomeConnect);
+    (HomeConnect as unknown as vi.Mock).mockImplementation(function () { return mockHomeConnect; });
 
     app = await createServer();
   });
@@ -183,7 +183,7 @@ describe('Server', () => {
 
   it('should omit missing robot status keys', async () => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
-    (HomeAssistantRobot as any).batteryLevelStatus = jest.fn().mockReturnValue(undefined);
+    (HomeAssistantRobot as any).batteryLevelStatus = vi.fn().mockReturnValue(undefined);
     /* eslint-enable @typescript-eslint/no-explicit-any */
 
     const response = await request(app)
@@ -331,14 +331,12 @@ describe('Server', () => {
   });
 
   it('should handle deep clean', async () => {
-    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
     await request(app)
       .post('/turnOnDeepClean')
       .set('Authorization', oidcAuthHeader)
       .expect(200);
 
     expect(mockCleanbot.turnOn).toHaveBeenCalled();
-    jest.useRealTimers();
   });
 
   it('should stop deep clean', async () => {
@@ -400,9 +398,9 @@ describe('Server', () => {
   });
 
   it('should fetch schedule', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as vi.Mock).mockResolvedValue({
       ok: true,
-      json: jest.fn().mockResolvedValue({ schedule: [] }),
+      json: vi.fn().mockResolvedValue({ schedule: [] }),
     });
 
     await fetchSchedule();
@@ -424,9 +422,9 @@ describe('Server', () => {
   });
 
   it('should fetch rhizome photos', async () => {
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as vi.Mock).mockResolvedValue({
       ok: true,
-      json: jest.fn().mockResolvedValue([{ download_url: 'http://photo.url' }]),
+      json: vi.fn().mockResolvedValue([{ download_url: 'http://photo.url' }]),
     });
 
     await fetchRhizomePhotos();
@@ -447,9 +445,9 @@ describe('Server', () => {
   });
 
   describe('POST /voice', () => {
-    const mockedTranscribeAudio = jest.mocked(transcribeAudio);
-    const mockedSynthesizeSpeech = jest.mocked(synthesizeSpeech);
-    const mockedExecuteAICommand = jest.mocked(executeAICommand);
+    const mockedTranscribeAudio = vi.mocked(transcribeAudio);
+    const mockedSynthesizeSpeech = vi.mocked(synthesizeSpeech);
+    const mockedExecuteAICommand = vi.mocked(executeAICommand);
 
     beforeEach(() => {
       mockedTranscribeAudio.mockResolvedValue('Turn on the lights');
@@ -460,12 +458,12 @@ describe('Server', () => {
     // Some tests below enable the memory path by giving getPool a live pool;
     // restore the default (no DB) afterwards so it never leaks into other tests.
     afterEach(() => {
-      jest.mocked(getPool).mockReturnValue(null);
+      vi.mocked(getPool).mockReturnValue(null);
     });
 
     const enableMemoryPool = () => {
-      jest.mocked(getPool).mockReturnValue({
-        query: jest.fn().mockResolvedValue({ rows: [] }),
+      vi.mocked(getPool).mockReturnValue({
+        query: vi.fn().mockResolvedValue({ rows: [] }),
       } as never);
     };
 

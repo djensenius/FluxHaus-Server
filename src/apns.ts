@@ -1,6 +1,5 @@
-import apn from '@parse/node-apn';
-import http2 from 'http2';
-import fs from 'fs';
+import * as http2 from 'http2';
+import * as fs from 'fs';
 import { SignJWT, importPKCS8 } from 'jose';
 import logger from './logger';
 import {
@@ -10,7 +9,7 @@ import {
 
 const apnsLogger = logger.child({ subsystem: 'apns' });
 
-let provider: apn.Provider | null = null;
+let apnsConfigured = false;
 
 // Throttle tracking: activityType → last push timestamp
 const lastPushTimestamps = new Map<string, number>();
@@ -21,25 +20,16 @@ const THROTTLE_INTERVAL_MS = 15_000;
 const APPLE_REFERENCE_DATE_OFFSET = 978_307_200;
 
 export function initApns(): void {
-  const {
-    APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID, APNS_ENVIRONMENT,
-  } = process.env;
+  const { APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID } = process.env;
 
   if (!APNS_KEY_PATH || !APNS_KEY_ID || !APNS_TEAM_ID) {
+    apnsConfigured = false;
     apnsLogger.warn('APNs not configured — Live Activity push updates disabled');
     return;
   }
 
-  provider = new apn.Provider({
-    token: {
-      key: APNS_KEY_PATH,
-      keyId: APNS_KEY_ID,
-      teamId: APNS_TEAM_ID,
-    },
-    production: APNS_ENVIRONMENT !== 'development',
-  });
-
-  apnsLogger.info('APNs provider initialized');
+  apnsConfigured = true;
+  apnsLogger.info('APNs HTTP/2 provider initialized');
 }
 
 export interface WidgetDevicePayload {
@@ -60,45 +50,155 @@ export interface MultiDeviceContentState {
   devices: WidgetDevicePayload[];
 }
 
+type ApnsPushType = 'alert' | 'background' | 'liveactivity';
+
+type ApnsPushRequest = {
+  token: string;
+  topic: string;
+  payload: Record<string, unknown>;
+  pushType?: ApnsPushType;
+  priority?: 5 | 10;
+  expiration?: number;
+  channelId?: string;
+};
+
+type ApnsPushResult = {
+  ok: boolean;
+  status: number;
+  reason: string;
+};
+
+function isInvalidTokenReason(reason: string): boolean {
+  return reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken';
+}
+
+async function generateApnsJwt(): Promise<string | null> {
+  const { APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID } = process.env;
+  if (!APNS_KEY_PATH || !APNS_KEY_ID || !APNS_TEAM_ID) return null;
+
+  const keyPem = fs.readFileSync(APNS_KEY_PATH, 'utf8');
+  const key = await importPKCS8(keyPem, 'ES256');
+
+  return new SignJWT({})
+    .setProtectedHeader({ alg: 'ES256', kid: APNS_KEY_ID })
+    .setIssuer(APNS_TEAM_ID)
+    .setIssuedAt()
+    .setExpirationTime('1h')
+    .sign(key);
+}
+
+function getApnsHost(): string {
+  const env = process.env.APNS_ENVIRONMENT;
+  return env === 'development'
+    ? 'https://api.sandbox.push.apple.com:443'
+    : 'https://api.push.apple.com:443';
+}
+
+async function sendApnsPush(req: ApnsPushRequest): Promise<ApnsPushResult> {
+  if (!apnsConfigured) return { ok: false, status: 0, reason: 'not_configured' };
+
+  const jwt = await generateApnsJwt();
+  if (!jwt) return { ok: false, status: 0, reason: 'not_configured' };
+
+  return new Promise((resolve) => {
+    const client = http2.connect(getApnsHost());
+    let settled = false;
+    const finish = (result: ApnsPushResult): void => {
+      if (settled) return;
+      settled = true;
+      client.close();
+      resolve(result);
+    };
+
+    client.on('error', (err) => {
+      apnsLogger.error({ err }, 'APNs HTTP/2 connection error');
+      finish({ ok: false, status: 0, reason: 'connection_error' });
+    });
+
+    const headers: Record<string, string> = {
+      ':method': 'POST',
+      ':path': `/3/device/${req.token}`,
+      'apns-topic': req.topic,
+      authorization: `bearer ${jwt}`,
+      'content-type': 'application/json',
+    };
+    if (req.pushType) headers['apns-push-type'] = req.pushType;
+    if (req.priority) headers['apns-priority'] = String(req.priority);
+    if (req.expiration !== undefined) headers['apns-expiration'] = String(req.expiration);
+    if (req.channelId) headers['apns-channel-id'] = req.channelId;
+
+    const request = client.request(headers);
+    let responseData = '';
+    let status = 0;
+
+    request.on('response', (hdrs) => {
+      status = Number(hdrs[':status'] || 0);
+    });
+    request.on('data', (chunk: Buffer) => {
+      responseData += chunk.toString();
+    });
+    request.on('end', () => {
+      if (status >= 200 && status < 300) {
+        finish({ ok: true, status, reason: 'ok' });
+        return;
+      }
+      let reason = responseData || `status ${status}`;
+      try {
+        const parsed = JSON.parse(responseData) as { reason?: string };
+        reason = parsed.reason || reason;
+      } catch {
+        // Keep the raw response body as the reason.
+      }
+      finish({ ok: false, status, reason });
+    });
+    request.on('error', (err: Error) => {
+      apnsLogger.error({ err }, 'APNs HTTP/2 request error');
+      finish({ ok: false, status, reason: 'request_error' });
+    });
+
+    request.write(JSON.stringify(req.payload));
+    request.end();
+  });
+}
+
 export async function sendLiveActivityUpdate(
   pushToken: string,
   contentState: LiveActivityContentState,
   event: 'update' | 'end',
   activityType: string,
 ): Promise<boolean> {
-  if (!provider) {
+  if (!apnsConfigured) {
     apnsLogger.debug('APNs not initialized — skipping push');
     return false;
   }
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-
-  const notification = new apn.Notification();
-  notification.topic = `${bundleId}.push-type.liveactivity`;
-  notification.pushType = 'liveactivity';
-  notification.priority = 10;
-  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-
-  notification.rawPayload = {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
     aps: {
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: now,
       event,
       'content-state': contentState,
-      ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
-      'stale-date': Math.floor(Date.now() / 1000) + 900,
+      ...(event === 'end' ? { 'dismissal-date': now } : {}),
+      'stale-date': now + 900,
     },
   };
 
   try {
-    const result = await provider.send(notification, pushToken);
-    if (result.failed.length > 0) {
-      const failure = result.failed[0];
-      const status = failure.status || 'unknown';
-      const reason = failure.response?.reason || 'unknown';
-      apnsLogger.warn({ status, reason, activityType }, 'APNs push failed');
-
-      // Remove invalid tokens
-      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+    const result = await sendApnsPush({
+      token: pushToken,
+      topic: `${bundleId}.push-type.liveactivity`,
+      pushType: 'liveactivity',
+      priority: 10,
+      expiration: now + 3600,
+      payload,
+    });
+    if (!result.ok) {
+      apnsLogger.warn(
+        { status: result.status || 'unknown', reason: result.reason, activityType },
+        'APNs push failed',
+      );
+      if (isInvalidTokenReason(result.reason)) {
         await deletePushToken(pushToken);
         apnsLogger.info({ activityType }, 'Removed invalid push token');
       }
@@ -138,28 +238,19 @@ export async function sendPushToStart(
   contentState: LiveActivityContentState,
   channelId?: string,
 ): Promise<boolean> {
-  if (!provider) {
+  if (!apnsConfigured) {
     apnsLogger.debug('APNs not initialized — skipping push-to-start');
     return false;
   }
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-
-  const notification = new apn.Notification();
-  notification.topic = `${bundleId}.push-type.liveactivity`;
-  notification.pushType = 'liveactivity';
-  notification.priority = 10;
-  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-  if (channelId) {
-    notification.channelId = channelId;
-  }
-
-  notification.rawPayload = {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
     aps: {
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: now,
       event: 'start',
       'content-state': contentState,
-      'stale-date': Math.floor(Date.now() / 1000) + 900,
+      'stale-date': now + 900,
       'attributes-type': 'FluxWidgetAttributes',
       attributes: {
         name: contentState.device.name,
@@ -172,23 +263,28 @@ export async function sendPushToStart(
   };
 
   try {
-    const result = await provider.send(notification, deviceToken);
+    const result = await sendApnsPush({
+      token: deviceToken,
+      topic: `${bundleId}.push-type.liveactivity`,
+      pushType: 'liveactivity',
+      priority: 10,
+      expiration: now + 3600,
+      channelId,
+      payload,
+    });
     apnsLogger.info(
       {
         device: contentState.device.name,
-        sent: result.sent?.length || 0,
-        failed: result.failed?.length || 0,
-        failureReasons: result.failed?.map((f: { response?: { reason?: string } }) => f.response?.reason),
+        sent: result.ok ? 1 : 0,
+        failed: result.ok ? 0 : 1,
+        failureReasons: result.ok ? [] : [result.reason],
       },
       'Push-to-start result',
     );
-    if (result.failed.length > 0) {
-      const failure = result.failed[0];
-      const status = failure.status || 'unknown';
-      const reason = failure.response?.reason || 'unknown';
-      apnsLogger.warn({ status, reason }, 'Push-to-start failed');
+    if (!result.ok) {
+      apnsLogger.warn({ status: result.status || 'unknown', reason: result.reason }, 'Push-to-start failed');
 
-      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+      if (isInvalidTokenReason(result.reason)) {
         await deleteDeviceToken(deviceToken);
         apnsLogger.info('Removed invalid push-to-start token');
       }
@@ -210,25 +306,19 @@ export async function sendGT3PushToStart(
   deviceToken: string,
   contentState: Record<string, unknown>,
 ): Promise<boolean> {
-  if (!provider) {
+  if (!apnsConfigured) {
     apnsLogger.debug('APNs not initialized — skipping GT3 push-to-start');
     return false;
   }
 
   const bundleId = 'org.davidjensenius.GT3Companion';
-
-  const notification = new apn.Notification();
-  notification.topic = `${bundleId}.push-type.liveactivity`;
-  notification.pushType = 'liveactivity';
-  notification.priority = 10;
-  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-
-  notification.rawPayload = {
+  const now = Math.floor(Date.now() / 1000);
+  const payload = {
     aps: {
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: now,
       event: 'start',
       'content-state': contentState,
-      'stale-date': Math.floor(Date.now() / 1000) + 300,
+      'stale-date': now + 300,
       'attributes-type': 'GT3RideAttributes',
       attributes: {
         scooterName: 'GT3 Pro',
@@ -242,26 +332,29 @@ export async function sendGT3PushToStart(
   };
 
   try {
-    const result = await provider.send(notification, deviceToken);
+    const result = await sendApnsPush({
+      token: deviceToken,
+      topic: `${bundleId}.push-type.liveactivity`,
+      pushType: 'liveactivity',
+      priority: 10,
+      expiration: now + 3600,
+      payload,
+    });
     apnsLogger.info(
       {
-        sent: result.sent?.length ?? 0,
-        failed: result.failed?.length ?? 0,
-        failureReasons: result.failed?.map(
-          (f: { response?: { reason?: string } }) => f.response?.reason,
-        ),
+        sent: result.ok ? 1 : 0,
+        failed: result.ok ? 0 : 1,
+        failureReasons: result.ok ? [] : [result.reason],
       },
       'GT3 push-to-start result',
     );
-    if (result.failed.length > 0) {
-      const failure = result.failed[0];
-      const reason = failure.response?.reason || 'unknown';
-      apnsLogger.warn({ reason, tokenPrefix: deviceToken.substring(0, 8) }, 'GT3 push-to-start failed');
+    if (!result.ok) {
+      apnsLogger.warn({ reason: result.reason, tokenPrefix: deviceToken.substring(0, 8) }, 'GT3 push-to-start failed');
 
       // Only delete on definitive token invalidity — NOT on transient errors.
       // Push-to-start tokens can appear "bad" temporarily if iOS hasn't finished
       // processing the previous push, so we log but preserve the token.
-      if (reason === 'BadDeviceToken') {
+      if (result.reason === 'BadDeviceToken') {
         await deleteDeviceToken(deviceToken);
         apnsLogger.info({ tokenPrefix: deviceToken.substring(0, 8) }, 'Removed invalid GT3 push-to-start token');
       }
@@ -287,28 +380,6 @@ export async function pushToStartAll(
 
 // --- Raw HTTP/2 broadcast for Live Activities ---
 
-async function generateBroadcastJwt(): Promise<string | null> {
-  const { APNS_KEY_PATH, APNS_KEY_ID, APNS_TEAM_ID } = process.env;
-  if (!APNS_KEY_PATH || !APNS_KEY_ID || !APNS_TEAM_ID) return null;
-
-  const keyPem = fs.readFileSync(APNS_KEY_PATH, 'utf8');
-  const key = await importPKCS8(keyPem, 'ES256');
-
-  return new SignJWT({})
-    .setProtectedHeader({ alg: 'ES256', kid: APNS_KEY_ID })
-    .setIssuer(APNS_TEAM_ID)
-    .setIssuedAt()
-    .setExpirationTime('1h')
-    .sign(key);
-}
-
-function getBroadcastHost(): string {
-  const env = process.env.APNS_ENVIRONMENT;
-  return env === 'development'
-    ? 'https://api.sandbox.push.apple.com:443'
-    : 'https://api.push.apple.com:443';
-}
-
 async function sendRawBroadcast(
   channelId: string,
   payload: Record<string, unknown>,
@@ -320,11 +391,11 @@ async function sendRawBroadcast(
     return false;
   }
 
-  const jwt = await generateBroadcastJwt();
+  const jwt = await generateApnsJwt();
   if (!jwt) return false;
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-  const host = getBroadcastHost();
+  const host = getApnsHost();
   const path = `/4/broadcasts/apps/${bundleId}`;
 
   return new Promise((resolve) => {
@@ -395,35 +466,34 @@ async function sendLiveActivityUpdateToTokens(
   contentState: MultiDeviceContentState,
   event: 'update' | 'end',
 ): Promise<void> {
-  if (!provider) return;
+  if (!apnsConfigured) return;
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
 
   await Promise.allSettled(
     tokens.map(async (t) => {
-      const notification = new apn.Notification();
-      notification.topic = `${bundleId}.push-type.liveactivity`;
-      notification.pushType = 'liveactivity';
-      notification.priority = 10;
-      notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-
-      notification.rawPayload = {
+      const now = Math.floor(Date.now() / 1000);
+      const payload = {
         aps: {
-          timestamp: Math.floor(Date.now() / 1000),
+          timestamp: now,
           event,
           'content-state': contentState,
-          ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
-          'stale-date': Math.floor(Date.now() / 1000) + 900,
+          ...(event === 'end' ? { 'dismissal-date': now } : {}),
+          'stale-date': now + 900,
         },
       };
 
       try {
-        const result = await provider!.send(notification, t.activityToken);
-        if (result.failed.length > 0) {
-          const reason = result.failed[0]?.response?.reason || 'unknown';
-          if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
-            await deleteActivityToken(t.activityToken);
-          }
+        const result = await sendApnsPush({
+          token: t.activityToken,
+          topic: `${bundleId}.push-type.liveactivity`,
+          pushType: 'liveactivity',
+          priority: 10,
+          expiration: now + 3600,
+          payload,
+        });
+        if (!result.ok && isInvalidTokenReason(result.reason)) {
+          await deleteActivityToken(t.activityToken);
         }
       } catch (err) {
         apnsLogger.error({ err }, 'Activity token push error');
@@ -459,23 +529,17 @@ export async function sendMultiDevicePushToStart(
   contentState: MultiDeviceContentState,
   channelId?: string,
 ): Promise<boolean> {
-  if (!provider) return false;
+  if (!apnsConfigured) return false;
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-  const notification = new apn.Notification();
-  notification.topic = `${bundleId}.push-type.liveactivity`;
-  notification.pushType = 'liveactivity';
-  notification.priority = 10;
-  notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-  if (channelId) notification.channelId = channelId;
-
+  const now = Math.floor(Date.now() / 1000);
   const names = contentState.devices.map((d) => d.name).join(', ');
-  notification.rawPayload = {
+  const payload = {
     aps: {
-      timestamp: Math.floor(Date.now() / 1000),
+      timestamp: now,
       event: 'start',
       'content-state': contentState,
-      'stale-date': Math.floor(Date.now() / 1000) + 900,
+      'stale-date': now + 900,
       'attributes-type': 'FluxWidgetMultiAttributes',
       attributes: { name: 'Appliances' },
       alert: {
@@ -486,11 +550,18 @@ export async function sendMultiDevicePushToStart(
   };
 
   try {
-    const result = await provider.send(notification, deviceToken);
-    if (result.failed.length > 0) {
-      const reason = result.failed[0]?.response?.reason || 'unknown';
-      apnsLogger.warn({ reason }, 'Multi-device push-to-start failed');
-      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+    const result = await sendApnsPush({
+      token: deviceToken,
+      topic: `${bundleId}.push-type.liveactivity`,
+      pushType: 'liveactivity',
+      priority: 10,
+      expiration: now + 3600,
+      channelId,
+      payload,
+    });
+    if (!result.ok) {
+      apnsLogger.warn({ reason: result.reason }, 'Multi-device push-to-start failed');
+      if (isInvalidTokenReason(result.reason)) {
         await deleteDeviceToken(deviceToken);
       }
       return false;
@@ -547,35 +618,34 @@ export async function sendMultiDeviceDirectUpdate(
   contentState: MultiDeviceContentState,
   event: 'update' | 'end',
 ): Promise<void> {
-  if (!provider || tokens.length === 0) return;
+  if (!apnsConfigured || tokens.length === 0) return;
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
 
   await Promise.allSettled(
     tokens.map(async (t) => {
-      const notification = new apn.Notification();
-      notification.topic = `${bundleId}.push-type.liveactivity`;
-      notification.pushType = 'liveactivity';
-      notification.priority = 10;
-      notification.expiry = Math.floor(Date.now() / 1000) + 3600;
-
-      notification.rawPayload = {
+      const now = Math.floor(Date.now() / 1000);
+      const payload = {
         aps: {
-          timestamp: Math.floor(Date.now() / 1000),
+          timestamp: now,
           event,
           'content-state': contentState,
-          ...(event === 'end' ? { 'dismissal-date': Math.floor(Date.now() / 1000) } : {}),
-          'stale-date': Math.floor(Date.now() / 1000) + 900,
+          ...(event === 'end' ? { 'dismissal-date': now } : {}),
+          'stale-date': now + 900,
         },
       };
 
       try {
-        const result = await provider!.send(notification, t.activityToken);
-        if (result.failed.length > 0) {
-          const reason = result.failed[0]?.response?.reason || 'unknown';
-          if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
-            await deleteActivityToken(t.activityToken);
-          }
+        const result = await sendApnsPush({
+          token: t.activityToken,
+          topic: `${bundleId}.push-type.liveactivity`,
+          pushType: 'liveactivity',
+          priority: 10,
+          expiration: now + 3600,
+          payload,
+        });
+        if (!result.ok && isInvalidTokenReason(result.reason)) {
+          await deleteActivityToken(t.activityToken);
         }
       } catch (err) {
         apnsLogger.error({ err }, 'Activity token push error');
@@ -593,21 +663,28 @@ export async function sendAlertNotification(
   category?: string,
   topic?: string,
 ): Promise<boolean> {
-  if (!provider) return false;
+  if (!apnsConfigured) return false;
 
   const bundleId = topic || process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
-  const notification = new apn.Notification();
-  notification.topic = bundleId;
-  notification.sound = 'default';
-  notification.alert = { title, body };
-  notification.payload = { category: category || 'appliance_done' };
+  const payload = {
+    aps: {
+      sound: 'default',
+      alert: { title, body },
+    },
+    category: category || 'appliance_done',
+  };
 
   try {
-    const result = await provider.send(notification, token);
-    if (result.failed.length > 0) {
-      const reason = result.failed[0]?.response?.reason || 'unknown';
-      apnsLogger.warn({ reason }, 'Alert push failed');
-      if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
+    const result = await sendApnsPush({
+      token,
+      topic: bundleId,
+      pushType: 'alert',
+      priority: 10,
+      payload,
+    });
+    if (!result.ok) {
+      apnsLogger.warn({ reason: result.reason }, 'Alert push failed');
+      if (isInvalidTokenReason(result.reason)) {
         await deleteApnsToken(token);
       }
       return false;
@@ -635,26 +712,29 @@ export async function sendAlertToAll(
 export async function sendSilentPushToAll(
   tokens: Array<{ token: string }>,
 ): Promise<void> {
-  if (!provider) return;
+  if (!apnsConfigured) return;
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
 
   await Promise.allSettled(
     tokens.map(async (t) => {
-      const notification = new apn.Notification();
-      notification.topic = bundleId;
-      notification.pushType = 'background';
-      notification.priority = 5;
-      notification.contentAvailable = true;
-      notification.payload = { type: 'live-activity-refresh' };
+      const payload = {
+        aps: {
+          'content-available': 1,
+        },
+        type: 'live-activity-refresh',
+      };
 
       try {
-        const result = await provider!.send(notification, t.token);
-        if (result.failed.length > 0) {
-          const reason = result.failed[0]?.response?.reason || 'unknown';
-          if (reason === 'BadDeviceToken' || reason === 'Unregistered' || reason === 'ExpiredToken') {
-            await deleteApnsToken(t.token);
-          }
+        const result = await sendApnsPush({
+          token: t.token,
+          topic: bundleId,
+          pushType: 'background',
+          priority: 5,
+          payload,
+        });
+        if (!result.ok && isInvalidTokenReason(result.reason)) {
+          await deleteApnsToken(t.token);
         }
       } catch {
         // Silent push failures are expected sometimes; don't log as errors
@@ -664,9 +744,8 @@ export async function sendSilentPushToAll(
 }
 
 export function closeApns(): void {
-  if (provider) {
-    provider.shutdown();
-    provider = null;
+  if (apnsConfigured) {
+    apnsConfigured = false;
     apnsLogger.info('APNs provider shut down');
   }
 }

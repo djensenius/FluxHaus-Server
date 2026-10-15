@@ -2,31 +2,31 @@ import HomeAssistantMiele from '../homeassistant-miele';
 import { HomeAssistantClient } from '../homeassistant-client';
 
 // Mock HomeAssistantClient
-jest.mock('../homeassistant-client');
+vi.mock('../homeassistant-client');
 
 // Mock logger
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     }),
   },
 }));
 
 describe('HomeAssistantMiele', () => {
-  let mockClient: jest.Mocked<HomeAssistantClient>;
+  let mockClient: vi.Mocked<HomeAssistantClient>;
   let miele: HomeAssistantMiele;
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as jest.Mocked<HomeAssistantClient>;
+    vi.clearAllMocks();
+    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as vi.Mocked<HomeAssistantClient>;
 
     // Default: both devices off
-    mockClient.getState = jest.fn().mockResolvedValue({
+    mockClient.getState = vi.fn().mockResolvedValue({
       state: 'off',
       attributes: {},
     });
@@ -36,7 +36,7 @@ describe('HomeAssistantMiele', () => {
     if (miele) {
       miele.stop();
     }
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('should initialize with default washer and dryer', () => {
@@ -61,7 +61,7 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should update washer status from HA entities', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'running' });
       }
@@ -99,7 +99,7 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should update dryer status from HA entities', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'sensor.tumble_dryer') {
         return Promise.resolve({ state: 'running' });
       }
@@ -150,8 +150,8 @@ describe('HomeAssistantMiele', () => {
 
     // eslint-disable-next-line no-restricted-syntax
     for (const { haState, expectedStatus, expectedInUse } of testCases) {
-      jest.clearAllMocks();
-      mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+      vi.clearAllMocks();
+      mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
         if (entityId === 'sensor.washing_machine') {
           return Promise.resolve({ state: haState });
         }
@@ -169,7 +169,7 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should handle unknown/unavailable entity states', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'off' });
       }
@@ -198,7 +198,7 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should humanize identifier-style appliance text', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'custom_cycle' });
       }
@@ -220,7 +220,7 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should parse HH:MM time format', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'running' });
       }
@@ -241,8 +241,8 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should fire onStatusChange callback when state changes', async () => {
-    const statusChangeSpy = jest.fn();
-    mockClient.getState = jest.fn().mockResolvedValue({ state: 'running' });
+    const statusChangeSpy = vi.fn();
+    mockClient.getState = vi.fn().mockResolvedValue({ state: 'running' });
 
     miele = new HomeAssistantMiele({ client: mockClient });
     miele.onStatusChange = statusChangeSpy;
@@ -263,8 +263,8 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should not fire onStatusChange when state has not changed', async () => {
-    const statusChangeSpy = jest.fn();
-    mockClient.getState = jest.fn().mockResolvedValue({ state: 'off' });
+    const statusChangeSpy = vi.fn();
+    mockClient.getState = vi.fn().mockResolvedValue({ state: 'off' });
 
     miele = new HomeAssistantMiele({ client: mockClient });
     miele.onStatusChange = statusChangeSpy;
@@ -302,27 +302,27 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should stop polling when requested', () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     miele = new HomeAssistantMiele({
       client: mockClient,
       pollInterval: 1000,
     });
 
-    const initialCalls = (mockClient.getState as jest.Mock).mock.calls.length;
+    const initialCalls = (mockClient.getState as vi.Mock).mock.calls.length;
 
-    jest.advanceTimersByTime(1000);
-    const afterOneTick = (mockClient.getState as jest.Mock).mock.calls.length;
+    vi.advanceTimersByTime(1000);
+    const afterOneTick = (mockClient.getState as vi.Mock).mock.calls.length;
     expect(afterOneTick).toBeGreaterThan(initialCalls);
 
     miele.stop();
 
-    const afterStop = (mockClient.getState as jest.Mock).mock.calls.length;
-    jest.advanceTimersByTime(1000);
-    expect((mockClient.getState as jest.Mock).mock.calls).toHaveLength(afterStop);
+    const afterStop = (mockClient.getState as vi.Mock).mock.calls.length;
+    vi.advanceTimersByTime(1000);
+    expect((mockClient.getState as vi.Mock).mock.calls).toHaveLength(afterStop);
   });
 
   it('should handle poll errors gracefully', async () => {
-    mockClient.getState = jest.fn().mockRejectedValue(new Error('Network error'));
+    mockClient.getState = vi.fn().mockRejectedValue(new Error('Network error'));
 
     miele = new HomeAssistantMiele({ client: mockClient });
 
@@ -334,7 +334,7 @@ describe('HomeAssistantMiele', () => {
   });
 
   it('should fall back to raw state for unmapped status values', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'sensor.washing_machine') {
         return Promise.resolve({ state: 'SomeNewStatus' });
       }

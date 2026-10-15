@@ -1,9 +1,0 @@
-dist/
-build/
-server-dist/
-coverage/
-scripts/
-docs/
-.eslintrs.js
-webpack.config.js
-src/public/

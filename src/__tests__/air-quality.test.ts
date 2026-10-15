@@ -6,19 +6,19 @@ import AirQuality, {
 import { HomeAssistantClient } from '../homeassistant-client';
 import { writePoint } from '../influx';
 
-jest.mock('../homeassistant-client');
-jest.mock('../influx', () => ({
-  writePoint: jest.fn(),
+vi.mock('../homeassistant-client');
+vi.mock('../influx', () => ({
+  writePoint: vi.fn(),
 }));
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     }),
   },
 }));
@@ -49,7 +49,7 @@ describe('unit conversions', () => {
 });
 
 describe('AirQuality collector', () => {
-  let mockClient: jest.Mocked<HomeAssistantClient>;
+  let mockClient: vi.Mocked<HomeAssistantClient>;
   let aq: AirQuality;
 
   const hourly = (hours: number) => {
@@ -67,15 +67,15 @@ describe('AirQuality collector', () => {
     };
   };
 
-  const mockFetch = jest.fn(async () => ({
+  const mockFetch = vi.fn(async () => ({
     ok: true,
     json: async () => ({ hourly: hourly(6) }),
   })) as unknown as typeof fetch;
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as jest.Mocked<HomeAssistantClient>;
-    mockClient.getState = jest.fn().mockResolvedValue({ state: '4' });
+    vi.clearAllMocks();
+    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as vi.Mocked<HomeAssistantClient>;
+    mockClient.getState = vi.fn().mockResolvedValue({ state: '4' });
   });
 
   afterEach(() => {
@@ -86,7 +86,7 @@ describe('AirQuality collector', () => {
     aq = new AirQuality({ client: mockClient, fetchFn: mockFetch, pollInterval: 60_000 });
     await aq.collect();
 
-    const entities = (writePoint as jest.Mock).mock.calls.map((c) => c[2].entity_id);
+    const entities = (writePoint as vi.Mock).mock.calls.map((c) => c[2].entity_id);
     expect(entities).toContain('aqhi_open_meteo');
     expect(entities).toContain('patio_environment_canada_aqhi');
     expect(entities).toContain('pm25_open_meteo');
@@ -96,7 +96,7 @@ describe('AirQuality collector', () => {
     aq = new AirQuality({ client: mockClient, fetchFn: mockFetch, pollInterval: 60_000 });
     await aq.collect();
 
-    const pm25Call = (writePoint as jest.Mock).mock.calls.find((c) => c[2].entity_id === 'pm25_open_meteo');
+    const pm25Call = (writePoint as vi.Mock).mock.calls.find((c) => c[2].entity_id === 'pm25_open_meteo');
     expect(pm25Call).toBeDefined();
     expect(pm25Call[0]).toBe('\u03BCg/m\u00B3');
     expect(pm25Call[1].value).toBe(10);
@@ -122,7 +122,7 @@ describe('AirQuality collector', () => {
     });
     await aq.collect();
     expect(mockClient.getState).toHaveBeenCalledWith('sensor.patio_environment_canada_aqhi');
-    const url = String((mockFetch as jest.Mock).mock.calls[0][0]);
+    const url = String((mockFetch as vi.Mock).mock.calls[0][0]);
     expect(url).toContain('latitude=43.4468');
     expect(url).toContain('longitude=-80.4906');
   });

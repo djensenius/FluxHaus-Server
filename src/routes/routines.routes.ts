@@ -14,7 +14,7 @@ export default function createRoutinesRouter(services: FluxHausServices): Router
   });
 
   router.get('/routines/:id', requireRole('admin'), async (req: Request, res: Response) => {
-    const routine = await getRoutine(req.params.id);
+    const routine = await getRoutine(String(req.params.id));
     if (!routine) {
       res.status(404).json({ error: 'Routine not found' });
       return;
@@ -54,7 +54,7 @@ export default function createRoutinesRouter(services: FluxHausServices): Router
   });
 
   router.put('/routines/:id', requireRole('admin'), async (req: Request, res: Response) => {
-    const routine = await updateRoutine(req.params.id, req.body, services);
+    const routine = await updateRoutine(String(req.params.id), req.body, services);
     if (!routine) {
       res.status(404).json({ error: 'Routine not found' });
       return;
@@ -63,7 +63,7 @@ export default function createRoutinesRouter(services: FluxHausServices): Router
   });
 
   router.delete('/routines/:id', requireRole('admin'), async (req: Request, res: Response) => {
-    const deleted = await deleteRoutine(req.params.id);
+    const deleted = await deleteRoutine(String(req.params.id));
     if (!deleted) {
       res.status(404).json({ error: 'Routine not found' });
       return;

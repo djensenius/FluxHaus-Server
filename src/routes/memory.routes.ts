@@ -24,7 +24,7 @@ router.delete('/memories/:id', csrfMiddleware, async (req, res) => {
     return;
   }
   try {
-    const deleted = await deleteMemory(req.user.sub, req.params.id);
+    const deleted = await deleteMemory(req.user.sub, String(req.params.id));
     if (!deleted) {
       res.status(404).json({ error: 'Memory not found' });
       return;

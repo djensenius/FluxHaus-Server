@@ -1,25 +1,25 @@
 import { GrafanaClient } from '../../clients/grafana';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('GrafanaClient', () => {
   const mockConfig = { url: 'http://grafana:3000', user: 'admin', password: 'secret' };
   const credentials = Buffer.from('admin:secret').toString('base64');
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('configured', () => {
@@ -44,7 +44,7 @@ describe('GrafanaClient', () => {
       const client = new GrafanaClient(mockConfig);
       const mockData = [{ uid: 'abc', title: 'Dashboard 1' }];
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => mockData,
       });
@@ -69,7 +69,7 @@ describe('GrafanaClient', () => {
       const client = new GrafanaClient(mockConfig);
       const query = { refId: 'A', expr: 'up' };
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ results: {} }),
       });
@@ -97,14 +97,14 @@ describe('GrafanaClient', () => {
       const fromDate = '2024-01-01T00:00:00Z';
       const toDate = '2024-01-02T00:00:00Z';
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ([]),
       });
 
       await client.getAnnotations(fromDate, toDate);
 
-      const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0] as string;
       expect(calledUrl).toContain(`from=${new Date(fromDate).getTime()}`);
       expect(calledUrl).toContain(`to=${new Date(toDate).getTime()}`);
     });
@@ -114,7 +114,7 @@ describe('GrafanaClient', () => {
     it('throws on non-ok response', async () => {
       const client = new GrafanaClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',

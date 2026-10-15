@@ -1,18 +1,18 @@
 import { UniFiClient } from '../../clients/unifi';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('UniFiClient', () => {
   const config = {
@@ -25,7 +25,7 @@ describe('UniFiClient', () => {
   let client: UniFiClient;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     client = new UniFiClient(config);
   });
 
@@ -56,7 +56,7 @@ describe('UniFiClient', () => {
     it('uses X-API-Key header without login when apiKey is set', async () => {
       const apiKeyClient = new UniFiClient({ ...config, apiKey: 'my-api-key' });
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ data: [{ health: 'ok' }] }),
       });
@@ -78,7 +78,7 @@ describe('UniFiClient', () => {
 
   describe('login + request flow', () => {
     it('logs in then makes the actual request with cookie', async () => {
-      (global.fetch as jest.Mock)
+      (global.fetch as vi.Mock)
         .mockResolvedValueOnce({
           ok: true,
           headers: { get: (h: string) => (h === 'set-cookie' ? 'unifises=abc123; path=/' : null) },
@@ -120,7 +120,7 @@ describe('UniFiClient', () => {
     it('uses /api/auth/login and /proxy/network prefix for UDM', async () => {
       const udmClient = new UniFiClient({ ...config, isUdm: true });
 
-      (global.fetch as jest.Mock)
+      (global.fetch as vi.Mock)
         .mockResolvedValueOnce({
           ok: true,
           headers: { get: (h: string) => (h === 'set-cookie' ? 'TOKEN=xyz; path=/' : null) },
@@ -153,7 +153,7 @@ describe('UniFiClient', () => {
 
   describe('401 retry', () => {
     it('re-authenticates and retries on 401', async () => {
-      (global.fetch as jest.Mock)
+      (global.fetch as vi.Mock)
         // First: initial login succeeds
         .mockResolvedValueOnce({
           ok: true,
@@ -187,7 +187,7 @@ describe('UniFiClient', () => {
 
   describe('login failure', () => {
     it('throws on failed login', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: false,
         status: 403,
         statusText: 'Forbidden',

@@ -2,33 +2,33 @@ import HomeAssistantRobot from '../homeassistant-robot';
 import { HomeAssistantClient } from '../homeassistant-client';
 
 // Mock HomeAssistantClient
-jest.mock('../homeassistant-client');
+vi.mock('../homeassistant-client');
 
 describe('HomeAssistantRobot', () => {
-  let mockClient: jest.Mocked<HomeAssistantClient>;
+  let mockClient: vi.Mocked<HomeAssistantClient>;
   let robot: HomeAssistantRobot;
   const entityId = 'vacuum.test_robot';
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     // Don't use fake timers globally, only where needed
 
-    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as jest.Mocked<HomeAssistantClient>;
-    mockClient.getState = jest.fn().mockResolvedValue({
+    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as vi.Mocked<HomeAssistantClient>;
+    mockClient.getState = vi.fn().mockResolvedValue({
       state: 'docked',
       attributes: {
         battery_level: 100,
         bin_full: false,
       },
     });
-    mockClient.callService = jest.fn().mockResolvedValue(undefined);
+    mockClient.callService = vi.fn().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
     if (robot) {
       robot.stop();
     }
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('should poll status on initialization', async () => {
@@ -220,7 +220,7 @@ describe('HomeAssistantRobot', () => {
   });
 
   it('should handle poll errors gracefully', async () => {
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation();
     mockClient.getState.mockRejectedValue(new Error('Network error'));
 
     robot = new HomeAssistantRobot({
@@ -236,7 +236,7 @@ describe('HomeAssistantRobot', () => {
   });
 
   it('should handle turn on errors', async () => {
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation();
     mockClient.callService.mockRejectedValue(new Error('Service error'));
 
     robot = new HomeAssistantRobot({
@@ -252,7 +252,7 @@ describe('HomeAssistantRobot', () => {
   });
 
   it('should handle turn off errors', async () => {
-    const consoleSpy = jest.spyOn(console, 'error').mockImplementation();
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation();
     mockClient.callService.mockRejectedValue(new Error('Service error'));
 
     robot = new HomeAssistantRobot({
@@ -268,7 +268,7 @@ describe('HomeAssistantRobot', () => {
   });
 
   it('should identify (warn only)', () => {
-    const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
+    const consoleSpy = vi.spyOn(console, 'warn').mockImplementation();
     robot = new HomeAssistantRobot({
       name: 'Test Robot',
       entityId,
@@ -281,7 +281,7 @@ describe('HomeAssistantRobot', () => {
   });
 
   it('should stop polling when requested', () => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
     robot = new HomeAssistantRobot({
       name: 'Test Robot',
       entityId,
@@ -291,12 +291,12 @@ describe('HomeAssistantRobot', () => {
 
     expect(mockClient.getState).toHaveBeenCalledTimes(1);
 
-    jest.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(1000);
     expect(mockClient.getState).toHaveBeenCalledTimes(2);
 
     robot.stop();
 
-    jest.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(1000);
     expect(mockClient.getState).toHaveBeenCalledTimes(2); // Should not increase
   });
 
@@ -335,7 +335,7 @@ describe('HomeAssistantRobot', () => {
       },
     };
 
-    (mockClient.getState as jest.Mock).mockResolvedValue(mockState);
+    (mockClient.getState as vi.Mock).mockResolvedValue(mockState);
 
     // Trigger poll
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -383,7 +383,7 @@ describe('HomeAssistantRobot', () => {
     });
 
     const now = Date.now();
-    jest.spyOn(Date, 'now').mockReturnValue(now);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
 
     await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
 
@@ -391,7 +391,7 @@ describe('HomeAssistantRobot', () => {
     expect(robot.cachedStatus.timeStarted).toBeDefined();
     expect(robot.cachedStatus.timeStarted?.getTime()).toBe(now - cleaningTime * 60 * 1000);
 
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('should set timeStarted when starting to run if cleaning_time is missing', async () => {
@@ -418,7 +418,7 @@ describe('HomeAssistantRobot', () => {
     });
 
     const now = Date.now();
-    jest.spyOn(Date, 'now').mockReturnValue(now);
+    vi.spyOn(Date, 'now').mockReturnValue(now);
 
     // Trigger poll manually or wait for interval (but we mocked timers in other tests,
     // here we rely on manual poll or just calling updateStatus logic via poll)
@@ -432,7 +432,7 @@ describe('HomeAssistantRobot', () => {
     expect(robot.cachedStatus.timeStarted).toBeDefined();
     expect(robot.cachedStatus.timeStarted?.getTime()).toBe(now);
 
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   it('should use last_changed for timeStarted on server restart while already running', async () => {

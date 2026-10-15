@@ -1,7 +1,7 @@
 import { HomeAssistantClient } from '../homeassistant-client';
 
 // Mock global fetch
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('HomeAssistantClient', () => {
   const mockConfig = {
@@ -10,14 +10,14 @@ describe('HomeAssistantClient', () => {
   };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('should make requests with correct headers', async () => {
     const client = new HomeAssistantClient(mockConfig);
 
     // Mock response
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ state: 'on' }),
     });
@@ -39,7 +39,7 @@ describe('HomeAssistantClient', () => {
   it('should handle request errors', async () => {
     const client = new HomeAssistantClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: false,
       status: 401,
       statusText: 'Unauthorized',

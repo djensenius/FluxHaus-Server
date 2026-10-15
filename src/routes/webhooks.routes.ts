@@ -35,7 +35,7 @@ export default function createWebhooksRouter(services: FluxHausServices): Router
   });
 
   router.delete('/webhooks/:id', requireRole('admin'), async (req: Request, res: Response) => {
-    const deleted = await deleteToken(req.params.id);
+    const deleted = await deleteToken(String(req.params.id));
     if (!deleted) {
       res.status(404).json({ error: 'Webhook token not found' });
       return;
@@ -49,12 +49,12 @@ export default function createWebhooksRouter(services: FluxHausServices): Router
       res.status(400).json({ error: 'enabled is required' });
       return;
     }
-    const updated = await toggleToken(req.params.id, enabled);
+    const updated = await toggleToken(String(req.params.id), enabled);
     if (!updated) {
       res.status(404).json({ error: 'Webhook token not found' });
       return;
     }
-    res.json({ id: req.params.id, enabled });
+    res.json({ id: String(req.params.id), enabled });
   });
 
   // ── Trigger endpoint (authenticated via webhook token) ──

@@ -6,32 +6,35 @@ import * as apnsChannels from '../apns-channels';
 import * as laSubs from '../la-subscriptions';
 import * as pushTokenStore from '../push-token-store';
 
-jest.mock('../apns');
-jest.mock('../apns-channels');
-jest.mock('../push-token-store');
-jest.mock('../la-subscriptions');
-jest.mock('../logger', () => ({
-  child: () => ({
-    info: jest.fn(),
-    warn: jest.fn(),
-    error: jest.fn(),
-    debug: jest.fn(),
-  }),
+vi.mock('../apns');
+vi.mock('../apns-channels');
+vi.mock('../push-token-store');
+vi.mock('../la-subscriptions');
+vi.mock('../logger', () => ({
+  __esModule: true,
+  default: {
+    child: () => ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    }),
+  },
 }));
 
-const mockGetChannelId = apnsChannels.getChannelId as jest.Mock;
-const mockGetFilteredApnsTokens = laSubs.getApnsTokensForDeviceType as jest.Mock;
-const mockMultiDeviceBroadcast = apns.sendMultiDeviceBroadcast as jest.Mock;
-const mockDirectUpdate = apns.sendMultiDeviceDirectUpdate as jest.Mock;
-const mockSendAlertToAll = apns.sendAlertToAll as jest.Mock;
-const mockGetSubscribedTokens = laSubs.getSubscribedDeviceTokens as jest.Mock;
-const mockMultiPushToStart = apns.multiDevicePushToStartAll as jest.Mock;
-const mockSendSilentPush = apns.sendSilentPushToAll as jest.Mock;
-const mockGetAllApnsTokens = pushTokenStore.getAllApnsTokens as jest.Mock;
-const mockGetAllActivityTokens = pushTokenStore.getAllActivityTokens as jest.Mock;
+const mockGetChannelId = apnsChannels.getChannelId as vi.Mock;
+const mockGetFilteredApnsTokens = laSubs.getApnsTokensForDeviceType as vi.Mock;
+const mockMultiDeviceBroadcast = apns.sendMultiDeviceBroadcast as vi.Mock;
+const mockDirectUpdate = apns.sendMultiDeviceDirectUpdate as vi.Mock;
+const mockSendAlertToAll = apns.sendAlertToAll as vi.Mock;
+const mockGetSubscribedTokens = laSubs.getSubscribedDeviceTokens as vi.Mock;
+const mockMultiPushToStart = apns.multiDevicePushToStartAll as vi.Mock;
+const mockSendSilentPush = apns.sendSilentPushToAll as vi.Mock;
+const mockGetAllApnsTokens = pushTokenStore.getAllApnsTokens as vi.Mock;
+const mockGetAllActivityTokens = pushTokenStore.getAllActivityTokens as vi.Mock;
 
 beforeEach(() => {
-  jest.useFakeTimers();
+  vi.useFakeTimers();
   mockGetChannelId.mockReset();
   mockGetFilteredApnsTokens.mockReset();
   mockMultiDeviceBroadcast.mockReset();
@@ -54,7 +57,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  jest.useRealTimers();
+  vi.useRealTimers();
 });
 
 describe('live-activity-hooks (consolidated)', () => {
@@ -87,7 +90,7 @@ describe('live-activity-hooks (consolidated)', () => {
         name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });
       mockMultiDeviceBroadcast.mockClear();
-      jest.setSystemTime(Date.now() + 120_000);
+      vi.setSystemTime(Date.now() + 120_000);
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
       });
@@ -105,7 +108,7 @@ describe('live-activity-hooks (consolidated)', () => {
 
   describe('onDishwasherStatusChange', () => {
     it('includes dishwasher in consolidated broadcast', async () => {
-      jest.setSystemTime(Date.now() + 120_000);
+      vi.setSystemTime(Date.now() + 120_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       await onDishwasherStatusChange({
         operationState: 'Run',
@@ -124,7 +127,7 @@ describe('live-activity-hooks (consolidated)', () => {
 
   describe('onRobotStatusChange', () => {
     it('includes robot in consolidated broadcast', async () => {
-      jest.setSystemTime(Date.now() + 240_000);
+      vi.setSystemTime(Date.now() + 240_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       await onRobotStatusChange('Cleanbot', {
         running: true,
@@ -150,7 +153,7 @@ describe('live-activity-hooks (consolidated)', () => {
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 30, timeRemaining: 60, inUse: true,
       });
-      jest.setSystemTime(Date.now() + 120_000);
+      vi.setSystemTime(Date.now() + 120_000);
       await onMieleStatusChange('washer', {
         name: 'Washing machine', timeRunning: 0, timeRemaining: 0, inUse: false,
       });
@@ -167,7 +170,7 @@ describe('live-activity-hooks (consolidated)', () => {
   describe('broadcast serialization', () => {
     it('does not throw when overlapping broadcastConsolidated calls are serialized', async () => {
       // Advance well past any throttle from prior tests (module state persists)
-      jest.setSystemTime(Date.now() + 300_000);
+      vi.setSystemTime(Date.now() + 300_000);
       mockMultiDeviceBroadcast.mockResolvedValue(true);
       mockGetChannelId.mockResolvedValue('ch');
       mockGetAllActivityTokens.mockResolvedValue([]);
@@ -209,7 +212,7 @@ describe('live-activity-hooks (consolidated)', () => {
       });
 
       // Advance past cooldown
-      jest.setSystemTime(Date.now() + 60_000);
+      vi.setSystemTime(Date.now() + 60_000);
       mockMultiPushToStart.mockClear();
 
       await onPushToStartTokenRegistered('new-token');
@@ -241,7 +244,7 @@ describe('live-activity-hooks (consolidated)', () => {
       });
 
       // Advance past cooldown, send first catch-up
-      jest.setSystemTime(Date.now() + 60_000);
+      vi.setSystemTime(Date.now() + 60_000);
       await onPushToStartTokenRegistered('same-token');
       mockMultiPushToStart.mockClear();
 
@@ -257,7 +260,7 @@ describe('live-activity-hooks (consolidated)', () => {
 
   describe('delayed start - dishwasher', () => {
     it('treats DelayedStart as not running', async () => {
-      jest.setSystemTime(Date.now() + 500_000);
+      vi.setSystemTime(Date.now() + 500_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
 
@@ -278,7 +281,7 @@ describe('live-activity-hooks (consolidated)', () => {
     });
 
     it('treats DelayedStart with programProgress > 0 as not running', async () => {
-      jest.setSystemTime(Date.now() + 500_000);
+      vi.setSystemTime(Date.now() + 500_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
 
@@ -301,7 +304,7 @@ describe('live-activity-hooks (consolidated)', () => {
 
   describe('delayed start - Miele', () => {
     it('treats programmed identifier status as not running', async () => {
-      jest.setSystemTime(Date.now() + 600_000);
+      vi.setSystemTime(Date.now() + 600_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
 
@@ -322,7 +325,7 @@ describe('live-activity-hooks (consolidated)', () => {
     });
 
     it('treats waiting-to-start identifier status as not running', async () => {
-      jest.setSystemTime(Date.now() + 600_000);
+      vi.setSystemTime(Date.now() + 600_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
       mockMultiDeviceBroadcast.mockClear();
 
@@ -343,7 +346,7 @@ describe('live-activity-hooks (consolidated)', () => {
     });
 
     it('starts Live Activity when delayed start transitions to running', async () => {
-      jest.setSystemTime(Date.now() + 700_000);
+      vi.setSystemTime(Date.now() + 700_000);
       mockGetChannelId.mockResolvedValue('ch-consolidated');
 
       // First: programmed (not running)
@@ -355,7 +358,7 @@ describe('live-activity-hooks (consolidated)', () => {
         inUse: true,
       });
 
-      jest.setSystemTime(Date.now() + 800_000);
+      vi.setSystemTime(Date.now() + 800_000);
       mockMultiDeviceBroadcast.mockClear();
 
       // Then: transitions to running

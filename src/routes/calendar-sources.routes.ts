@@ -48,7 +48,7 @@ router.patch('/calendar-sources/:id', csrfMiddleware, async (req, res) => {
   try {
     const source = await updateCalendarSource(
       req.user.sub,
-      req.params.id,
+      String(req.params.id),
       req.body as CalendarSourcePatch,
     );
     res.json(sanitizeCalendarSource(source));
@@ -65,7 +65,7 @@ router.delete('/calendar-sources/:id', csrfMiddleware, async (req, res) => {
     return;
   }
   try {
-    await deleteCalendarSource(req.user.sub, req.params.id);
+    await deleteCalendarSource(req.user.sub, String(req.params.id));
     res.status(204).send();
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown error';

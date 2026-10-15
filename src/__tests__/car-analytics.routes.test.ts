@@ -4,14 +4,14 @@ import request from 'supertest';
 import { CarAnalyticsService } from '../car-analytics';
 import createCarAnalyticsRouter from '../routes/car-analytics.routes';
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     }),
   },
 }));
@@ -36,7 +36,7 @@ describe('car analytics route', () => {
       dataQuality: { coveragePercent: 100 },
     };
     const service = {
-      analyze: jest.fn().mockResolvedValue(response),
+      analyze: vi.fn().mockResolvedValue(response),
     } as unknown as CarAnalyticsService;
     const result = await request(buildApp(service))
       .get('/analytics/car?range=30d&topic=charging')
@@ -72,7 +72,7 @@ describe('car analytics route', () => {
 
   it('returns 502 without leaking an upstream error', async () => {
     const service = {
-      analyze: jest.fn().mockRejectedValue(new Error('token details')),
+      analyze: vi.fn().mockRejectedValue(new Error('token details')),
     } as unknown as CarAnalyticsService;
     const response = await request(buildApp(service))
       .get('/analytics/car')
@@ -82,7 +82,7 @@ describe('car analytics route', () => {
 
   it('handles browser CORS preflight', async () => {
     const service = {
-      analyze: jest.fn(),
+      analyze: vi.fn(),
     } as unknown as CarAnalyticsService;
     const app = express();
     app.use(createCarAnalyticsRouter(service, cors({

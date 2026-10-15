@@ -1,21 +1,21 @@
 import { KagiClient } from '../../clients/kagi';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn(),
+      debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('KagiClient', () => {
   const mockConfig = { apiKey: 'test-kagi-key' };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   it('configured returns true when apiKey is set', () => {
@@ -30,7 +30,7 @@ describe('KagiClient', () => {
 
   it('search sends correct request and parses results', async () => {
     const client = new KagiClient(mockConfig);
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         data: [
@@ -57,7 +57,7 @@ describe('KagiClient', () => {
       }),
     );
 
-    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
+    const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0];
     expect(calledUrl).toContain('q=test+query');
     expect(calledUrl).toContain('limit=5');
 
@@ -80,20 +80,20 @@ describe('KagiClient', () => {
 
   it('search without limit omits limit param', async () => {
     const client = new KagiClient(mockConfig);
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ data: [] }),
     });
 
     await client.search('hello');
 
-    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
+    const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0];
     expect(calledUrl).not.toContain('limit=');
   });
 
   it('throws on API error', async () => {
     const client = new KagiClient(mockConfig);
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: false,
       status: 401,
       statusText: 'Unauthorized',
@@ -104,7 +104,7 @@ describe('KagiClient', () => {
 
   it('summarize sends correct request and returns summary', async () => {
     const client = new KagiClient(mockConfig);
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
         data: {
@@ -116,7 +116,7 @@ describe('KagiClient', () => {
 
     const result = await client.summarize('https://example.com/article');
 
-    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
+    const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0];
     expect(calledUrl).toContain('https://kagi.com/api/v0/summarize');
     expect(calledUrl).toContain('url=');
     expect(calledUrl).toContain('engine=cecil');
@@ -129,14 +129,14 @@ describe('KagiClient', () => {
 
   it('summarize uses specified engine', async () => {
     const client = new KagiClient(mockConfig);
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({ data: { output: 'Summary', tokens: 100 } }),
     });
 
     await client.summarize('https://example.com', 'muriel');
 
-    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
+    const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0];
     expect(calledUrl).toContain('engine=muriel');
   });
 });

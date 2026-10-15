@@ -4,13 +4,13 @@ import HomeConnect from '../homeconnect';
 import { writeError } from '../errors';
 import { getToken, saveToken } from '../token-store';
 
-jest.mock('fs');
-jest.mock('fetch-sse');
-jest.mock('../errors');
-jest.mock('../token-store');
+vi.mock('fs');
+vi.mock('fetch-sse');
+vi.mock('../errors');
+vi.mock('../token-store');
 
 // Mock global fetch
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('HomeConnect', () => {
   let homeConnect: HomeConnect;
@@ -18,13 +18,13 @@ describe('HomeConnect', () => {
   const mockClientSecret = 'test-client-secret';
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    jest.useFakeTimers();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
     homeConnect = new HomeConnect(mockClientId, mockClientSecret);
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('should initialize correctly', () => {
@@ -40,8 +40,8 @@ describe('HomeConnect', () => {
       user_code: '1234',
       device_code: 'device-code',
     };
-    (global.fetch as jest.Mock).mockResolvedValue({
-      json: jest.fn().mockResolvedValue(mockResponse),
+    (global.fetch as vi.Mock).mockResolvedValue({
+      json: vi.fn().mockResolvedValue(mockResponse),
     });
 
     await homeConnect.authorize();
@@ -55,16 +55,16 @@ describe('HomeConnect', () => {
       access_token: 'new-token',
       expires_in: 3600,
     };
-    (global.fetch as jest.Mock).mockResolvedValue({
-      json: jest.fn().mockResolvedValue(mockResponse),
+    (global.fetch as vi.Mock).mockResolvedValue({
+      json: vi.fn().mockResolvedValue(mockResponse),
     });
-    (saveToken as jest.Mock).mockResolvedValue(undefined);
+    (saveToken as vi.Mock).mockResolvedValue(undefined);
 
     // Start getToken
     homeConnect.getToken();
 
     // Fast-forward time to trigger interval
-    jest.advanceTimersByTime(10000);
+    vi.advanceTimersByTime(10000);
 
     // Wait for any pending promises to resolve
     await Promise.resolve();
@@ -81,7 +81,7 @@ describe('HomeConnect', () => {
   });
 
   it('should refresh token', async () => {
-    (getToken as jest.Mock).mockResolvedValue({
+    (getToken as vi.Mock).mockResolvedValue({
       refresh_token: 'old-refresh-token',
       expires_in: 3600,
       timestamp: new Date().toISOString(),
@@ -92,10 +92,10 @@ describe('HomeConnect', () => {
       id_token: 'new-id-token',
       expires_in: 3600,
     };
-    (global.fetch as jest.Mock).mockResolvedValue({
-      json: jest.fn().mockResolvedValue(mockResponse),
+    (global.fetch as vi.Mock).mockResolvedValue({
+      json: vi.fn().mockResolvedValue(mockResponse),
     });
-    (saveToken as jest.Mock).mockResolvedValue(undefined);
+    (saveToken as vi.Mock).mockResolvedValue(undefined);
 
     await homeConnect.refreshToken();
 
@@ -110,7 +110,7 @@ describe('HomeConnect', () => {
   });
 
   it('should warn if refreshing token without auth', async () => {
-    (getToken as jest.Mock).mockResolvedValue(null);
+    (getToken as vi.Mock).mockResolvedValue(null);
 
     await homeConnect.refreshToken();
 
@@ -118,7 +118,7 @@ describe('HomeConnect', () => {
   });
 
   it('should get status', async () => {
-    (getToken as jest.Mock).mockResolvedValue({
+    (getToken as vi.Mock).mockResolvedValue({
       id_token: 'valid-token',
       timestamp: new Date().toISOString(),
       expires_in: 3600,
@@ -133,8 +133,8 @@ describe('HomeConnect', () => {
       },
     };
 
-    (global.fetch as jest.Mock).mockResolvedValue({
-      json: jest.fn().mockResolvedValue(mockStatus),
+    (global.fetch as vi.Mock).mockResolvedValue({
+      json: vi.fn().mockResolvedValue(mockStatus),
     });
 
     await homeConnect.getStatus();
@@ -177,7 +177,7 @@ describe('HomeConnect', () => {
   });
 
   it('should get active program', async () => {
-    (getToken as jest.Mock).mockResolvedValue({
+    (getToken as vi.Mock).mockResolvedValue({
       id_token: 'valid-token',
       timestamp: new Date().toISOString(),
       expires_in: 3600,
@@ -187,8 +187,8 @@ describe('HomeConnect', () => {
       data: { key: 'Dishcare.Dishwasher.Program.Eco50' },
     };
 
-    (global.fetch as jest.Mock).mockResolvedValue({
-      json: jest.fn().mockResolvedValue(mockProgram),
+    (global.fetch as vi.Mock).mockResolvedValue({
+      json: vi.fn().mockResolvedValue(mockProgram),
     });
 
     await homeConnect.getActiveProgram();
@@ -206,7 +206,7 @@ describe('HomeConnect', () => {
   });
 
   it('should listen events', async () => {
-    (getToken as jest.Mock).mockResolvedValue({
+    (getToken as vi.Mock).mockResolvedValue({
       id_token: 'valid-token',
       timestamp: new Date().toISOString(),
       expires_in: 3600,
@@ -214,8 +214,8 @@ describe('HomeConnect', () => {
 
     // Mock getStatus to avoid failure
     const mockStatus = { data: { status: [] } };
-    (global.fetch as jest.Mock).mockResolvedValue({
-      json: jest.fn().mockResolvedValue(mockStatus),
+    (global.fetch as vi.Mock).mockResolvedValue({
+      json: vi.fn().mockResolvedValue(mockStatus),
     });
 
     await homeConnect.listenEvents();

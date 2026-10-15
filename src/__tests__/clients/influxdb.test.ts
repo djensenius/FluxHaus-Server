@@ -1,15 +1,15 @@
 import { InfluxDBClient } from '../../clients/influxdb';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn(),
+      debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('InfluxDBClient', () => {
   const mockConfig = {
@@ -20,7 +20,7 @@ describe('InfluxDBClient', () => {
   };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('configured', () => {
@@ -49,7 +49,7 @@ describe('InfluxDBClient', () => {
     const client = new InfluxDBClient(mockConfig);
     const csvResponse = '#group,false\n,result,table,_time,_value\n,,0,2024-01-01T00:00:00Z,42\n';
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       text: async () => csvResponse,
     });
@@ -75,7 +75,7 @@ describe('InfluxDBClient', () => {
   it('should throw on error response', async () => {
     const client = new InfluxDBClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: false,
       status: 401,
       statusText: 'Unauthorized',
@@ -91,7 +91,7 @@ describe('InfluxDBClient', () => {
     const client = new InfluxDBClient(mockConfig);
     const mockBuckets = { buckets: [{ name: 'test-bucket' }] };
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => mockBuckets,
     });
@@ -112,7 +112,7 @@ describe('InfluxDBClient', () => {
   it('should listMeasurements using a flux query containing the bucket name', async () => {
     const client = new InfluxDBClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       text: async () => '',
     });
@@ -120,7 +120,7 @@ describe('InfluxDBClient', () => {
     await client.listMeasurements();
 
     expect(global.fetch).toHaveBeenCalledTimes(1);
-    const callBody = (global.fetch as jest.Mock).mock.calls[0][1].body;
+    const callBody = (global.fetch as vi.Mock).mock.calls[0][1].body;
     expect(callBody).toContain('test-bucket');
   });
 });
