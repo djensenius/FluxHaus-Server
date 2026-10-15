@@ -21,10 +21,11 @@ module.exports = {
     rules: [
       {
         test: /\.tsx?$/,
-        loader: 'ts-loader',
+        loader: 'esbuild-loader',
         exclude: /node_modules/,
         options: {
-          configFile: 'tsconfig.json',
+          loader: 'ts',
+          target: 'node24',
         },
       },
     ],
