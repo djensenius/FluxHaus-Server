@@ -1,5 +1,18 @@
 import { Router } from 'express';
-import { Client, Issuer, generators } from 'openid-client';
+import {
+  ClientSecretPost,
+  Configuration,
+  authorizationCodeGrant,
+  buildAuthorizationUrl,
+  calculatePKCECodeChallenge,
+  discovery,
+  fetchUserInfo,
+  randomNonce,
+  randomPKCECodeVerifier,
+  randomState,
+  skipSubjectCheck,
+  type ServerMetadata,
+} from 'openid-client';
 import { JWTPayload, createRemoteJWKSet, jwtVerify } from 'jose';
 import { logEvent } from '../audit';
 import { writePoint } from '../influx';
@@ -7,8 +20,8 @@ import logger from '../logger';
 
 const oidcLogger = logger.child({ subsystem: 'oidc' });
 
-let oidcClient: Client | null = null;
-let oidcIssuer: Issuer<Client> | null = null;
+let oidcClient: Configuration | null = null;
+let oidcIssuer: { metadata: ServerMetadata } | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let jwks: ReturnType<typeof createRemoteJWKSet> | null = null;
 // Additional trusted issuers (e.g. mobile app OIDC applications on same Authentik instance)
@@ -32,14 +45,18 @@ export async function initOidc(): Promise<void> {
   }
 
   try {
-    oidcIssuer = await Issuer.discover(issuerUrl);
-    oidcClient = new oidcIssuer.Client({
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uris: redirectUri ? [redirectUri] : undefined,
-      response_types: ['code'],
-      token_endpoint_auth_method: 'client_secret_post',
-    });
+    oidcClient = await discovery(
+      new URL(issuerUrl),
+      clientId,
+      {
+        client_secret: clientSecret,
+        redirect_uris: redirectUri ? [redirectUri] : undefined,
+        response_types: ['code'],
+        token_endpoint_auth_method: 'client_secret_post',
+      },
+      ClientSecretPost(clientSecret),
+    );
+    oidcIssuer = { metadata: oidcClient.serverMetadata() };
 
     if (oidcIssuer.metadata.jwks_uri) {
       jwks = createRemoteJWKSet(new URL(oidcIssuer.metadata.jwks_uri));
@@ -65,11 +82,11 @@ export async function initOidc(): Promise<void> {
   }
 }
 
-export function getOidcClient(): Client | null {
+export function getOidcClient(): Configuration | null {
   return oidcClient;
 }
 
-export function getOidcIssuer(): Issuer<Client> | null {
+export function getOidcIssuer(): { metadata: ServerMetadata } | null {
   return oidcIssuer;
 }
 
@@ -195,7 +212,7 @@ export async function validateBearerToken(
   // Fallback to userinfo endpoint for opaque tokens
   if (oidcClient) {
     try {
-      const userinfo = await oidcClient.userinfo(token);
+      const userinfo = await fetchUserInfo(oidcClient, token, skipSubjectCheck);
       if (!userinfo.sub) return null;
       return {
         sub: userinfo.sub,
@@ -228,23 +245,23 @@ export function createAuthRouter(): Router {
     signed: true,
   };
 
-  router.get('/auth/login', (req, res) => {
+  router.get('/auth/login', async (req, res) => {
     if (!oidcClient) {
       res.status(503).json({ message: 'OIDC not configured' });
       return;
     }
 
-    const state = generators.state();
-    const nonce = generators.nonce();
-    const codeVerifier = generators.codeVerifier();
-    const codeChallenge = generators.codeChallenge(codeVerifier);
+    const state = randomState();
+    const nonce = randomNonce();
+    const codeVerifier = randomPKCECodeVerifier();
+    const codeChallenge = await calculatePKCECodeChallenge(codeVerifier);
 
     // Store OIDC flow params in signed cookies (more reliable than session for redirects)
     res.cookie('oidc_state', state, cookieOpts);
     res.cookie('oidc_nonce', nonce, cookieOpts);
     res.cookie('oidc_verifier', codeVerifier, cookieOpts);
 
-    const authUrl = oidcClient.authorizationUrl({
+    const authUrl = buildAuthorizationUrl(oidcClient, {
       scope: 'openid email profile',
       state,
       nonce,
@@ -253,7 +270,7 @@ export function createAuthRouter(): Router {
       redirect_uri: redirectUri,
     });
 
-    res.redirect(authUrl);
+    res.redirect(authUrl.toString());
   });
 
   router.get('/auth/callback', async (req, res) => {
@@ -263,14 +280,14 @@ export function createAuthRouter(): Router {
     }
 
     try {
-      const params = oidcClient.callbackParams(req);
-      const tokenSet = await oidcClient.callback(redirectUri, params, {
-        state: req.signedCookies.oidc_state,
-        nonce: req.signedCookies.oidc_nonce,
-        code_verifier: req.signedCookies.oidc_verifier,
+      const callbackUrl = new URL(req.originalUrl, `${req.protocol}://${req.get('host')}`);
+      const tokenSet = await authorizationCodeGrant(oidcClient, callbackUrl, {
+        expectedState: req.signedCookies.oidc_state,
+        expectedNonce: req.signedCookies.oidc_nonce,
+        pkceCodeVerifier: req.signedCookies.oidc_verifier,
       });
 
-      const userinfo = await oidcClient.userinfo(tokenSet.access_token!);
+      const userinfo = await fetchUserInfo(oidcClient, tokenSet.access_token!, skipSubjectCheck);
 
       // Clear OIDC flow cookies
       const clearOpts = { httpOnly: true, signed: true };
