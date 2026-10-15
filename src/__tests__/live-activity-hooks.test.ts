@@ -380,3 +380,24 @@ describe('live-activity-hooks (consolidated)', () => {
     });
   });
 });
+
+describe('silent wake pushes', () => {
+  it('wakes apps whenever the running device set changes', async () => {
+    // Past the initialization timeout and any throttle (module state persists)
+    vi.setSystemTime(Date.now() + 900_000);
+    mockGetChannelId.mockResolvedValue(null);
+    mockGetAllApnsTokens.mockResolvedValue([{ token: 'apns-1' }]);
+
+    await onRobotStatusChange('WakeBot', { running: true, batteryLevel: 80 });
+    expect(mockSendSilentPush).toHaveBeenCalledTimes(1);
+
+    mockSendSilentPush.mockClear();
+    vi.setSystemTime(Date.now() + 120_000);
+    await onRobotStatusChange('WakeBot', { running: true, batteryLevel: 79 });
+    expect(mockSendSilentPush).not.toHaveBeenCalled();
+
+    vi.setSystemTime(Date.now() + 120_000);
+    await onRobotStatusChange('WakeBot', { running: false, batteryLevel: 79 });
+    expect(mockSendSilentPush).toHaveBeenCalled();
+  });
+});

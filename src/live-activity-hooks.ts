@@ -23,6 +23,10 @@ const initializedDeviceTypes = new Set<string>();
 // Cached device states for building consolidated activity
 const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
 
+// Sorted names of running devices at the last broadcast; a change means a device
+// started or finished, which is when apps should wake to refresh widgets.
+let lastRunningDeviceKey = '';
+
 // Throttle consolidated broadcasts to once per minute
 let lastConsolidatedBroadcast = 0;
 const CONSOLIDATED_THROTTLE_MS = 60_000;
@@ -223,6 +227,9 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
   const wasAnyRunning = previousRunningState.get('consolidated') ?? false;
 
   const contentState: MultiDeviceContentState = { devices: runningDevices };
+  const runningDeviceKey = runningDevices.map((d) => d.name).sort().join(',');
+  const runningSetChanged = runningDeviceKey !== lastRunningDeviceKey;
+  lastRunningDeviceKey = runningDeviceKey;
 
   // Try to get channel, but don't block on it — push-to-start works without channels
   const channelId = await getChannelId('consolidated');
@@ -242,12 +249,16 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
         // channelId is optional — push-to-start works without it
         await multiDevicePushToStartAll(subscribedTokens, contentState, channelId ?? undefined);
       }
-      // Also send silent push to wake the app for local reconcile
+      startKeepAlive();
+    }
+
+    // Wake apps whenever a device starts or finishes (not just the first start),
+    // so they can reconcile Live Activities and reload Home Screen/StandBy widgets.
+    if (runningSetChanged && allInitialized) {
       const apnsTokens = await getAllApnsTokens();
       if (apnsTokens.length > 0) {
         await sendSilentPushToAll(apnsTokens);
       }
-      startKeepAlive();
     }
 
     // Throttle regular updates (but always send transitions)
