@@ -42,6 +42,8 @@ export interface WidgetDevicePayload {
   shortText: string;
   running: boolean;
   programName?: string;
+  startedAt?: number;
+  endsAt?: number;
 }
 
 export interface LiveActivityContentState {
