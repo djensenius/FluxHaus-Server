@@ -93,8 +93,10 @@ function isToolAnnotations(value: unknown): value is ToolAnnotations {
 }
 
 function inferToolAnnotations(name: string): ToolAnnotations | null {
+  if (name === 'grafana_query_datasource') return WRITE_CLOSED;
   const isReadOnlyName = /^(get|list|search|query|view|fetch|summarize)_/.test(name)
-    || /_(get|list|search|query|view|fetch|summarize)_/.test(name);
+    || /_(get|list|search|query|view|fetch|summarize)_/.test(name)
+    || /_(get|list|search|query|view|fetch|summarize)$/.test(name);
   if (isReadOnlyName) return READ_ONLY_CLOSED;
   if (name.startsWith('generate_')) return GENERATIVE_OPEN;
   const isMutatingName = /^(lock|unlock|start|stop|resync|clean|call|create|update|delete|save|set|approve|request)_/

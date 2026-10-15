@@ -6,7 +6,10 @@ import { closeApns, initApns, sendAlertNotification } from '../apns';
 import { deleteApnsToken } from '../push-token-store';
 
 vi.mock('fs');
-vi.mock('http2', () => ({ connect: vi.fn() }));
+vi.mock('http2', () => ({
+  connect: vi.fn(),
+  constants: { NGHTTP2_CANCEL: 8 },
+}));
 vi.mock('jose', () => ({
   importPKCS8: vi.fn().mockResolvedValue('imported-key'),
   SignJWT: vi.fn().mockImplementation(function () { return {
@@ -39,6 +42,7 @@ vi.mock('../logger', () => ({
 type MockRequestRecord = {
   headers: Record<string, string>;
   body: string;
+  stream?: EventEmitter & { close: vi.Mock; write: vi.Mock; end: vi.Mock };
 };
 
 function mockApnsResponse(status: number, body = ''): MockRequestRecord {
@@ -51,10 +55,8 @@ function mockApnsResponse(status: number, body = ''): MockRequestRecord {
     client.close = vi.fn();
     client.request = vi.fn((headers: Record<string, string>) => {
       record.headers = headers;
-      const req = new EventEmitter() as EventEmitter & {
-        write: vi.Mock;
-        end: vi.Mock;
-      };
+      const req = new EventEmitter() as EventEmitter & { close: vi.Mock; write: vi.Mock; end: vi.Mock };
+      req.close = vi.fn(() => req.emit('close'));
       req.write = vi.fn((chunk: string) => {
         record.body += chunk;
       });
@@ -63,6 +65,7 @@ function mockApnsResponse(status: number, body = ''): MockRequestRecord {
         if (body) req.emit('data', Buffer.from(body));
         req.emit('end');
       });
+      record.stream = req;
       return req;
     });
     return client;
@@ -127,5 +130,43 @@ describe('APNs HTTP/2 transport', () => {
 
     expect(sent).toBe(false);
     expect(deleteApnsToken).toHaveBeenCalledWith('bad-token');
+  });
+
+  it('reuses the bounded APNs HTTP/2 session for multiple pushes', async () => {
+    mockApnsResponse(200);
+    initApns();
+
+    await sendAlertNotification('device-token-1', 'Title 1', 'Body 1');
+    await sendAlertNotification('device-token-2', 'Title 2', 'Body 2');
+
+    expect(http2.connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('times out stalled APNs requests and closes the stream', async () => {
+    vi.useFakeTimers();
+    const record: MockRequestRecord = { headers: {}, body: '' };
+    (http2.connect as vi.Mock).mockImplementation(() => {
+      const client = new EventEmitter() as EventEmitter & { close: vi.Mock; request: vi.Mock };
+      client.close = vi.fn();
+      client.request = vi.fn((headers: Record<string, string>) => {
+        record.headers = headers;
+        const req = new EventEmitter() as EventEmitter & { close: vi.Mock; write: vi.Mock; end: vi.Mock };
+        req.close = vi.fn(() => req.emit('close'));
+        req.write = vi.fn((chunk: string) => { record.body += chunk; });
+        req.end = vi.fn();
+        record.stream = req;
+        return req;
+      });
+      return client;
+    });
+    initApns();
+
+    const sentPromise = sendAlertNotification('stalled-token', 'Title', 'Body');
+    await vi.advanceTimersByTimeAsync(10_000);
+    const sent = await sentPromise;
+
+    expect(sent).toBe(false);
+    expect(record.stream?.close).toHaveBeenCalled();
+    vi.useRealTimers();
   });
 });

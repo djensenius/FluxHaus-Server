@@ -538,6 +538,14 @@ describe('MCP Server', () => {
         readOnlyHint: true,
         destructiveHint: false,
       });
+      expect(tools.plex_search.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+      });
+      expect(tools.grafana_query_datasource.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+      });
       expect(tools.overseerr_request_media.annotations).toMatchObject({
         readOnlyHint: false,
         destructiveHint: true,

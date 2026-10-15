@@ -10,6 +10,8 @@ import {
 const apnsLogger = logger.child({ subsystem: 'apns' });
 
 let apnsConfigured = false;
+const APNS_REQUEST_TIMEOUT_MS = 10_000;
+const apnsSessions = new Map<string, http2.ClientHttp2Session>();
 
 // Throttle tracking: activityType → last push timestamp
 const lastPushTimestamps = new Map<string, number>();
@@ -94,6 +96,26 @@ function getApnsHost(): string {
     : 'https://api.push.apple.com:443';
 }
 
+function getApnsSession(host: string): http2.ClientHttp2Session {
+  const existing = apnsSessions.get(host);
+  if (existing && !existing.closed && !existing.destroyed) return existing;
+
+  const client = http2.connect(host);
+  apnsSessions.set(host, client);
+
+  const dropSession = (): void => {
+    if (apnsSessions.get(host) === client) apnsSessions.delete(host);
+  };
+  client.on('close', dropSession);
+  client.on('goaway', dropSession);
+  client.on('error', (err) => {
+    apnsLogger.error({ err }, 'APNs HTTP/2 connection error');
+    dropSession();
+  });
+
+  return client;
+}
+
 async function sendApnsPush(req: ApnsPushRequest): Promise<ApnsPushResult> {
   if (!apnsConfigured) return { ok: false, status: 0, reason: 'not_configured' };
 
@@ -101,19 +123,21 @@ async function sendApnsPush(req: ApnsPushRequest): Promise<ApnsPushResult> {
   if (!jwt) return { ok: false, status: 0, reason: 'not_configured' };
 
   return new Promise((resolve) => {
-    const client = http2.connect(getApnsHost());
+    const client = getApnsSession(getApnsHost());
+    let request: http2.ClientHttp2Stream | undefined;
     let settled = false;
+    let timeout: NodeJS.Timeout;
     const finish = (result: ApnsPushResult): void => {
       if (settled) return;
       settled = true;
-      client.close();
+      clearTimeout(timeout);
       resolve(result);
     };
 
-    client.on('error', (err) => {
-      apnsLogger.error({ err }, 'APNs HTTP/2 connection error');
-      finish({ ok: false, status: 0, reason: 'connection_error' });
-    });
+    timeout = setTimeout(() => {
+      request?.close(http2.constants.NGHTTP2_CANCEL);
+      finish({ ok: false, status: 0, reason: 'timeout' });
+    }, APNS_REQUEST_TIMEOUT_MS);
 
     const headers: Record<string, string> = {
       ':method': 'POST',
@@ -127,7 +151,7 @@ async function sendApnsPush(req: ApnsPushRequest): Promise<ApnsPushResult> {
     if (req.expiration !== undefined) headers['apns-expiration'] = String(req.expiration);
     if (req.channelId) headers['apns-channel-id'] = req.channelId;
 
-    const request = client.request(headers);
+    request = client.request(headers);
     let responseData = '';
     let status = 0;
 
@@ -154,6 +178,9 @@ async function sendApnsPush(req: ApnsPushRequest): Promise<ApnsPushResult> {
     request.on('error', (err: Error) => {
       apnsLogger.error({ err }, 'APNs HTTP/2 request error');
       finish({ ok: false, status, reason: 'request_error' });
+    });
+    request.on('close', () => {
+      if (!settled) finish({ ok: false, status, reason: 'closed' });
     });
 
     request.write(JSON.stringify(req.payload));
@@ -744,6 +771,10 @@ export async function sendSilentPushToAll(
 }
 
 export function closeApns(): void {
+  for (const session of apnsSessions.values()) {
+    session.close();
+  }
+  apnsSessions.clear();
   if (apnsConfigured) {
     apnsConfigured = false;
     apnsLogger.info('APNs provider shut down');
