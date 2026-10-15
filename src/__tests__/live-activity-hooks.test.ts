@@ -484,4 +484,18 @@ describe('timing fields', () => {
     expect(JSON.parse(JSON.stringify(contentState.device))).not.toHaveProperty('startedAt');
     expect(JSON.parse(JSON.stringify(contentState.device))).not.toHaveProperty('endsAt');
   });
+
+  it('still wakes apps after a failed channel lookup is retried', async () => {
+    vi.setSystemTime(Date.now() + 900_000);
+    mockGetAllApnsTokens.mockResolvedValue([{ token: 'apns-1' }]);
+    mockGetChannelId.mockRejectedValueOnce(new Error('store failed'));
+
+    await onRobotStatusChange('RetryBot', { running: true, batteryLevel: 80 });
+    expect(mockSendSilentPush).not.toHaveBeenCalled();
+
+    mockGetChannelId.mockResolvedValue(null);
+    vi.setSystemTime(Date.now() + 120_000);
+    await onRobotStatusChange('RetryBot', { running: true, batteryLevel: 79 });
+    expect(mockSendSilentPush).toHaveBeenCalledTimes(1);
+  });
 });

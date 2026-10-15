@@ -272,13 +272,13 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
   const contentState: MultiDeviceContentState = { devices: runningDevices };
   const runningDeviceKey = runningDevices.map((d) => d.name).sort().join(',');
   const runningSetChanged = runningDeviceKey !== lastRunningDeviceKey;
-  lastRunningDeviceKey = runningDeviceKey;
 
   // Try to get channel, but don't block on it — push-to-start works without channels
   const channelId = await getChannelId('consolidated');
 
   // Update state after attempting channel (don't lose edge if channel fails)
   previousRunningState.set('consolidated', hasRunning);
+  lastRunningDeviceKey = runningDeviceKey;
 
   if (hasRunning) {
     // Push-to-start if transitioning from no devices to at least one
