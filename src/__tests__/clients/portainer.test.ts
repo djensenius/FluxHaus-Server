@@ -1,15 +1,15 @@
 import { PortainerClient } from '../../clients/portainer';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(), error: jest.fn(), info: jest.fn(), warn: jest.fn(),
+      debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('PortainerClient', () => {
   const mockConfig = {
@@ -18,7 +18,7 @@ describe('PortainerClient', () => {
   };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('configured', () => {
@@ -42,7 +42,7 @@ describe('PortainerClient', () => {
     const client = new PortainerClient(mockConfig);
     const mockEndpoints = [{ Id: 1, Name: 'local' }];
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => mockEndpoints,
     });
@@ -65,7 +65,7 @@ describe('PortainerClient', () => {
   it('should throw on error response', async () => {
     const client = new PortainerClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: false,
       status: 403,
       statusText: 'Forbidden',
@@ -80,7 +80,7 @@ describe('PortainerClient', () => {
     const client = new PortainerClient(mockConfig);
     const mockContainers = [{ Id: 'abc', Names: ['/test'] }];
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => mockContainers,
     });
@@ -101,7 +101,7 @@ describe('PortainerClient', () => {
   it('should call containerAction with POST method and correct path', async () => {
     const client = new PortainerClient(mockConfig);
 
-    (global.fetch as jest.Mock).mockResolvedValueOnce({
+    (global.fetch as vi.Mock).mockResolvedValueOnce({
       ok: true,
       json: async () => ({}),
     });

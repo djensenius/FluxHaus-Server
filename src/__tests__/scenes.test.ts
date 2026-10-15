@@ -14,8 +14,8 @@ describe('/scenes endpoints', () => {
 
   beforeEach(() => {
     mockHaClient = {
-      getState: jest.fn(),
-      callService: jest.fn(),
+      getState: vi.fn(),
+      callService: vi.fn(),
     };
 
     app = express();

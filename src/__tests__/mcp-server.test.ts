@@ -3,12 +3,12 @@ import fs from 'fs';
 import createMcpServer from '../mcp-server';
 import { FluxHausServices } from '../services';
 
-jest.mock('fs');
-jest.mock('../homeassistant-client');
-jest.mock('../homeassistant-robot');
-jest.mock('../car');
-jest.mock('../miele');
-jest.mock('../homeconnect');
+vi.mock('fs');
+vi.mock('../homeassistant-client');
+vi.mock('../homeassistant-robot');
+vi.mock('../car');
+vi.mock('../miele');
+vi.mock('../homeconnect');
 
 // Helpers to access McpServer internals (private in TS, but testable via any cast)
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -26,7 +26,7 @@ describe('MCP Server', () => {
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
 
     mockCar = {
       status: {
@@ -45,23 +45,23 @@ describe('MCP Server', () => {
         airCtrlOn: false,
       },
       odometer: 15000,
-      lock: jest.fn().mockResolvedValue('Locked'),
-      unlock: jest.fn().mockResolvedValue('Unlocked'),
-      start: jest.fn().mockResolvedValue('Started'),
-      stop: jest.fn().mockResolvedValue('Stopped'),
-      resync: jest.fn().mockResolvedValue(undefined),
+      lock: vi.fn().mockResolvedValue('Locked'),
+      unlock: vi.fn().mockResolvedValue('Unlocked'),
+      start: vi.fn().mockResolvedValue('Started'),
+      stop: vi.fn().mockResolvedValue('Stopped'),
+      resync: vi.fn().mockResolvedValue(undefined),
     };
 
     mockCleanbot = {
       cachedStatus: { running: false, docked: true, batteryLevel: 100 },
-      turnOn: jest.fn().mockResolvedValue(undefined),
-      turnOff: jest.fn().mockResolvedValue(undefined),
-      cleanRooms: jest.fn().mockResolvedValue(undefined),
+      turnOn: vi.fn().mockResolvedValue(undefined),
+      turnOff: vi.fn().mockResolvedValue(undefined),
+      cleanRooms: vi.fn().mockResolvedValue(undefined),
     };
 
     mockHaClient = {
-      getState: jest.fn().mockResolvedValue([]),
-      callService: jest.fn().mockResolvedValue({}),
+      getState: vi.fn().mockResolvedValue([]),
+      callService: vi.fn().mockResolvedValue({}),
     };
 
     /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -70,7 +70,7 @@ describe('MCP Server', () => {
       cleanbot: mockCleanbot,
       car: mockCar,
       mieleClient: {
-        washer: {}, dryer: {}, getActivePrograms: jest.fn(), listenEvents: jest.fn(),
+        washer: {}, dryer: {}, getActivePrograms: vi.fn(), listenEvents: vi.fn(),
       } as any,
       dishwasher: {
         dishwasher: {},
@@ -81,7 +81,7 @@ describe('MCP Server', () => {
     };
     /* eslint-enable @typescript-eslint/no-explicit-any */
 
-    (fs.existsSync as jest.Mock).mockReturnValue(false);
+    (fs.existsSync as vi.Mock).mockReturnValue(false);
   });
 
   it('should create an MCP server without throwing', () => {
@@ -136,8 +136,8 @@ describe('MCP Server', () => {
     });
 
     it('appliances-status resource reads from cache files when present', async () => {
-      (fs.existsSync as jest.Mock).mockReturnValue(true);
-      (fs.readFileSync as jest.Mock).mockReturnValue('{"washer":{"inUse":true}}');
+      (fs.existsSync as vi.Mock).mockReturnValue(true);
+      (fs.readFileSync as vi.Mock).mockReturnValue('{"washer":{"inUse":true}}');
       const server = createMcpServer(mockServices);
       const resource = getResources(server)['fluxhaus://appliances/status'];
       const result = await resource.readCallback(new URL('fluxhaus://appliances/status'), {});
@@ -282,12 +282,12 @@ describe('MCP Server', () => {
     });
 
     it('lock_car tool calls car.lock()', async () => {
-      jest.useFakeTimers();
+      vi.useFakeTimers();
       const server = createMcpServer(mockServices);
       const result = await getTools(server).lock_car.handler({}, {});
       expect(mockCar.lock).toHaveBeenCalled();
       expect(result.content[0].text).toBe('Locked');
-      jest.useRealTimers();
+      vi.useRealTimers();
     });
 
     it('unlock_car tool calls car.unlock()', async () => {
@@ -298,24 +298,24 @@ describe('MCP Server', () => {
     });
 
     it('start_car tool calls car.start() with defaults', async () => {
-      jest.useFakeTimers();
+      vi.useFakeTimers();
       const server = createMcpServer(mockServices);
       const result = await getTools(server).start_car.handler({}, {});
       expect(mockCar.start).toHaveBeenCalledWith({});
       expect(result.content[0].text).toBe('Started');
-      jest.useRealTimers();
+      vi.useRealTimers();
     });
 
     it('start_car tool passes temperature and defrost options', async () => {
-      jest.useFakeTimers();
+      vi.useFakeTimers();
       const server = createMcpServer(mockServices);
       await getTools(server).start_car.handler({ temperature: 22, defrost: true }, {});
       expect(mockCar.start).toHaveBeenCalledWith({ temperature: 22, defrost: true });
-      jest.useRealTimers();
+      vi.useRealTimers();
     });
 
     it('start_car tool passes seat climate settings', async () => {
-      jest.useFakeTimers();
+      vi.useFakeTimers();
       const server = createMcpServer(mockServices);
       await getTools(server).start_car.handler({ seatFL: 2, seatFR: 1 }, {});
       expect(mockCar.start).toHaveBeenCalledWith({
@@ -326,16 +326,16 @@ describe('MCP Server', () => {
           rearRightSeat: 0,
         },
       });
-      jest.useRealTimers();
+      vi.useRealTimers();
     });
 
     it('stop_car tool calls car.stop()', async () => {
-      jest.useFakeTimers();
+      vi.useFakeTimers();
       const server = createMcpServer(mockServices);
       const result = await getTools(server).stop_car.handler({}, {});
       expect(mockCar.stop).toHaveBeenCalled();
       expect(result.content[0].text).toBe('Stopped');
-      jest.useRealTimers();
+      vi.useRealTimers();
     });
 
     it('resync_car tool calls car.resync()', async () => {
@@ -481,8 +481,8 @@ describe('MCP Server', () => {
     });
 
     it('appliance_report prompt returns user message with appliance data', async () => {
-      (fs.existsSync as jest.Mock).mockReturnValue(true);
-      (fs.readFileSync as jest.Mock).mockReturnValue('{"washer":{"inUse":false}}');
+      (fs.existsSync as vi.Mock).mockReturnValue(true);
+      (fs.readFileSync as vi.Mock).mockReturnValue('{"washer":{"inUse":false}}');
       const server = createMcpServer(mockServices);
       const result = await getPrompts(server).appliance_report.callback({}, {});
       expect(result.messages).toHaveLength(1);
@@ -530,6 +530,28 @@ describe('MCP Server', () => {
       });
     });
 
+    it('adds MCP annotations to tools that omit explicit hints', () => {
+      const server = createMcpServer(mockServices);
+      const tools = getTools(server);
+
+      expect(tools.plex_get_sessions.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+      });
+      expect(tools.plex_search.annotations).toMatchObject({
+        readOnlyHint: true,
+        destructiveHint: false,
+      });
+      expect(tools.grafana_query_datasource.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+      });
+      expect(tools.overseerr_request_media.annotations).toMatchObject({
+        readOnlyHint: false,
+        destructiveHint: true,
+      });
+    });
+
     it.each([
       ['plex_get_sessions', 'Plex is not configured'],
       ['grafana_list_dashboards', 'Grafana is not configured'],
@@ -548,7 +570,7 @@ describe('MCP Server', () => {
     it('plex_get_sessions calls through to plex client when configured', async () => {
       const mockPlex = {
         configured: true,
-        getSessions: jest.fn().mockResolvedValue({ MediaContainer: { size: 1 } }),
+        getSessions: vi.fn().mockResolvedValue({ MediaContainer: { size: 1 } }),
       };
       /* eslint-disable @typescript-eslint/no-explicit-any */
       const servicesWithPlex = { ...mockServices, plex: mockPlex };
@@ -558,12 +580,13 @@ describe('MCP Server', () => {
       expect(mockPlex.getSessions).toHaveBeenCalled();
       const parsed = JSON.parse(result.content[0].text);
       expect(parsed.MediaContainer.size).toBe(1);
+      expect(result.structuredContent.MediaContainer.size).toBe(1);
     });
 
     it('overseerr_search passes query to client', async () => {
       const mockOverseerr = {
         configured: true,
-        search: jest.fn().mockResolvedValue({ results: [] }),
+        search: vi.fn().mockResolvedValue({ results: [] }),
       };
       /* eslint-disable @typescript-eslint/no-explicit-any */
       const servicesWithOverseerr = { ...mockServices, overseerr: mockOverseerr };

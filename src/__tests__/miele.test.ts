@@ -4,13 +4,13 @@ import Miele from '../miele';
 import { writeError } from '../errors';
 import { getToken, saveToken } from '../token-store';
 
-jest.mock('fs');
-jest.mock('fetch-sse');
-jest.mock('../errors');
-jest.mock('../token-store');
+vi.mock('fs');
+vi.mock('fetch-sse');
+vi.mock('../errors');
+vi.mock('../token-store');
 
 // Mock global fetch
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('Miele', () => {
   let miele: Miele;
@@ -18,7 +18,7 @@ describe('Miele', () => {
   const mockClientSecret = 'test-client-secret';
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     miele = new Miele(mockClientId, mockClientSecret);
   });
 
@@ -39,11 +39,11 @@ describe('Miele', () => {
       refresh_token: 'new-refresh-token',
       expires_in: 3600,
     };
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as vi.Mock).mockResolvedValue({
       ok: true,
-      json: jest.fn().mockResolvedValue(mockResponse),
+      json: vi.fn().mockResolvedValue(mockResponse),
     });
-    (saveToken as jest.Mock).mockResolvedValue(undefined);
+    (saveToken as vi.Mock).mockResolvedValue(undefined);
 
     await miele.getToken('auth-code');
 
@@ -58,7 +58,7 @@ describe('Miele', () => {
   });
 
   it('should refresh token', async () => {
-    (getToken as jest.Mock).mockResolvedValue({
+    (getToken as vi.Mock).mockResolvedValue({
       access_token: 'old-token',
       refresh_token: 'old-refresh-token',
       expires_in: 3600,
@@ -69,11 +69,11 @@ describe('Miele', () => {
       access_token: 'refreshed-token',
       expires_in: 3600,
     };
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as vi.Mock).mockResolvedValue({
       ok: true,
-      json: jest.fn().mockResolvedValue(mockResponse),
+      json: vi.fn().mockResolvedValue(mockResponse),
     });
-    (saveToken as jest.Mock).mockResolvedValue(undefined);
+    (saveToken as vi.Mock).mockResolvedValue(undefined);
 
     await miele.refreshToken();
 
@@ -88,7 +88,7 @@ describe('Miele', () => {
   });
 
   it('should warn if refreshing token without auth', async () => {
-    (getToken as jest.Mock).mockResolvedValue(null);
+    (getToken as vi.Mock).mockResolvedValue(null);
 
     await miele.refreshToken();
 
@@ -131,7 +131,7 @@ describe('Miele', () => {
   });
 
   it('should get active programs', async () => {
-    (getToken as jest.Mock).mockResolvedValue({
+    (getToken as vi.Mock).mockResolvedValue({
       access_token: 'valid-token',
       timestamp: new Date().toISOString(),
       expires_in: 3600,
@@ -150,9 +150,9 @@ describe('Miele', () => {
       },
     };
 
-    (global.fetch as jest.Mock).mockResolvedValue({
+    (global.fetch as vi.Mock).mockResolvedValue({
       ok: true,
-      json: jest.fn().mockResolvedValue(mockDevices),
+      json: vi.fn().mockResolvedValue(mockDevices),
     });
 
     await miele.getActivePrograms();
@@ -171,7 +171,7 @@ describe('Miele', () => {
 
   it('should refresh token if expired when getting active programs', async () => {
     // First call returns expired token, second call (after refresh) returns valid token
-    (getToken as jest.Mock)
+    (getToken as vi.Mock)
       .mockResolvedValueOnce({
         access_token: 'expired-token',
         timestamp: new Date(Date.now() - 7200000).toISOString(),
@@ -184,16 +184,16 @@ describe('Miele', () => {
         expires_in: 3600,
       });
 
-    (saveToken as jest.Mock).mockResolvedValue(undefined);
+    (saveToken as vi.Mock).mockResolvedValue(undefined);
 
-    (global.fetch as jest.Mock)
+    (global.fetch as vi.Mock)
       .mockResolvedValueOnce({
         ok: true,
-        json: jest.fn().mockResolvedValue({ access_token: 'new-token' }),
+        json: vi.fn().mockResolvedValue({ access_token: 'new-token' }),
       })
       .mockResolvedValueOnce({
         ok: true,
-        json: jest.fn().mockResolvedValue({}),
+        json: vi.fn().mockResolvedValue({}),
       });
 
     await miele.getActivePrograms();
@@ -207,7 +207,7 @@ describe('Miele', () => {
   });
 
   it('should listen events', async () => {
-    (getToken as jest.Mock).mockResolvedValue({
+    (getToken as vi.Mock).mockResolvedValue({
       access_token: 'valid-token',
       timestamp: new Date().toISOString(),
       expires_in: 3600,

@@ -4,30 +4,28 @@ import {
   sanitizeCalendarSource,
   updateCalendarSource,
 } from '../calendar-sources';
+import { getPool } from '../db';
 
-jest.mock('../db', () => ({
-  getPool: jest.fn(),
+vi.mock('../db', () => ({
+  getPool: vi.fn(),
 }));
 
-jest.mock('../encryption', () => ({
-  encrypt: jest.fn((value) => `enc:${value}`),
-  decrypt: jest.fn((value) => String(value).replace(/^enc:/, '')),
+vi.mock('../encryption', () => ({
+  encrypt: vi.fn((value) => `enc:${value}`),
+  decrypt: vi.fn((value) => String(value).replace(/^enc:/, '')),
 }));
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
-  default: { child: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn() }) },
+  default: { child: () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() }) },
 }));
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { getPool } = require('../db');
 
 describe('calendar-sources', () => {
-  let mockPool: { query: jest.Mock };
+  let mockPool: { query: vi.Mock };
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockPool = { query: jest.fn() };
+    vi.clearAllMocks();
+    mockPool = { query: vi.fn() };
     getPool.mockReturnValue(mockPool);
   });
 

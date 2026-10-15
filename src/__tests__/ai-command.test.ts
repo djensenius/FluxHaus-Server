@@ -4,11 +4,11 @@ import { executeAICommand, executeTool } from '../ai-command';
 import { FluxHausServices } from '../services';
 
 // Mock AI SDKs
-jest.mock('@anthropic-ai/sdk');
-jest.mock('openai');
-jest.mock('../homeassistant-client');
-jest.mock('../homeassistant-robot');
-jest.mock('../car');
+vi.mock('@anthropic-ai/sdk');
+vi.mock('openai');
+vi.mock('../homeassistant-client');
+vi.mock('../homeassistant-robot');
+vi.mock('../car');
 
 describe('executeTool', () => {
   /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -19,26 +19,26 @@ describe('executeTool', () => {
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   beforeEach(() => {
-    jest.useFakeTimers();
+    vi.useFakeTimers();
 
     mockCar = {
-      lock: jest.fn().mockResolvedValue('Locked'),
-      unlock: jest.fn().mockResolvedValue('Unlocked'),
-      start: jest.fn().mockResolvedValue('Started'),
-      stop: jest.fn().mockResolvedValue('Stopped'),
-      resync: jest.fn().mockResolvedValue(undefined),
+      lock: vi.fn().mockResolvedValue('Locked'),
+      unlock: vi.fn().mockResolvedValue('Unlocked'),
+      start: vi.fn().mockResolvedValue('Started'),
+      stop: vi.fn().mockResolvedValue('Stopped'),
+      resync: vi.fn().mockResolvedValue(undefined),
       status: {},
       odometer: 0,
     };
     mockCleanbot = {
-      turnOn: jest.fn().mockResolvedValue(undefined),
-      turnOff: jest.fn().mockResolvedValue(undefined),
-      cleanRooms: jest.fn().mockResolvedValue(undefined),
+      turnOn: vi.fn().mockResolvedValue(undefined),
+      turnOff: vi.fn().mockResolvedValue(undefined),
+      cleanRooms: vi.fn().mockResolvedValue(undefined),
       cachedStatus: {},
     };
     mockHaClient = {
-      callService: jest.fn().mockResolvedValue({}),
-      getState: jest.fn().mockResolvedValue([
+      callService: vi.fn().mockResolvedValue({}),
+      getState: vi.fn().mockResolvedValue([
         { entity_id: 'scene.relax', attributes: { friendly_name: 'Relax' } },
         { entity_id: 'light.ceiling', attributes: {} },
       ]),
@@ -56,7 +56,7 @@ describe('executeTool', () => {
       gymURL: '',
       carAnalytics: {
         configured: true,
-        analyze: jest.fn().mockResolvedValue({
+        analyze: vi.fn().mockResolvedValue({
           summary: 'You charged twice and drove 100 km.',
         }),
       } as any,
@@ -65,7 +65,7 @@ describe('executeTool', () => {
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('lock_car calls car.lock()', async () => {
@@ -257,15 +257,15 @@ describe('executeAICommand', () => {
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    jest.useFakeTimers();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
 
     mockCar = {
-      lock: jest.fn().mockResolvedValue('Locked'),
-      unlock: jest.fn().mockResolvedValue('Unlocked'),
-      start: jest.fn().mockResolvedValue('Started'),
-      stop: jest.fn().mockResolvedValue('Stopped'),
-      resync: jest.fn().mockResolvedValue(undefined),
+      lock: vi.fn().mockResolvedValue('Locked'),
+      unlock: vi.fn().mockResolvedValue('Unlocked'),
+      start: vi.fn().mockResolvedValue('Started'),
+      stop: vi.fn().mockResolvedValue('Stopped'),
+      resync: vi.fn().mockResolvedValue(undefined),
       status: {},
       odometer: 0,
     };
@@ -273,10 +273,10 @@ describe('executeAICommand', () => {
     /* eslint-disable @typescript-eslint/no-explicit-any */
     mockServices = {
       homeAssistantClient: {
-        callService: jest.fn().mockResolvedValue({}),
-        getState: jest.fn().mockResolvedValue([]),
+        callService: vi.fn().mockResolvedValue({}),
+        getState: vi.fn().mockResolvedValue([]),
       } as any,
-      cleanbot: { turnOn: jest.fn(), turnOff: jest.fn(), cachedStatus: {} } as any,
+      cleanbot: { turnOn: vi.fn(), turnOff: vi.fn(), cachedStatus: {} } as any,
       car: mockCar,
       mieleClient: {} as any,
       dishwasher: {} as any,
@@ -288,7 +288,7 @@ describe('executeAICommand', () => {
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    vi.useRealTimers();
     delete process.env.AI_PROVIDER;
     delete process.env.AI_MODEL;
     delete process.env.ANTHROPIC_API_KEY;
@@ -305,13 +305,13 @@ describe('executeAICommand', () => {
     });
 
     it('returns text when stop_reason is end_turn', async () => {
-      const mockCreate = jest.fn().mockResolvedValue({
+      const mockCreate = vi.fn().mockResolvedValue({
         stop_reason: 'end_turn',
         content: [{ type: 'text', text: 'Car locked successfully.' }],
       });
-      (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
+      (Anthropic as unknown as vi.Mock).mockImplementation(function () { return {
         messages: { create: mockCreate },
-      }));
+      }; });
 
       const result = await executeAICommand('Lock my car', mockServices);
       expect(result).toBe('Car locked successfully.');
@@ -323,7 +323,7 @@ describe('executeAICommand', () => {
     });
 
     it('executes tool_use and returns final text', async () => {
-      const mockCreate = jest.fn()
+      const mockCreate = vi.fn()
         .mockResolvedValueOnce({
           stop_reason: 'tool_use',
           content: [
@@ -336,9 +336,9 @@ describe('executeAICommand', () => {
           stop_reason: 'end_turn',
           content: [{ type: 'text', text: 'Done, car is locked.' }],
         });
-      (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
+      (Anthropic as unknown as vi.Mock).mockImplementation(function () { return {
         messages: { create: mockCreate },
-      }));
+      }; });
 
       const result = await executeAICommand('Lock my car', mockServices);
       expect(mockCar.lock).toHaveBeenCalled();
@@ -351,13 +351,13 @@ describe('executeAICommand', () => {
     });
 
     it('returns Done. when end_turn has no text block', async () => {
-      const mockCreate = jest.fn().mockResolvedValue({
+      const mockCreate = vi.fn().mockResolvedValue({
         stop_reason: 'end_turn',
         content: [],
       });
-      (Anthropic as unknown as jest.Mock).mockImplementation(() => ({
+      (Anthropic as unknown as vi.Mock).mockImplementation(function () { return {
         messages: { create: mockCreate },
-      }));
+      }; });
 
       const result = await executeAICommand('Lock my car', mockServices);
       expect(result).toBe('Done.');
@@ -371,15 +371,15 @@ describe('executeAICommand', () => {
     });
 
     it('returns text on finish_reason stop', async () => {
-      const mockCreate = jest.fn().mockResolvedValue({
+      const mockCreate = vi.fn().mockResolvedValue({
         choices: [{
           finish_reason: 'stop',
           message: { content: 'Cleanbot started.', tool_calls: undefined },
         }],
       });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         chat: { completions: { create: mockCreate } },
-      }));
+      }; });
 
       const result = await executeAICommand('Start cleanbot', mockServices);
       expect(result).toBe('Cleanbot started.');
@@ -394,13 +394,13 @@ describe('executeAICommand', () => {
 
     it('includes Copilot-Integration-Id header', async () => {
       let capturedHeaders: Record<string, string> | undefined;
-      (OpenAI as unknown as jest.Mock).mockImplementation(
-        ({ defaultHeaders }: { defaultHeaders?: Record<string, string> }) => {
+      (OpenAI as unknown as vi.Mock).mockImplementation(
+        function mockOpenAI({ defaultHeaders }: { defaultHeaders?: Record<string, string> }) {
           capturedHeaders = defaultHeaders;
           return {
             chat: {
               completions: {
-                create: jest.fn().mockResolvedValue({
+                create: vi.fn().mockResolvedValue({
                   choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
                 }),
               },
@@ -414,7 +414,7 @@ describe('executeAICommand', () => {
     });
 
     it('executes tool_calls and returns final text', async () => {
-      const mockCreate = jest.fn()
+      const mockCreate = vi.fn()
         .mockResolvedValueOnce({
           choices: [{
             finish_reason: 'tool_calls',
@@ -434,9 +434,9 @@ describe('executeAICommand', () => {
             message: { content: 'Done, car locked.', tool_calls: undefined },
           }],
         });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         chat: { completions: { create: mockCreate } },
-      }));
+      }; });
 
       const result = await executeAICommand('Lock my car', mockServices);
       expect(mockCar.lock).toHaveBeenCalled();
@@ -445,15 +445,15 @@ describe('executeAICommand', () => {
 
     it('also works with alias github-copilot', async () => {
       process.env.AI_PROVIDER = 'github-copilot';
-      const mockCreate = jest.fn().mockResolvedValue({
+      const mockCreate = vi.fn().mockResolvedValue({
         choices: [{
           finish_reason: 'stop',
           message: { content: 'ok', tool_calls: undefined },
         }],
       });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         chat: { completions: { create: mockCreate } },
-      }));
+      }; });
 
       const result = await executeAICommand('hello', mockServices);
       expect(result).toBe('ok');
@@ -474,12 +474,12 @@ describe('executeAICommand', () => {
     it('uses ZAI_BASE_URL when set', async () => {
       process.env.ZAI_BASE_URL = 'https://custom.z.ai/v1';
       let capturedBaseURL = '';
-      (OpenAI as unknown as jest.Mock).mockImplementation(({ baseURL }: { baseURL: string }) => {
+      (OpenAI as unknown as vi.Mock).mockImplementation(function mockOpenAI({ baseURL }: { baseURL: string }) {
         capturedBaseURL = baseURL;
         return {
           chat: {
             completions: {
-              create: jest.fn().mockResolvedValue({
+              create: vi.fn().mockResolvedValue({
                 choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
               }),
             },
@@ -493,12 +493,12 @@ describe('executeAICommand', () => {
 
     it('also works with alias z.ai', async () => {
       process.env.AI_PROVIDER = 'z.ai';
-      const mockCreate = jest.fn().mockResolvedValue({
+      const mockCreate = vi.fn().mockResolvedValue({
         choices: [{ finish_reason: 'stop', message: { content: 'ok' } }],
       });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         chat: { completions: { create: mockCreate } },
-      }));
+      }; });
 
       const result = await executeAICommand('hello', mockServices);
       expect(result).toBe('ok');
@@ -517,12 +517,12 @@ describe('executeAICommand', () => {
     });
 
     it('returns response text', async () => {
-      const mockCreate = jest.fn().mockResolvedValue({
+      const mockCreate = vi.fn().mockResolvedValue({
         choices: [{ finish_reason: 'stop', message: { content: 'Scene activated.' } }],
       });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         chat: { completions: { create: mockCreate } },
-      }));
+      }; });
 
       const result = await executeAICommand('Turn on relax scene', mockServices);
       expect(result).toBe('Scene activated.');

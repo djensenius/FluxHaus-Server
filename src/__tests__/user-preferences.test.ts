@@ -1,23 +1,21 @@
+import { getPool } from '../db';
 import { getUserPreferences, setUserPreferences } from '../user-preferences';
 
-jest.mock('../db', () => ({
-  getPool: jest.fn(),
+vi.mock('../db', () => ({
+  getPool: vi.fn(),
 }));
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
-  default: { child: () => ({ info: jest.fn(), error: jest.fn(), warn: jest.fn() }) },
+  default: { child: () => ({ info: vi.fn(), error: vi.fn(), warn: vi.fn() }) },
 }));
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { getPool } = require('../db');
 
 describe('user-preferences', () => {
-  let mockPool: { query: jest.Mock };
+  let mockPool: { query: vi.Mock };
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockPool = { query: jest.fn() };
+    vi.clearAllMocks();
+    mockPool = { query: vi.fn() };
     getPool.mockReturnValue(mockPool);
   });
 

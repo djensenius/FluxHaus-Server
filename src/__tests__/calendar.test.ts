@@ -6,13 +6,11 @@ import {
   CalendarEventUpdateInput,
   CalendarProvider,
 } from '../calendar-types';
+import { getUserPreferences } from '../user-preferences';
 
-jest.mock('../user-preferences', () => ({
-  getUserPreferences: jest.fn(),
+vi.mock('../user-preferences', () => ({
+  getUserPreferences: vi.fn(),
 }));
-
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { getUserPreferences } = require('../user-preferences');
 
 function makeProvider(overrides: Partial<CalendarProvider> = {}): CalendarProvider {
   const calendars: CalendarDescriptor[] = [{
@@ -28,9 +26,9 @@ function makeProvider(overrides: Partial<CalendarProvider> = {}): CalendarProvid
     provider: 'm365',
     sourceId: 'm365',
     configured: true,
-    listCalendars: jest.fn().mockResolvedValue(calendars),
-    listEvents: jest.fn().mockResolvedValue([] as CalendarEvent[]),
-    createEvent: jest.fn().mockImplementation(async (_calendarId: string, input: CalendarEventInput) => ({
+    listCalendars: vi.fn().mockResolvedValue(calendars),
+    listEvents: vi.fn().mockResolvedValue([] as CalendarEvent[]),
+    createEvent: vi.fn().mockImplementation(async (_calendarId: string, input: CalendarEventInput) => ({
       id: 'm365:primary:event-1',
       provider: 'm365',
       sourceId: 'm365',
@@ -41,7 +39,7 @@ function makeProvider(overrides: Partial<CalendarProvider> = {}): CalendarProvid
       allDay: input.allDay || false,
       isReadOnly: false,
     })),
-    updateEvent: jest.fn().mockImplementation(async (eventId: string, input: CalendarEventUpdateInput) => ({
+    updateEvent: vi.fn().mockImplementation(async (eventId: string, input: CalendarEventUpdateInput) => ({
       id: eventId,
       provider: 'm365',
       sourceId: 'm365',
@@ -52,14 +50,14 @@ function makeProvider(overrides: Partial<CalendarProvider> = {}): CalendarProvid
       allDay: input.allDay || false,
       isReadOnly: false,
     })),
-    deleteEvent: jest.fn().mockResolvedValue(undefined),
+    deleteEvent: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
 
 describe('CalendarService', () => {
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     getUserPreferences.mockResolvedValue({ memoryEnabled: true, defaultCalendarId: 'm365:primary' });
   });
 
@@ -81,7 +79,7 @@ describe('CalendarService', () => {
   it('throws when no writable default can be resolved', async () => {
     getUserPreferences.mockResolvedValue({ memoryEnabled: true, defaultCalendarId: null });
     const readOnlyProvider = makeProvider({
-      listCalendars: jest.fn().mockResolvedValue([{
+      listCalendars: vi.fn().mockResolvedValue([{
         id: 'ics:subscription',
         provider: 'ics',
         sourceId: 'ics:subscription',
@@ -106,7 +104,7 @@ describe('CalendarService', () => {
     const readOnlyProvider = makeProvider({
       provider: 'ics',
       sourceId: 'ics',
-      listCalendars: jest.fn().mockResolvedValue([{
+      listCalendars: vi.fn().mockResolvedValue([{
         id: 'ics:subscription',
         provider: 'ics',
         sourceId: 'ics',
@@ -130,7 +128,7 @@ describe('CalendarService', () => {
   it('lists calendars once per provider when aggregating events', async () => {
     getUserPreferences.mockResolvedValue({ memoryEnabled: true, defaultCalendarId: null });
     const provider = makeProvider({
-      listCalendars: jest.fn().mockResolvedValue([
+      listCalendars: vi.fn().mockResolvedValue([
         {
           id: 'm365:primary',
           provider: 'm365',

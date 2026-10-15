@@ -1036,7 +1036,7 @@ export async function createServer(): Promise<Express> {
     try {
       const convResult = await db.query(
         'SELECT id, title, created_at, updated_at FROM conversations WHERE id = $1 AND user_sub = $2',
-        [req.params.id, req.user.sub],
+        [String(req.params.id), req.user.sub],
       );
       if (convResult.rows.length === 0) {
         res.status(404).json({ error: 'Conversation not found' });
@@ -1047,7 +1047,7 @@ export async function createServer(): Promise<Express> {
         `SELECT id, role, content, is_voice, created_at
          FROM conversation_messages
          WHERE conversation_id = $1 ORDER BY created_at`,
-        [req.params.id],
+        [String(req.params.id)],
       );
       const messages = msgResult.rows.map((m) => ({
         ...m,
@@ -1079,7 +1079,7 @@ export async function createServer(): Promise<Express> {
       const encTitle = encrypt(title, req.user.sub);
       const result = await db.query(
         'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2 AND user_sub = $3 RETURNING id',
-        [encTitle, req.params.id, req.user.sub],
+        [encTitle, String(req.params.id), req.user.sub],
       );
       if (result.rows.length === 0) {
         res.status(404).json({ error: 'Conversation not found' });
@@ -1102,7 +1102,7 @@ export async function createServer(): Promise<Express> {
     try {
       const result = await db.query(
         'DELETE FROM conversations WHERE id = $1 AND user_sub = $2 RETURNING id',
-        [req.params.id, req.user.sub],
+        [String(req.params.id), req.user.sub],
       );
       if (result.rows.length === 0) {
         res.status(404).json({ error: 'Conversation not found' });
@@ -1124,7 +1124,7 @@ export async function createServer(): Promise<Express> {
     if (!db) { res.status(503).json({ error: 'Database unavailable' }); return; }
     try {
       // eslint-disable-next-line @typescript-eslint/no-use-before-define
-      const history = await loadConversationHistory(req.params.id, req.user.sub);
+      const history = await loadConversationHistory(String(req.params.id), req.user.sub);
       if (history.length === 0) {
         res.status(400).json({ error: 'No messages to generate title from' });
         return;
@@ -1139,7 +1139,7 @@ export async function createServer(): Promise<Express> {
       const encTitle = encrypt(cleanTitle, req.user.sub);
       await db.query(
         'UPDATE conversations SET title = $1, updated_at = NOW() WHERE id = $2 AND user_sub = $3',
-        [encTitle, req.params.id, req.user.sub],
+        [encTitle, String(req.params.id), req.user.sub],
       );
       res.json({ title: cleanTitle });
     } catch (err) {

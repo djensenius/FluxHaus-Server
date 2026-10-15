@@ -47,11 +47,73 @@ const IDEMPOTENT_WRITE_CLOSED = {
   openWorldHint: false,
 };
 
+function toStructuredContent(data: unknown): Record<string, unknown> {
+  if (data && typeof data === 'object' && !Array.isArray(data)) {
+    return data as Record<string, unknown>;
+  }
+  return { result: data };
+}
+
 function jsonResult(data: unknown) {
   return {
     content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }],
-    structuredContent: data as Record<string, unknown>,
+    structuredContent: toStructuredContent(data),
   };
+}
+
+// Older tools in this server historically returned JSON as text only. Modern
+// MCP clients and Pi codemode can compose tools much better when the same data
+// is also present as structuredContent, so transparently upgrade JSON-looking
+// results while preserving the human-readable text block.
+function addStructuredContentIfJsonText(result: unknown): unknown {
+  if (!result || typeof result !== 'object' || 'structuredContent' in result) return result;
+  const maybeResult = result as { content?: unknown };
+  if (!Array.isArray(maybeResult.content) || maybeResult.content.length !== 1) return result;
+  const [block] = maybeResult.content as Array<{ type?: unknown; text?: unknown }>;
+  if (block?.type !== 'text' || typeof block.text !== 'string') return result;
+  const trimmed = block.text.trim();
+  if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return result;
+  try {
+    return {
+      ...maybeResult,
+      structuredContent: toStructuredContent(JSON.parse(trimmed)),
+    };
+  } catch {
+    return result;
+  }
+}
+
+type ToolAnnotations = typeof READ_ONLY_CLOSED;
+
+function isToolAnnotations(value: unknown): value is ToolAnnotations {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const maybeAnnotations = value as Record<string, unknown>;
+  return ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']
+    .some((key) => typeof maybeAnnotations[key] === 'boolean');
+}
+
+function inferToolAnnotations(name: string): ToolAnnotations | null {
+  if (name === 'grafana_query_datasource') return WRITE_CLOSED;
+  const isReadOnlyName = /^(get|list|search|query|view|fetch|summarize)_/.test(name)
+    || /_(get|list|search|query|view|fetch|summarize)_/.test(name)
+    || /_(get|list|search|query|view|fetch|summarize)$/.test(name);
+  if (isReadOnlyName) return READ_ONLY_CLOSED;
+  if (name.startsWith('generate_')) return GENERATIVE_OPEN;
+  const isMutatingName = /^(lock|unlock|start|stop|resync|clean|call|create|update|delete|save|set|approve|request)_/
+    .test(name)
+    || /_(lock|unlock|start|stop|resync|clean|call|create|update|delete|save|set|approve|request)_/.test(name)
+    || name.endsWith('_action');
+  if (isMutatingName) return WRITE_CLOSED;
+  return null;
+}
+
+function addInferredToolAnnotations(rawArgs: unknown[]): unknown[] {
+  if (rawArgs.slice(1, -1).some(isToolAnnotations)) return [...rawArgs];
+  const name = rawArgs[0];
+  if (typeof name !== 'string') return [...rawArgs];
+  const annotations = inferToolAnnotations(name);
+  if (!annotations) return [...rawArgs];
+  return [...rawArgs.slice(0, -1), annotations, rawArgs[rawArgs.length - 1]];
 }
 
 function isBlockedIPv4(hostname: string): boolean {
@@ -176,7 +238,7 @@ function wrapToolHandlers(server: McpServer): McpServer['tool'] {
   const originalTool = server.tool.bind(server);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wrapped = (...rawArgs: any[]) => {
-    const wrappedArgs = [...rawArgs];
+    const wrappedArgs = addInferredToolAnnotations(rawArgs);
     const name = wrappedArgs[0] as string;
     const handlerIndex = wrappedArgs.length - 1;
     const originalHandler = wrappedArgs[handlerIndex];
@@ -193,7 +255,7 @@ function wrapToolHandlers(server: McpServer): McpServer['tool'] {
         if (elapsed > 5000) {
           console.warn(`[MCP] ${name} completed in ${elapsed}ms (slow)`);
         }
-        return result;
+        return addStructuredContentIfJsonText(result);
       } catch (err) {
         const elapsed = Date.now() - start;
         const message = err instanceof Error ? err.message : String(err);

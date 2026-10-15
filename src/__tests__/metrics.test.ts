@@ -2,14 +2,14 @@ import express from 'express';
 import request from 'supertest';
 import { METRIC_CATALOG, createMetricsRouter } from '../metrics';
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     }),
   },
 }));
@@ -41,7 +41,7 @@ describe('metrics router', () => {
   it('applies seriesRename to relabel the outdoor series as "Outside"', async () => {
     const influxdb = {
       configured: true,
-      query: jest.fn().mockResolvedValue([
+      query: vi.fn().mockResolvedValue([
         {
           _time: '2024-01-01T00:00:00Z', _value: '18.2', friendly_name: 'Environment Canada Temperature',
         },
@@ -67,7 +67,7 @@ describe('metrics router', () => {
   it('returns 200 with series for a valid influx metric', async () => {
     const influxdb = {
       configured: true,
-      query: jest.fn().mockResolvedValue([
+      query: vi.fn().mockResolvedValue([
         {
           _time: '2024-01-01T00:00:00Z', _value: '21.5', friendly_name: 'Bedroom Temperature',
         },
@@ -82,7 +82,7 @@ describe('metrics router', () => {
   });
 
   it('applies an entity_id filter for room-scoped influx metrics', async () => {
-    const query = jest.fn().mockResolvedValue([]);
+    const query = vi.fn().mockResolvedValue([]);
     const influxdb = { configured: true, query };
     const app = buildApp({ influxdb: influxdb as never, bucket: 'fluxhaus' });
     await request(app).get('/metrics/series?metric=temperature').expect(200);
@@ -95,7 +95,7 @@ describe('metrics router', () => {
   it('returns 502 when the upstream influx query fails', async () => {
     const influxdb = {
       configured: true,
-      query: jest.fn().mockRejectedValue(new Error('influx down')),
+      query: vi.fn().mockRejectedValue(new Error('influx down')),
     };
     const app = buildApp({ influxdb: influxdb as never, bucket: 'fluxhaus' });
     const res = await request(app).get('/metrics/series?metric=temperature').expect(502);
@@ -105,7 +105,7 @@ describe('metrics router', () => {
   it('returns series from a Prometheus-backed metric', async () => {
     const client = {
       configured: true,
-      queryRange: jest.fn().mockResolvedValue({
+      queryRange: vi.fn().mockResolvedValue({
         data: {
           result: [
             { metric: { instance: 'node-1' }, values: [[1704067200, '12.5']] },
@@ -122,7 +122,7 @@ describe('metrics router', () => {
   });
 
   it('skips unconfigured Prometheus backends', async () => {
-    const client = { configured: false, queryRange: jest.fn() };
+    const client = { configured: false, queryRange: vi.fn() };
     const app = buildApp({ prometheus: client as never });
     const res = await request(app).get('/metrics/series?metric=cpu_usage').expect(200);
     expect(client.queryRange).not.toHaveBeenCalled();
@@ -132,7 +132,7 @@ describe('metrics router', () => {
   it('returns 502 when Prometheus responds with an error status', async () => {
     const client = {
       configured: true,
-      queryRange: jest.fn().mockResolvedValue({
+      queryRange: vi.fn().mockResolvedValue({
         status: 'error', errorType: 'bad_data', error: 'invalid query',
       }),
     };
@@ -142,7 +142,7 @@ describe('metrics router', () => {
   });
 
   it('uses last() aggregation for the monotonic car odometer', async () => {
-    const query = jest.fn().mockResolvedValue([]);
+    const query = vi.fn().mockResolvedValue([]);
     const influxdb = { configured: true, query };
     const app = buildApp({ influxdb: influxdb as never, bucket: 'fluxhaus' });
     await request(app).get('/metrics/series?metric=car_odometer').expect(200);

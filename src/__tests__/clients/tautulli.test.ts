@@ -1,24 +1,24 @@
 import { TautulliClient } from '../../clients/tautulli';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('TautulliClient', () => {
   const mockConfig = { url: 'http://tautulli:8181', apiKey: 'test-key' };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('configured', () => {
@@ -43,7 +43,7 @@ describe('TautulliClient', () => {
       const client = new TautulliClient(mockConfig);
       const activityData = { sessions: [], stream_count: 0 };
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ response: { data: activityData } }),
       });
@@ -51,7 +51,7 @@ describe('TautulliClient', () => {
       const result = await client.getActivity();
 
       expect(result).toEqual(activityData);
-      const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0] as string;
       expect(calledUrl).toContain('http://tautulli:8181/api/v2?');
       expect(calledUrl).toContain('apikey=test-key');
       expect(calledUrl).toContain('cmd=get_activity');
@@ -62,14 +62,14 @@ describe('TautulliClient', () => {
     it('passes length param as string', async () => {
       const client = new TautulliClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ response: { data: { data: [] } } }),
       });
 
       await client.getHistory(10);
 
-      const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+      const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0] as string;
       expect(calledUrl).toContain('cmd=get_history');
       expect(calledUrl).toContain('length=10');
     });
@@ -79,7 +79,7 @@ describe('TautulliClient', () => {
     it('throws on non-ok response', async () => {
       const client = new TautulliClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',

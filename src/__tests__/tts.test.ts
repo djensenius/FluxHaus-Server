@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import synthesizeSpeech from '../tts';
 
-jest.mock('openai');
+vi.mock('openai');
 
 describe('synthesizeSpeech', () => {
   afterEach(() => {
@@ -17,7 +17,7 @@ describe('synthesizeSpeech', () => {
     delete process.env.ELEVENLABS_API_KEY;
     delete process.env.ELEVENLABS_VOICE_ID;
     delete process.env.ELEVENLABS_MODEL;
-    jest.restoreAllMocks();
+    vi.restoreAllMocks();
   });
 
   describe('OpenAI provider', () => {
@@ -28,12 +28,12 @@ describe('synthesizeSpeech', () => {
 
     it('synthesizes speech and returns a Buffer', async () => {
       const fakeArrayBuffer = new ArrayBuffer(8);
-      const mockCreate = jest.fn().mockResolvedValue({
-        arrayBuffer: jest.fn().mockResolvedValue(fakeArrayBuffer),
+      const mockCreate = vi.fn().mockResolvedValue({
+        arrayBuffer: vi.fn().mockResolvedValue(fakeArrayBuffer),
       });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         audio: { speech: { create: mockCreate } },
-      }));
+      }; });
 
       const result = await synthesizeSpeech('Hello world');
       expect(result).toBeInstanceOf(Buffer);
@@ -48,12 +48,12 @@ describe('synthesizeSpeech', () => {
     it('uses TTS_MODEL and TTS_VOICE when set', async () => {
       process.env.TTS_MODEL = 'tts-1-hd';
       process.env.TTS_VOICE = 'nova';
-      const mockCreate = jest.fn().mockResolvedValue({
-        arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(4)),
+      const mockCreate = vi.fn().mockResolvedValue({
+        arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(4)),
       });
-      (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+      (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
         audio: { speech: { create: mockCreate } },
-      }));
+      }; });
 
       await synthesizeSpeech('Test');
       expect(mockCreate).toHaveBeenCalledWith(expect.objectContaining({
@@ -78,7 +78,7 @@ describe('synthesizeSpeech', () => {
 
     it('synthesizes speech via Azure TTS REST API and returns a Buffer', async () => {
       const fakeAudioData = new ArrayBuffer(16);
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         arrayBuffer: async () => fakeAudioData,
       } as Response);
@@ -95,7 +95,7 @@ describe('synthesizeSpeech', () => {
     });
 
     it('includes SSML with escaped text in request body', async () => {
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         arrayBuffer: async () => new ArrayBuffer(4),
       } as Response);
@@ -108,7 +108,7 @@ describe('synthesizeSpeech', () => {
 
     it('uses AZURE_TTS_VOICE when set', async () => {
       process.env.AZURE_TTS_VOICE = 'en-GB-RyanNeural';
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         arrayBuffer: async () => new ArrayBuffer(4),
       } as Response);
@@ -129,7 +129,7 @@ describe('synthesizeSpeech', () => {
     });
 
     it('throws on non-ok HTTP response', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: false,
         status: 401,
         text: async () => 'Unauthorized',
@@ -147,7 +147,7 @@ describe('synthesizeSpeech', () => {
 
     it('synthesizes speech via Google TTS REST API and returns a Buffer', async () => {
       const fakeBase64 = Buffer.from('fake audio').toString('base64');
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({ audioContent: fakeBase64 }),
       } as Response);
@@ -162,7 +162,7 @@ describe('synthesizeSpeech', () => {
 
     it('uses GOOGLE_TTS_VOICE when set', async () => {
       process.env.GOOGLE_TTS_VOICE = 'en-US-Wavenet-D';
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         json: async () => ({ audioContent: '' }),
       } as Response);
@@ -179,7 +179,7 @@ describe('synthesizeSpeech', () => {
     });
 
     it('throws on non-ok HTTP response', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: false,
         status: 403,
         text: async () => 'Forbidden',
@@ -197,7 +197,7 @@ describe('synthesizeSpeech', () => {
 
     it('synthesizes speech via ElevenLabs REST API and returns a Buffer', async () => {
       const fakeAudioData = new ArrayBuffer(16);
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         arrayBuffer: async () => fakeAudioData,
       } as Response);
@@ -216,7 +216,7 @@ describe('synthesizeSpeech', () => {
     it('uses ELEVENLABS_VOICE_ID and ELEVENLABS_MODEL when set', async () => {
       process.env.ELEVENLABS_VOICE_ID = 'custom-voice-id';
       process.env.ELEVENLABS_MODEL = 'eleven_multilingual_v2';
-      const mockFetch = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      const mockFetch = vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
         arrayBuffer: async () => new ArrayBuffer(4),
       } as Response);
@@ -236,7 +236,7 @@ describe('synthesizeSpeech', () => {
     });
 
     it('throws on non-ok HTTP response', async () => {
-      jest.spyOn(global, 'fetch').mockResolvedValueOnce({
+      vi.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: false,
         status: 429,
         text: async () => 'Too Many Requests',
@@ -248,12 +248,12 @@ describe('synthesizeSpeech', () => {
 
   it('defaults to openai provider when TTS_PROVIDER is unset', async () => {
     process.env.OPENAI_API_KEY = 'sk-test';
-    const mockCreate = jest.fn().mockResolvedValue({
-      arrayBuffer: jest.fn().mockResolvedValue(new ArrayBuffer(0)),
+    const mockCreate = vi.fn().mockResolvedValue({
+      arrayBuffer: vi.fn().mockResolvedValue(new ArrayBuffer(0)),
     });
-    (OpenAI as unknown as jest.Mock).mockImplementation(() => ({
+    (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
       audio: { speech: { create: mockCreate } },
-    }));
+    }; });
 
     const result = await synthesizeSpeech('test');
     expect(result).toBeInstanceOf(Buffer);

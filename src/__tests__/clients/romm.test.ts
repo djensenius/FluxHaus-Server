@@ -1,18 +1,18 @@
 import { RommClient } from '../../clients/romm';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 const mockConfig = {
   url: 'http://romm:3000',
@@ -25,14 +25,14 @@ const credentials = Buffer.from(
 ).toString('base64');
 
 function mockFetchOk(data: unknown) {
-  (global.fetch as jest.Mock).mockResolvedValueOnce({
+  (global.fetch as vi.Mock).mockResolvedValueOnce({
     ok: true,
     json: async () => data,
   });
 }
 
 function mockFetchError(status: number, statusText: string) {
-  (global.fetch as jest.Mock).mockResolvedValueOnce({
+  (global.fetch as vi.Mock).mockResolvedValueOnce({
     ok: false,
     status,
     statusText,
@@ -43,7 +43,7 @@ describe('RommClient', () => {
   let client: RommClient;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     client = new RommClient(mockConfig);
   });
 
@@ -86,7 +86,7 @@ describe('RommClient', () => {
 
     await client.listRoms(42, 2);
 
-    const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+    const calledUrl = (global.fetch as vi.Mock).mock.calls[0][0] as string;
     expect(calledUrl).toContain('platform_id=42');
     expect(calledUrl).toContain('page=2');
     expect(calledUrl).toContain('size=25');

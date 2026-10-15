@@ -1,25 +1,25 @@
 import { ImmichClient } from '../../clients/immich';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('ImmichClient', () => {
   const config = { url: 'http://immich:2283', apiKey: 'test-key' };
   let client: ImmichClient;
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
     client = new ImmichClient(config);
   });
 
@@ -41,7 +41,7 @@ describe('ImmichClient', () => {
 
   describe('listAlbums', () => {
     it('calls /api/albums with correct headers', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => [{ id: '1', albumName: 'Vacation' }],
       });
@@ -60,7 +60,7 @@ describe('ImmichClient', () => {
     });
 
     it('throws on error response', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',
@@ -74,7 +74,7 @@ describe('ImmichClient', () => {
 
   describe('search', () => {
     it('POSTs to /api/search/smart with query body', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ assets: { items: [] } }),
       });
@@ -93,7 +93,7 @@ describe('ImmichClient', () => {
 
   describe('getRecentAssets', () => {
     it('POSTs to /api/search/metadata with default take 25', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ assets: { items: [] } }),
       });
@@ -110,7 +110,7 @@ describe('ImmichClient', () => {
     });
 
     it('passes custom count as take', async () => {
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ assets: { items: [] } }),
       });

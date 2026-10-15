@@ -1,24 +1,24 @@
 import { PlexClient } from '../../clients/plex';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('PlexClient', () => {
   const mockConfig = { url: 'http://plex:32400', token: 'test-token' };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('configured', () => {
@@ -43,7 +43,7 @@ describe('PlexClient', () => {
       const client = new PlexClient(mockConfig);
       const mockData = { MediaContainer: { size: 0 } };
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => mockData,
       });
@@ -64,7 +64,7 @@ describe('PlexClient', () => {
     it('encodes query and appends token with &', async () => {
       const client = new PlexClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ MediaContainer: {} }),
       });
@@ -84,7 +84,7 @@ describe('PlexClient', () => {
     it('throws on non-ok response', async () => {
       const client = new PlexClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',

@@ -1,24 +1,24 @@
 import { OverseerrClient } from '../../clients/overseerr';
 
-jest.mock('../../logger', () => ({
+vi.mock('../../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      error: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
     }),
   },
 }));
 
-global.fetch = jest.fn();
+global.fetch = vi.fn();
 
 describe('OverseerrClient', () => {
   const mockConfig = { url: 'http://overseerr:5055', apiKey: 'test-key' };
 
   beforeEach(() => {
-    jest.clearAllMocks();
+    vi.clearAllMocks();
   });
 
   describe('configured', () => {
@@ -43,7 +43,7 @@ describe('OverseerrClient', () => {
       const client = new OverseerrClient(mockConfig);
       const mockData = { results: [] };
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => mockData,
       });
@@ -67,7 +67,7 @@ describe('OverseerrClient', () => {
     it('sends POST with correct JSON body', async () => {
       const client = new OverseerrClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ id: 1 }),
       });
@@ -91,7 +91,7 @@ describe('OverseerrClient', () => {
     it('appends filter query param when status provided', async () => {
       const client = new OverseerrClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ results: [] }),
       });
@@ -109,7 +109,7 @@ describe('OverseerrClient', () => {
     it('throws on non-ok response', async () => {
       const client = new OverseerrClient(mockConfig);
 
-      (global.fetch as jest.Mock).mockResolvedValueOnce({
+      (global.fetch as vi.Mock).mockResolvedValueOnce({
         ok: false,
         status: 500,
         statusText: 'Internal Server Error',

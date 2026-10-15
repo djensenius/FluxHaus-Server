@@ -1,29 +1,29 @@
 import Blueair from '../blueair';
 import { HomeAssistantClient } from '../homeassistant-client';
 
-jest.mock('../homeassistant-client');
+vi.mock('../homeassistant-client');
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      debug: jest.fn(),
-      info: jest.fn(),
-      warn: jest.fn(),
-      error: jest.fn(),
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
     }),
   },
 }));
 
 describe('Blueair', () => {
-  let mockClient: jest.Mocked<HomeAssistantClient>;
+  let mockClient: vi.Mocked<HomeAssistantClient>;
   let blueair: Blueair;
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as jest.Mocked<HomeAssistantClient>;
-    mockClient.getState = jest.fn().mockResolvedValue({ state: 'off', attributes: {} });
-    mockClient.callService = jest.fn().mockResolvedValue(undefined);
+    vi.clearAllMocks();
+    mockClient = new HomeAssistantClient({ url: 'http://test', token: 'token' }) as vi.Mocked<HomeAssistantClient>;
+    mockClient.getState = vi.fn().mockResolvedValue({ state: 'off', attributes: {} });
+    mockClient.callService = vi.fn().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -39,7 +39,7 @@ describe('Blueair', () => {
   });
 
   it('maps Home Assistant state into cached status', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'fan.blue_pure_fan') {
         return Promise.resolve({
           state: 'on',
@@ -74,7 +74,7 @@ describe('Blueair', () => {
   });
 
   it('normalizes light brightness to a percentage', async () => {
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === 'light.blue_pure_led_light') {
         return Promise.resolve({ state: 'on', attributes: { brightness: 255 } });
       }
@@ -130,12 +130,12 @@ describe('Blueair', () => {
   });
 
   it('stops polling when stopped', () => {
-    jest.useFakeTimers();
-    const clearSpy = jest.spyOn(global, 'clearInterval');
+    vi.useFakeTimers();
+    const clearSpy = vi.spyOn(global, 'clearInterval');
     blueair = new Blueair({ client: mockClient });
     blueair.stop();
     expect(clearSpy).toHaveBeenCalled();
     clearSpy.mockRestore();
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 });

@@ -2,29 +2,27 @@ import request from 'supertest';
 import express from 'express';
 import gt3Router from '../routes/gt3.routes';
 import gt3PublicRouter from '../routes/gt3-public.routes';
+import { getPool } from '../db';
 
-jest.mock('../logger', () => ({
+vi.mock('../logger', () => ({
   __esModule: true,
   default: {
     child: () => ({
-      info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(),
+      info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     }),
   },
 }));
 
-jest.mock('../db', () => ({
-  getPool: jest.fn(),
+vi.mock('../db', () => ({
+  getPool: vi.fn(),
 }));
 
-jest.mock('../influx', () => ({ writePoint: jest.fn() }));
-jest.mock('../clients/influxdb', () => ({
-  InfluxDBClient: jest.fn().mockImplementation(() => ({ configured: false, query: jest.fn() })),
+vi.mock('../influx', () => ({ writePoint: vi.fn() }));
+vi.mock('../clients/influxdb', () => ({
+  InfluxDBClient: vi.fn().mockImplementation(function () { return { configured: false, query: vi.fn() }; }),
 }));
-jest.mock('../apns', () => ({ sendGT3PushToStart: jest.fn() }));
-jest.mock('../push-token-store', () => ({ getDeviceTokensByUserAndBundle: jest.fn() }));
-
-// eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
-const { getPool } = require('../db');
+vi.mock('../apns', () => ({ sendGT3PushToStart: vi.fn() }));
+vi.mock('../push-token-store', () => ({ getDeviceTokensByUserAndBundle: vi.fn() }));
 
 const USER_SUB = 'owner-sub';
 const RIDE_ID = '11111111-1111-1111-1111-111111111111';
@@ -54,18 +52,18 @@ function validPayload(overrides: Record<string, unknown> = {}) {
 }
 
 describe('GT3 ride photos', () => {
-  let mockQuery: jest.Mock;
-  let mockClientQuery: jest.Mock;
-  let mockRelease: jest.Mock;
+  let mockQuery: vi.Mock;
+  let mockClientQuery: vi.Mock;
+  let mockRelease: vi.Mock;
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    mockQuery = jest.fn();
-    mockClientQuery = jest.fn();
-    mockRelease = jest.fn();
-    (getPool as jest.Mock).mockReturnValue({
+    vi.clearAllMocks();
+    mockQuery = vi.fn();
+    mockClientQuery = vi.fn();
+    mockRelease = vi.fn();
+    (getPool as vi.Mock).mockReturnValue({
       query: mockQuery,
-      connect: jest.fn().mockResolvedValue({ query: mockClientQuery, release: mockRelease }),
+      connect: vi.fn().mockResolvedValue({ query: mockClientQuery, release: mockRelease }),
     });
   });
 

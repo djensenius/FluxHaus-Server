@@ -5,10 +5,10 @@ describe('Not Found Middleware', () => {
   it('should return 404 and "Resource not found" message', () => {
     const req = {} as Request;
     const res = {
-      status: jest.fn().mockReturnThis(),
-      json: jest.fn(),
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn(),
     } as unknown as Response;
-    const next = jest.fn();
+    const next = vi.fn();
 
     notFoundHandler(req, res, next);
 

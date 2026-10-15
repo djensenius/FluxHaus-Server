@@ -3,13 +3,13 @@ import Car, { CarConfig } from '../car';
 import { HomeAssistantClient } from '../homeassistant-client';
 import { writePoint } from '../influx';
 
-jest.mock('fs');
-jest.mock('../homeassistant-client');
-jest.mock('../influx', () => ({ writePoint: jest.fn() }));
+vi.mock('fs');
+vi.mock('../homeassistant-client');
+vi.mock('../influx', () => ({ writePoint: vi.fn() }));
 
 describe('Car', () => {
   let car: Car;
-  let mockClient: jest.Mocked<HomeAssistantClient>;
+  let mockClient: vi.Mocked<HomeAssistantClient>;
 
   const entityPrefix = 'kia_ev6';
 
@@ -34,17 +34,17 @@ describe('Car', () => {
   };
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    jest.useFakeTimers();
+    vi.clearAllMocks();
+    vi.useFakeTimers();
 
     mockClient = {
-      getState: jest.fn().mockImplementation(
+      getState: vi.fn().mockImplementation(
         (entityId: string) => Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' }),
       ),
-      callService: jest.fn().mockResolvedValue({}),
-    } as unknown as jest.Mocked<HomeAssistantClient>;
+      callService: vi.fn().mockResolvedValue({}),
+    } as unknown as vi.Mocked<HomeAssistantClient>;
 
-    (fs.existsSync as jest.Mock).mockReturnValue(false);
+    (fs.existsSync as vi.Mock).mockReturnValue(false);
 
     const config: CarConfig = {
       client: mockClient,
@@ -55,7 +55,7 @@ describe('Car', () => {
   });
 
   afterEach(() => {
-    jest.useRealTimers();
+    vi.useRealTimers();
   });
 
   it('should fetch status when setStatus is called', async () => {
@@ -84,7 +84,7 @@ describe('Car', () => {
     expect(car.status!.evStatus.drvDistance[0].rangeByFuel.evModeRange.value).toBe(200);
 
     // Override ev_range to return 0
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === `sensor.${entityPrefix}_ev_range`) {
         return Promise.resolve({ state: '0' });
       }
@@ -107,7 +107,7 @@ describe('Car', () => {
 
   it('writes optional cumulative energy telemetry in kWh', async () => {
     const energyEntityId = 'sensor.kia_energy_total';
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === energyEntityId) return Promise.resolve({ state: '12500' });
       return Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' });
     });
@@ -150,7 +150,7 @@ describe('Car', () => {
 
   it('continues core car polling when the optional energy sensor fails', async () => {
     const energyEntityId = 'sensor.kia_energy_total';
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === energyEntityId) return Promise.reject(new Error('entity unavailable'));
       return Promise.resolve({ state: defaultStates[entityId] ?? 'unavailable' });
     });
@@ -174,8 +174,8 @@ describe('Car', () => {
   it('omits unavailable battery telemetry while preserving the last status value', async () => {
     await car.setStatus();
     expect(car.status?.evStatus.batteryStatus).toBe(75);
-    jest.mocked(writePoint).mockClear();
-    mockClient.getState = jest.fn().mockImplementation((entityId: string) => {
+    vi.mocked(writePoint).mockClear();
+    mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
       if (entityId === `sensor.${entityPrefix}_ev_battery_level`) {
         return Promise.resolve({ state: 'unavailable' });
       }
@@ -209,10 +209,10 @@ describe('Car', () => {
       odometer: 12345,
     };
 
-    (fs.existsSync as jest.Mock).mockImplementation(
+    (fs.existsSync as vi.Mock).mockImplementation(
       (path: string) => path === 'cache/carStatus.json',
     );
-    (fs.readFileSync as jest.Mock).mockReturnValue(JSON.stringify(cachedStatus));
+    (fs.readFileSync as vi.Mock).mockReturnValue(JSON.stringify(cachedStatus));
 
     const config: CarConfig = {
       client: mockClient,
@@ -287,7 +287,7 @@ describe('Car', () => {
   });
 
   it('should handle errors gracefully', async () => {
-    mockClient.getState = jest.fn().mockRejectedValue(new Error('HA unavailable'));
+    mockClient.getState = vi.fn().mockRejectedValue(new Error('HA unavailable'));
 
     await car.setStatus();
 
@@ -303,7 +303,7 @@ describe('Car', () => {
     expect(goodStatus!.evStatus.batteryStatus).toBe(75);
 
     // Now return all unavailable
-    mockClient.getState = jest.fn().mockResolvedValue({ state: 'unavailable' });
+    mockClient.getState = vi.fn().mockResolvedValue({ state: 'unavailable' });
 
     await car.setStatus();
 
@@ -316,7 +316,7 @@ describe('Car', () => {
     const goodStatus = car.status;
 
     // Now return all zeros
-    mockClient.getState = jest.fn().mockResolvedValue({ state: '0' });
+    mockClient.getState = vi.fn().mockResolvedValue({ state: '0' });
 
     await car.setStatus();
 
