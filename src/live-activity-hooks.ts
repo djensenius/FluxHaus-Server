@@ -23,6 +23,10 @@ const initializedDeviceTypes = new Set<string>();
 // Cached device states for building consolidated activity
 const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
 
+// Sorted names of running devices at the last broadcast; a change means a device
+// started or finished, which is when apps should wake to refresh widgets.
+let lastRunningDeviceKey = '';
+
 // Throttle consolidated broadcasts to once per minute
 let lastConsolidatedBroadcast = 0;
 const CONSOLIDATED_THROTTLE_MS = 60_000;
@@ -59,7 +63,11 @@ function formatTimeRemaining(seconds: number): string {
   return `${hours}h ${remainingMinutes}m`;
 }
 
-function buildMieleContentState(
+function currentUnixEpochSeconds(): number {
+  return Math.round(Date.now() / 1000);
+}
+
+export function buildMieleContentState(
   deviceName: string,
   icon: string,
   device: MieleDevice,
@@ -86,6 +94,16 @@ function buildMieleContentState(
     || normalizedStatus === 'waiting to start'
     || normalizedStatus === 'delayed start';
   const running = !isDelayed && (device.timeRemaining ?? 0) > 0;
+  const timingRunning = running && (!normalizedStatus
+    || normalizedStatus === 'running'
+    || normalizedStatus === 'in use');
+  const now = timingRunning ? currentUnixEpochSeconds() : undefined;
+  const startedAt = timingRunning && timeRunning > 0 && now !== undefined
+    ? Math.round(now - (timeRunning * 60))
+    : undefined;
+  const endsAt = timingRunning && now !== undefined
+    ? Math.round(now + (timeRemaining * 60))
+    : undefined;
 
   return {
     device: {
@@ -96,6 +114,8 @@ function buildMieleContentState(
       shortText: `${device.timeRemaining ?? 0}m`,
       running,
       programName,
+      startedAt,
+      endsAt,
     },
   };
 }
@@ -127,8 +147,10 @@ const PROGRAM_DISPLAY_NAMES: Record<string, string> = {
   MixedLoad: 'Mixed Load',
 };
 
-function buildDishwasherContentState(dishwasher: DishWasher): LiveActivityContentState {
-  const remainingText = formatTimeRemaining(dishwasher.remainingTime ?? 0);
+export function buildDishwasherContentState(dishwasher: DishWasher): LiveActivityContentState {
+  const remainingTime = dishwasher.remainingTime;
+  const progress = dishwasher.programProgress ?? 0;
+  const remainingText = formatTimeRemaining(remainingTime ?? 0);
   const programDisplay = dishwasher.activeProgram
     ? (PROGRAM_DISPLAY_NAMES[dishwasher.activeProgram] || dishwasher.activeProgram)
     : undefined;
@@ -142,29 +164,52 @@ function buildDishwasherContentState(dishwasher: DishWasher): LiveActivityConten
 
   // Treat delayed start as not running — the Live Activity
   // should only appear once the appliance actually starts its cycle.
-  const running = dishwasher.operationState !== 'DelayedStart'
-    && (dishwasher.programProgress ?? 0) > 0;
+  const running = dishwasher.operationState !== 'DelayedStart' && progress > 0;
+  const timingRunning = dishwasher.operationState === 'Run' && progress > 0;
+  const now = timingRunning ? currentUnixEpochSeconds() : undefined;
+  const endsAt = timingRunning && remainingTime !== undefined && now !== undefined
+    ? Math.round(now + remainingTime)
+    : undefined;
+  const startedAt = timingRunning && remainingTime !== undefined && progress > 0 && progress < 100 && now !== undefined
+    ? Math.round(now - ((remainingTime * progress) / (100 - progress)))
+    : undefined;
 
   return {
     device: {
       name: 'Dishwasher',
-      progress: dishwasher.programProgress ?? 0,
+      progress,
       icon: 'dishwasher',
       trailingText,
-      shortText: formatTimeRemaining(dishwasher.remainingTime ?? 0),
+      shortText: formatTimeRemaining(remainingTime ?? 0),
       running,
       programName: programDisplay,
+      startedAt,
+      endsAt,
     },
   };
 }
 
-function buildRobotContentState(
+type RobotLiveActivityStatus = {
+  running?: boolean;
+  batteryLevel?: number;
+  timeStarted?: Date;
+  estimatedRemainingMinutes?: number;
+};
+
+export function buildRobotContentState(
   name: string,
-  status: { running?: boolean; batteryLevel?: number; timeStarted?: Date },
+  status: RobotLiveActivityStatus,
 ): LiveActivityContentState {
   const running = status.running ?? false;
   const icon = name.toLowerCase().includes('clean') ? 'robotic.vacuum.fill' : 'fan';
   const statusText = running ? 'Cleaning' : 'Off';
+  const now = running ? currentUnixEpochSeconds() : undefined;
+  const startedAt = running && status.timeStarted
+    ? Math.round(status.timeStarted.getTime() / 1000)
+    : undefined;
+  const endsAt = running && status.estimatedRemainingMinutes !== undefined && now !== undefined
+    ? Math.round(now + (status.estimatedRemainingMinutes * 60))
+    : undefined;
 
   return {
     device: {
@@ -174,6 +219,8 @@ function buildRobotContentState(
       trailingText: statusText,
       shortText: statusText,
       running,
+      startedAt,
+      endsAt,
     },
   };
 }
@@ -223,12 +270,15 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
   const wasAnyRunning = previousRunningState.get('consolidated') ?? false;
 
   const contentState: MultiDeviceContentState = { devices: runningDevices };
+  const runningDeviceKey = runningDevices.map((d) => d.name).sort().join(',');
+  const runningSetChanged = runningDeviceKey !== lastRunningDeviceKey;
 
   // Try to get channel, but don't block on it — push-to-start works without channels
   const channelId = await getChannelId('consolidated');
 
   // Update state after attempting channel (don't lose edge if channel fails)
   previousRunningState.set('consolidated', hasRunning);
+  lastRunningDeviceKey = runningDeviceKey;
 
   if (hasRunning) {
     // Push-to-start if transitioning from no devices to at least one
@@ -242,12 +292,16 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
         // channelId is optional — push-to-start works without it
         await multiDevicePushToStartAll(subscribedTokens, contentState, channelId ?? undefined);
       }
-      // Also send silent push to wake the app for local reconcile
+      startKeepAlive();
+    }
+
+    // Wake apps whenever a device starts or finishes (not just the first start),
+    // so they can reconcile Live Activities and reload Home Screen/StandBy widgets.
+    if (runningSetChanged && allInitialized) {
       const apnsTokens = await getAllApnsTokens();
       if (apnsTokens.length > 0) {
         await sendSilentPushToAll(apnsTokens);
       }
-      startKeepAlive();
     }
 
     // Throttle regular updates (but always send transitions)
@@ -376,7 +430,7 @@ export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<
 
 export async function onRobotStatusChange(
   name: string,
-  status: { running?: boolean; batteryLevel?: number; timeStarted?: Date },
+  status: RobotLiveActivityStatus,
 ): Promise<void> {
   const activityType = name.toLowerCase().replace(/\s+/g, '');
   const contentState = buildRobotContentState(name, status);

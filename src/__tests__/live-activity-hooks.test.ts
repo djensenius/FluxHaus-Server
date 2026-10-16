@@ -1,5 +1,11 @@
 import {
-  onDishwasherStatusChange, onMieleStatusChange, onPushToStartTokenRegistered, onRobotStatusChange,
+  buildDishwasherContentState,
+  buildMieleContentState,
+  buildRobotContentState,
+  onDishwasherStatusChange,
+  onMieleStatusChange,
+  onPushToStartTokenRegistered,
+  onRobotStatusChange,
 } from '../live-activity-hooks';
 import * as apns from '../apns';
 import * as apnsChannels from '../apns-channels';
@@ -378,5 +384,118 @@ describe('live-activity-hooks (consolidated)', () => {
       expect(washer).toBeDefined();
       expect(washer.running).toBe(true);
     });
+  });
+});
+
+describe('silent wake pushes', () => {
+  it('wakes apps whenever the running device set changes', async () => {
+    // Past the initialization timeout and any throttle (module state persists)
+    vi.setSystemTime(Date.now() + 900_000);
+    mockGetChannelId.mockResolvedValue(null);
+    mockGetAllApnsTokens.mockResolvedValue([{ token: 'apns-1' }]);
+
+    await onRobotStatusChange('WakeBot', { running: true, batteryLevel: 80 });
+    expect(mockSendSilentPush).toHaveBeenCalledTimes(1);
+
+    mockSendSilentPush.mockClear();
+    vi.setSystemTime(Date.now() + 120_000);
+    await onRobotStatusChange('WakeBot', { running: true, batteryLevel: 79 });
+    expect(mockSendSilentPush).not.toHaveBeenCalled();
+
+    vi.setSystemTime(Date.now() + 120_000);
+    await onRobotStatusChange('WakeBot', { running: false, batteryLevel: 79 });
+    expect(mockSendSilentPush).toHaveBeenCalled();
+  });
+});
+
+describe('timing fields', () => {
+  it('adds Miele timing fields when running', () => {
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+
+    const contentState = buildMieleContentState('Washer', 'washer', {
+      name: 'Washing machine',
+      timeRunning: 30,
+      timeRemaining: 60,
+      programName: 'main_wash',
+      status: 'in_use',
+      inUse: true,
+    });
+
+    expect(contentState.device.startedAt).toBe(1767267000);
+    expect(contentState.device.endsAt).toBe(1767272400);
+  });
+
+  it('adds dishwasher timing fields when running', () => {
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+
+    const contentState = buildDishwasherContentState({
+      operationState: 'Run',
+      doorState: 'Closed',
+      programProgress: 45,
+      remainingTime: 1800,
+      activeProgram: 'Auto2',
+    });
+
+    expect(contentState.device.startedAt).toBe(1767267327);
+    expect(contentState.device.endsAt).toBe(1767270600);
+  });
+
+  it('adds robot timing fields when timing data is available', () => {
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+
+    const contentState = buildRobotContentState('Cleanbot', {
+      running: true,
+      batteryLevel: 75,
+      timeStarted: new Date('2026-01-01T11:40:00Z'),
+      estimatedRemainingMinutes: 20,
+    });
+
+    expect(contentState.device.startedAt).toBe(1767267600);
+    expect(contentState.device.endsAt).toBe(1767270000);
+  });
+
+  it('omits dishwasher timing fields when paused', () => {
+    vi.setSystemTime(new Date('2026-01-01T12:00:00Z'));
+
+    const contentState = buildDishwasherContentState({
+      operationState: 'Pause',
+      doorState: 'Closed',
+      programProgress: 45,
+      remainingTime: 1800,
+      activeProgram: 'Auto2',
+    });
+
+    expect(contentState.device.startedAt).toBeUndefined();
+    expect(contentState.device.endsAt).toBeUndefined();
+  });
+
+  it('omits timing fields when a device is not running', () => {
+    const contentState = buildMieleContentState('Washer', 'washer', {
+      name: 'Washing machine',
+      timeRunning: 0,
+      timeRemaining: 120,
+      status: 'programmed',
+      inUse: true,
+    });
+
+    expect(contentState.device.running).toBe(false);
+    expect(contentState.device.startedAt).toBeUndefined();
+    expect(contentState.device.endsAt).toBeUndefined();
+    expect(JSON.parse(JSON.stringify(contentState.device))).not.toHaveProperty('startedAt');
+    expect(JSON.parse(JSON.stringify(contentState.device))).not.toHaveProperty('endsAt');
+  });
+
+  it('still wakes apps after a failed channel lookup is retried', async () => {
+    vi.setSystemTime(Date.now() + 900_000);
+    mockGetAllApnsTokens.mockResolvedValue([{ token: 'apns-1' }]);
+    mockGetChannelId.mockRejectedValueOnce(new Error('store failed'));
+
+    await onRobotStatusChange('RetryBot', { running: true, batteryLevel: 80 });
+    expect(mockSendSilentPush).not.toHaveBeenCalled();
+
+    mockGetChannelId.mockResolvedValue(null);
+    vi.setSystemTime(Date.now() + 120_000);
+    await onRobotStatusChange('RetryBot', { running: true, batteryLevel: 79 });
+    expect(mockSendSilentPush).toHaveBeenCalledTimes(1);
   });
 });
