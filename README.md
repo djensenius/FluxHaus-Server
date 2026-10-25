@@ -23,7 +23,13 @@ A Node.js server that acts as the central nervous system for the FluxHaus smart 
 ## Prerequisites
 
 *   **Docker**: Recommended for running the server.
-*   **Node.js 24+**: If running locally.
+*   **Node.js 24.22.1**: The patched Node 24 LTS runtime in `.node-version` and `mise.toml`.
+    Run `mise install` and `mise exec -- node --version` when developing locally.
+    Docker and CI use the same version. Node 24 releases before 24.22.1 are vulnerable to
+    [Node2Shell (CVE-2026-111497)](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+    Updating npm dependencies alone does not patch the runtime; rebuild and redeploy the image.
+    The Docker build verifies its actual Node version against `.node-version`.
+    After deployment, verify the running container with `docker exec <container> node --version`.
 *   **Home Assistant**: For robot and car control.
 *   **PostgreSQL 18**: For audit logging, session storage, and OAuth token persistence.
 *   **InfluxDB 2**: For time-series metrics (optional — disabled if not configured).
