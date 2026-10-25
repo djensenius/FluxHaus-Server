@@ -42,6 +42,7 @@ export interface WidgetDevicePayload {
   shortText: string;
   running: boolean;
   battery?: number;
+  cleaning?: boolean;
   programName?: string;
   startedAt?: number;
   endsAt?: number;
@@ -647,12 +648,13 @@ export async function sendMultiDeviceDirectUpdate(
   tokens: Array<{ activityToken: string }>,
   contentState: MultiDeviceContentState,
   event: 'update' | 'end',
-): Promise<void> {
-  if (!apnsConfigured || tokens.length === 0) return;
+): Promise<boolean> {
+  if (tokens.length === 0) return true;
+  if (!apnsConfigured) return false;
 
   const bundleId = process.env.APNS_BUNDLE_ID || 'org.davidjensenius.FluxHaus';
 
-  await Promise.allSettled(
+  const results = await Promise.allSettled(
     tokens.map(async (t) => {
       const now = Math.floor(Date.now() / 1000);
       const payload = {
@@ -676,12 +678,16 @@ export async function sendMultiDeviceDirectUpdate(
         });
         if (!result.ok && isInvalidTokenReason(result.reason)) {
           await deleteActivityToken(t.activityToken);
+          return true; // The activity no longer exists; do not retry its expired token.
         }
+        return result.ok;
       } catch (err) {
         apnsLogger.error({ err }, 'Activity token push error');
+        return false;
       }
     }),
   );
+  return results.every((result) => result.status === 'fulfilled' && result.value);
 }
 
 // --- Regular alert push notifications ---

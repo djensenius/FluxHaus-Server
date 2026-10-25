@@ -28,6 +28,28 @@ const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
 let lastRunningDeviceKey = '';
 // A server restart loses transition history, but existing phone activities survive.
 let reconciledIdleState = false;
+let idleCleanupRetry: ReturnType<typeof setTimeout> | null = null;
+let idleCleanupPending = false;
+let idleCleanupAttempts = 0;
+
+function cancelIdleCleanupRetry(): void {
+  if (idleCleanupRetry) clearTimeout(idleCleanupRetry);
+  idleCleanupRetry = null;
+  idleCleanupPending = false;
+  idleCleanupAttempts = 0;
+}
+
+function scheduleIdleCleanupRetry(): void {
+  if (idleCleanupRetry) return;
+  idleCleanupPending = true;
+  const delay = Math.min(60_000 * (2 ** Math.min(idleCleanupAttempts, 3)), 300_000);
+  idleCleanupAttempts += 1;
+  idleCleanupRetry = setTimeout(() => {
+    idleCleanupRetry = null;
+    // eslint-disable-next-line @typescript-eslint/no-use-before-define
+    broadcastConsolidated(true).catch(() => {});
+  }, delay);
+}
 
 // Throttle consolidated broadcasts to once per minute
 let lastConsolidatedBroadcast = 0;
@@ -93,7 +115,7 @@ export function buildMieleContentState(
   // after completion or power-off. Keep paused/action-needed cycles visible.
   const normalizedStatus = status?.toLowerCase();
   const inactiveStatuses = [
-    'off', 'not connected', 'on', 'idle', 'end programmed', 'program ended',
+    'off', 'on', 'idle', 'end programmed', 'program ended',
     'finished', 'programmed', 'waiting to start', 'delayed start',
   ];
   const running = !inactiveStatuses.includes(normalizedStatus ?? '') && timeRemaining > 0;
@@ -233,6 +255,7 @@ export function buildRobotContentState(
       name,
       progress,
       battery: status.batteryLevel,
+      cleaning: status.running ?? false,
       icon,
       trailingText: status.running && detail ? detail : statusText,
       shortText: status.running && status.progressPercent !== undefined ? `${progress}%` : statusText,
@@ -271,6 +294,9 @@ async function broadcastConsolidated(force = false): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-use-before-define
   broadcastQueue = broadcastQueue.then(() => broadcastConsolidatedImpl(force)).catch((err) => {
     laLogger.error({ err }, 'broadcastConsolidated failed');
+    if (!Array.from(cachedDeviceStates.values()).some((device) => device.running)) {
+      scheduleIdleCleanupRetry();
+    }
   });
   await broadcastQueue;
 }
@@ -300,6 +326,7 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
 
   if (hasRunning) {
     reconciledIdleState = false;
+    cancelIdleCleanupRetry();
     startKeepAlive();
     // Push-to-start if transitioning from no devices to at least one
     if (!wasAnyRunning && allInitialized) {
@@ -341,19 +368,23 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
     if (activityTokens.length > 0) {
       await sendMultiDeviceDirectUpdate(activityTokens, contentState, 'update');
     }
-  } else if (wasAnyRunning || (allTypesInitialized && !reconciledIdleState)) {
+  } else if (wasAnyRunning || idleCleanupPending || (allTypesInitialized && !reconciledIdleState)) {
+    if (idleCleanupRetry && !wasAnyRunning && !force) return;
     // Also clean up surviving phone activities after a server restart once every
     // source has reported idle. Do not invent completion alerts from startup state.
     // All devices stopped — end the consolidated activity
     stopKeepAlive();
-
+    // Arm before I/O: both rejected requests and thrown transport/store errors
+    // remain eligible for retry. Back off to at most one attempt per five minutes.
+    scheduleIdleCleanupRetry();
+    let delivered = true;
     if (channelId) {
-      await sendMultiDeviceBroadcast(channelId, { devices: [] }, 'end');
+      delivered = await sendMultiDeviceBroadcast(channelId, { devices: [] }, 'end');
     }
 
     const activityTokens = await getAllActivityTokens();
     if (activityTokens.length > 0) {
-      await sendMultiDeviceDirectUpdate(activityTokens, { devices: [] }, 'end');
+      delivered = (await sendMultiDeviceDirectUpdate(activityTokens, { devices: [] }, 'end')) && delivered;
     }
 
     // Silent push to wake the app so it can clean up the local activity
@@ -361,7 +392,8 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
     if (apnsTokens.length > 0) {
       await sendSilentPushToAll(apnsTokens);
     }
-    reconciledIdleState = true;
+    reconciledIdleState = delivered;
+    if (delivered) cancelIdleCleanupRetry();
   }
 }
 
@@ -398,6 +430,19 @@ export async function onMieleStatusChange(
   const activityType = deviceType;
   const name = deviceType === 'washer' ? 'Washer' : 'Dryer';
   const icon = deviceType === 'washer' ? 'washer' : 'dryer';
+  const normalizedStatus = formatApplianceDisplayText(device.status)?.toLowerCase();
+  if (['not connected', 'unavailable', 'unknown'].includes(normalizedStatus ?? '')) {
+    // A disconnected sensor cannot establish completion or initialize idle state.
+    const previous = cachedDeviceStates.get(activityType);
+    if (previous) {
+      cachedDeviceStates.set(activityType, {
+        ...previous, startedAt: undefined, endsAt: undefined,
+        trailingText: 'Not Connected', shortText: 'Offline',
+      });
+    }
+    await broadcastConsolidated();
+    return;
+  }
   const contentState = buildMieleContentState(name, icon, device);
   const { running } = contentState.device;
 

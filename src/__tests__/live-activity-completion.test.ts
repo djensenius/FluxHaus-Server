@@ -18,6 +18,8 @@ beforeEach(async () => {
   vi.resetModules();
   vi.clearAllMocks();
   vi.mocked(channels.getChannelId).mockResolvedValue('consolidated-channel');
+  vi.mocked(apns.sendMultiDeviceBroadcast).mockResolvedValue(true);
+  vi.mocked(apns.sendMultiDeviceDirectUpdate).mockResolvedValue(true);
   vi.mocked(tokens.getAllActivityTokens).mockResolvedValue([]);
   vi.mocked(tokens.getAllApnsTokens).mockResolvedValue([]);
   vi.mocked(subscriptions.getSubscribedDeviceTokens).mockResolvedValue([]);
@@ -47,6 +49,55 @@ describe('completion delivery', () => {
     vi.mocked(apns.sendMultiDeviceBroadcast).mockClear();
     await hooks.onRobotStatusChange('Cleanbot', { running: false });
     expect(apns.sendMultiDeviceBroadcast).not.toHaveBeenCalled();
+  });
+
+  it.each(['Not Connected', 'unknown', 'unavailable'])('does not report completion during a sensor outage: %s', async (status) => {
+    await initializeIdle();
+    await hooks.onMieleStatusChange('washer', {
+      name: 'Washer', status: 'Running', timeRemaining: 20, inUse: true,
+    });
+    vi.mocked(apns.sendMultiDeviceBroadcast).mockClear();
+    vi.setSystemTime(Date.now() + 120_000);
+    await hooks.onMieleStatusChange('washer', {
+      name: 'Washer', status, timeRemaining: undefined, inUse: false,
+    });
+    expect(subscriptions.getApnsTokensForDeviceType).not.toHaveBeenCalled();
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledWith(
+      'consolidated-channel', { devices: [expect.objectContaining({
+        name: 'Washer', running: true, shortText: 'Offline', endsAt: undefined,
+      })] }, 'update',
+    );
+    await hooks.onMieleStatusChange('washer', {
+      name: 'Washer', status: 'End programmed', timeRemaining: 20, inUse: true,
+    });
+    expect(subscriptions.getApnsTokensForDeviceType).toHaveBeenCalledWith('washer');
+  });
+
+  it('retries failed idle cleanup with backoff and stops after successful delivery', async () => {
+    vi.mocked(apns.sendMultiDeviceBroadcast).mockResolvedValue(false);
+    await initializeIdle();
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledTimes(1);
+    await hooks.onRobotStatusChange('Cleanbot', { running: false });
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledTimes(2);
+    vi.mocked(apns.sendMultiDeviceBroadcast).mockResolvedValue(true);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledTimes(3);
+    expect(apns.sendAlertToAll).not.toHaveBeenCalled();
+  });
+
+  it('cancels idle cleanup retries when a new job starts', async () => {
+    vi.mocked(apns.sendMultiDeviceBroadcast).mockResolvedValue(false);
+    await initializeIdle();
+    await hooks.onRobotStatusChange('Cleanbot', { running: true });
+    vi.mocked(apns.sendMultiDeviceBroadcast).mockClear();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(apns.sendMultiDeviceBroadcast).not.toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), 'end',
+    );
   });
 
   it('does not send Done or end the activity on pause or return-to-dock', async () => {
@@ -130,7 +181,7 @@ describe('completion delivery', () => {
 
 describe('authoritative appliance status', () => {
   it.each([
-    'Off', 'Not Connected', 'On', 'Idle', 'End programmed', 'program_ended',
+    'Off', 'On', 'Idle', 'End programmed', 'program_ended',
     'Finished', 'Programmed', 'waiting_to_start', 'Delayed start',
   ])('does not keep a completed or unstarted Miele cycle active: %s', (status) => {
     const { device } = hooks.buildMieleContentState('Washer', 'washer', {
