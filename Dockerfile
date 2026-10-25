@@ -1,14 +1,11 @@
-# Node2Shell / CVE-2026-111497 is fixed in Node 24.22.1.
-FROM node:24.22.1-alpine
+# Track Node 26 updates; npm's strict engine check enforces the security floor.
+FROM node:26-alpine
 
 WORKDIR /app
 
-COPY .node-version ./
-RUN node -e "const expected = require('node:fs').readFileSync('.node-version', 'utf8').trim(); if (process.versions.node !== expected) throw new Error('Unexpected Node runtime: ' + process.version); console.log('Verified Node runtime:', process.version)"
+COPY package*.json .npmrc ./
 
-COPY package*.json ./
-
-RUN npm ci
+RUN node --version && npm ci
 
 COPY . .
 

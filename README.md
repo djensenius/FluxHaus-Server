@@ -23,12 +23,16 @@ A Node.js server that acts as the central nervous system for the FluxHaus smart 
 ## Prerequisites
 
 *   **Docker**: Recommended for running the server.
-*   **Node.js 24.22.1**: The patched Node 24 LTS runtime in `.node-version` and `mise.toml`.
-    Run `mise install` and `mise exec -- node --version` when developing locally.
-    Docker and CI use the same version. Node 24 releases before 24.22.1 are vulnerable to
-    [Node2Shell (CVE-2026-111497)](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
-    Updating npm dependencies alone does not patch the runtime; rebuild and redeploy the image.
-    The Docker build verifies its actual Node version against `.node-version`.
+*   **Node.js 26.12.1 or newer within Node 26** (`>=26.12.1 <27`).
+    `.node-version`, `mise.toml`, Docker and CI track the latest Node 26 release;
+    `package.json` and `.npmrc` reject runtimes below the Node2Shell security floor.
+    Run `mise install` and `mise exec -- node --version` when developing locally;
+    use `mise upgrade node` to refresh an already installed Node 26.
+    Node 26 is currently the Current release line and is scheduled to become LTS.
+    [Node2Shell (CVE-2026-111497)](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)
+    is fixed in 26.12.1. Updating npm dependencies alone does not patch the runtime;
+    rebuild with a fresh base image and redeploy. CI uses `pull: true` for Docker builds.
+    The Docker build logs its actual Node version and enforces the engine range.
     After deployment, verify the running container with `docker exec <container> node --version`.
 *   **Home Assistant**: For robot and car control.
 *   **PostgreSQL 18**: For audit logging, session storage, and OAuth token persistence.
