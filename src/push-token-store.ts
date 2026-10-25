@@ -213,9 +213,12 @@ export async function saveApnsToken(data: ApnsTokenData): Promise<void> {
   }
 }
 
-export async function getAllApnsTokens(): Promise<ApnsTokenData[]> {
+export async function getAllApnsTokens(options: { strict?: boolean } = {}): Promise<ApnsTokenData[]> {
   const pool = getPool();
-  if (!pool) return [];
+  if (!pool) {
+    if (options.strict) throw new Error('APNs token database unavailable');
+    return [];
+  }
 
   try {
     const result = await pool.query(
@@ -226,6 +229,7 @@ export async function getAllApnsTokens(): Promise<ApnsTokenData[]> {
     return result.rows;
   } catch (err) {
     pushLogger.error({ err }, 'Failed to get APNs tokens');
+    if (options.strict) throw err;
     return [];
   }
 }
@@ -308,9 +312,12 @@ export async function saveActivityToken(data: ActivityTokenData): Promise<void> 
   }
 }
 
-export async function getAllActivityTokens(): Promise<ActivityTokenData[]> {
+export async function getAllActivityTokens(options: { strict?: boolean } = {}): Promise<ActivityTokenData[]> {
   const pool = getPool();
-  if (!pool) return [];
+  if (!pool) {
+    if (options.strict) throw new Error('Activity token database unavailable');
+    return [];
+  }
 
   try {
     const result = await pool.query(
@@ -322,6 +329,7 @@ export async function getAllActivityTokens(): Promise<ActivityTokenData[]> {
     return result.rows;
   } catch (err) {
     pushLogger.error({ err }, 'Failed to get activity tokens');
+    if (options.strict) throw err;
     return [];
   }
 }

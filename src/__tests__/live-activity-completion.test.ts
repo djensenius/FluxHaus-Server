@@ -40,6 +40,59 @@ async function initializeIdle() {
 }
 
 describe('completion delivery', () => {
+  it('does not arm idle cleanup after a lookup failure before sources initialize', async () => {
+    vi.mocked(channels.getChannelId).mockRejectedValue(new Error('database unavailable'));
+    await hooks.onMieleStatusChange('washer', { name: 'Washer', timeRemaining: 0, inUse: false });
+    expect(channels.getChannelId).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(channels.getChannelId).toHaveBeenCalledTimes(1);
+    expect(apns.sendMultiDeviceBroadcast).not.toHaveBeenCalled();
+  });
+
+  it.each(['activity', 'apns'])('retries failed %s token reads rather than treating them as empty', async (store) => {
+    vi.mocked(channels.getChannelId).mockResolvedValue(null);
+    if (store === 'activity') {
+      vi.mocked(tokens.getAllActivityTokens).mockRejectedValueOnce(new Error('database unavailable'));
+    } else {
+      vi.mocked(tokens.getAllApnsTokens).mockRejectedValueOnce(new Error('database unavailable'));
+    }
+    await initializeIdle();
+    vi.mocked(tokens.getAllActivityTokens).mockResolvedValue([
+      { activityToken: 'recovered', userSub: 'user' },
+    ]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(apns.sendMultiDeviceDirectUpdate).toHaveBeenCalledWith(
+      [{ activityToken: 'recovered', userSub: 'user' }], { devices: [] }, 'end',
+    );
+    expect(tokens.getAllActivityTokens).toHaveBeenCalledWith({ strict: true });
+    expect(tokens.getAllApnsTokens).toHaveBeenCalledWith({ strict: true });
+  });
+
+  it('does not reconcile idle startup while the robot source is unavailable', async () => {
+    await hooks.onMieleStatusChange('washer', { name: 'Washer', timeRemaining: 0, inUse: false });
+    await hooks.onMieleStatusChange('dryer', { name: 'Dryer', timeRemaining: 0, inUse: false });
+    await hooks.onDishwasherStatusChange({ operationState: 'Inactive', doorState: 'Closed' });
+    await hooks.onRobotStatusChange('Cleanbot', { running: false, stateKnown: false });
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(apns.sendMultiDeviceBroadcast).not.toHaveBeenCalled();
+    await hooks.onRobotStatusChange('Cleanbot', { running: false, stateKnown: true });
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledWith(
+      'consolidated-channel', { devices: [] }, 'end',
+    );
+  });
+
+  it('preserves a running dishwasher during an unavailable operation-state reading', async () => {
+    await initializeIdle();
+    await hooks.onDishwasherStatusChange({ operationState: 'Run', doorState: 'Closed', programProgress: 80 });
+    vi.mocked(apns.sendMultiDeviceBroadcast).mockClear();
+    vi.setSystemTime(Date.now() + 120_000);
+    await hooks.onDishwasherStatusChange({ operationState: 'Run', doorState: 'Closed', stateKnown: false });
+    expect(subscriptions.getApnsTokensForDeviceType).not.toHaveBeenCalled();
+    expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledWith(
+      'consolidated-channel', { devices: [expect.objectContaining({ name: 'Dishwasher', running: true })] }, 'update',
+    );
+  });
+
   it('cleans up surviving activities after restart when every source reports idle', async () => {
     await initializeIdle();
     expect(apns.sendMultiDeviceBroadcast).toHaveBeenCalledWith(

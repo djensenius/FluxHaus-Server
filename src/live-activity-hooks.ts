@@ -19,6 +19,13 @@ const laLogger = logger.child({ subsystem: 'live-activity-hooks' });
 const previousRunningState = new Map<string, boolean>();
 // Track whether each device type has been initialized to avoid false alerts on startup
 const initializedDeviceTypes = new Set<string>();
+const unavailableDeviceTypes = new Set<string>();
+const REQUIRED_DEVICE_TYPES = ['washer', 'dryer', 'dishwasher', 'cleanbot'];
+
+function allSourcesKnown(): boolean {
+  return unavailableDeviceTypes.size === 0
+    && REQUIRED_DEVICE_TYPES.every((type) => initializedDeviceTypes.has(type));
+}
 
 // Cached device states for building consolidated activity
 const cachedDeviceStates = new Map<string, WidgetDevicePayload>();
@@ -75,6 +82,17 @@ function stopKeepAlive(): void {
   if (keepAliveInterval) {
     clearInterval(keepAliveInterval);
     keepAliveInterval = null;
+  }
+}
+
+function preserveUnavailableDevice(activityType: string): void {
+  unavailableDeviceTypes.add(activityType);
+  const previous = cachedDeviceStates.get(activityType);
+  if (previous) {
+    cachedDeviceStates.set(activityType, {
+      ...previous, startedAt: undefined, endsAt: undefined,
+      trailingText: 'Not Connected', shortText: 'Offline',
+    });
   }
 }
 
@@ -216,6 +234,7 @@ export function buildDishwasherContentState(dishwasher: DishWasher): LiveActivit
 }
 
 type RobotLiveActivityStatus = {
+  stateKnown?: boolean;
   running?: boolean;
   paused?: boolean;
   docking?: boolean;
@@ -294,7 +313,10 @@ async function broadcastConsolidated(force = false): Promise<void> {
   // eslint-disable-next-line @typescript-eslint/no-use-before-define
   broadcastQueue = broadcastQueue.then(() => broadcastConsolidatedImpl(force)).catch((err) => {
     laLogger.error({ err }, 'broadcastConsolidated failed');
-    if (!Array.from(cachedDeviceStates.values()).some((device) => device.running)) {
+    const knownTransition = previousRunningState.get('consolidated') === true;
+    if (!Array.from(cachedDeviceStates.values()).some((device) => device.running)
+        && unavailableDeviceTypes.size === 0
+        && (idleCleanupPending || knownTransition || allSourcesKnown())) {
       scheduleIdleCleanupRetry();
     }
   });
@@ -304,13 +326,16 @@ async function broadcastConsolidated(force = false): Promise<void> {
 async function broadcastConsolidatedImpl(force = false): Promise<void> {
   // Don't send push-to-start until all device types have been initialized
   // (or timeout elapsed), to prevent false starts on server restart.
-  const allTypesInitialized = ['washer', 'dryer', 'dishwasher', 'cleanbot']
-    .every((dt) => initializedDeviceTypes.has(dt));
+  const allTypesInitialized = allSourcesKnown();
   const initTimedOut = Date.now() - moduleLoadedAt > INITIALIZATION_TIMEOUT_MS;
   const allInitialized = allTypesInitialized || initTimedOut;
 
   const runningDevices = Array.from(cachedDeviceStates.values()).filter((d) => d.running);
   const hasRunning = runningDevices.length > 0;
+  if (!hasRunning && unavailableDeviceTypes.size > 0) {
+    if (idleCleanupPending) scheduleIdleCleanupRetry();
+    return; // Unavailable sources cannot establish that the whole house is idle.
+  }
   const wasAnyRunning = previousRunningState.get('consolidated') ?? false;
 
   const contentState: MultiDeviceContentState = { devices: runningDevices };
@@ -382,13 +407,13 @@ async function broadcastConsolidatedImpl(force = false): Promise<void> {
       delivered = await sendMultiDeviceBroadcast(channelId, { devices: [] }, 'end');
     }
 
-    const activityTokens = await getAllActivityTokens();
+    const activityTokens = await getAllActivityTokens({ strict: true });
     if (activityTokens.length > 0) {
       delivered = (await sendMultiDeviceDirectUpdate(activityTokens, { devices: [] }, 'end')) && delivered;
     }
 
     // Silent push to wake the app so it can clean up the local activity
-    const apnsTokens = await getAllApnsTokens();
+    const apnsTokens = await getAllApnsTokens({ strict: true });
     if (apnsTokens.length > 0) {
       await sendSilentPushToAll(apnsTokens);
     }
@@ -433,16 +458,11 @@ export async function onMieleStatusChange(
   const normalizedStatus = formatApplianceDisplayText(device.status)?.toLowerCase();
   if (['not connected', 'unavailable', 'unknown'].includes(normalizedStatus ?? '')) {
     // A disconnected sensor cannot establish completion or initialize idle state.
-    const previous = cachedDeviceStates.get(activityType);
-    if (previous) {
-      cachedDeviceStates.set(activityType, {
-        ...previous, startedAt: undefined, endsAt: undefined,
-        trailingText: 'Not Connected', shortText: 'Offline',
-      });
-    }
+    preserveUnavailableDevice(activityType);
     await broadcastConsolidated();
     return;
   }
+  unavailableDeviceTypes.delete(activityType);
   const contentState = buildMieleContentState(name, icon, device);
   const { running } = contentState.device;
 
@@ -473,6 +493,12 @@ export async function onMieleStatusChange(
 
 export async function onDishwasherStatusChange(dishwasher: DishWasher): Promise<void> {
   const activityType = 'dishwasher';
+  if (dishwasher.stateKnown === false) {
+    preserveUnavailableDevice(activityType);
+    await broadcastConsolidated();
+    return;
+  }
+  unavailableDeviceTypes.delete(activityType);
   const contentState = buildDishwasherContentState(dishwasher);
   const { running } = contentState.device;
 
@@ -506,6 +532,12 @@ export async function onRobotStatusChange(
   status: RobotLiveActivityStatus,
 ): Promise<void> {
   const activityType = name.toLowerCase().replace(/\s+/g, '');
+  if (status.stateKnown === false) {
+    preserveUnavailableDevice(activityType);
+    await broadcastConsolidated();
+    return;
+  }
+  unavailableDeviceTypes.delete(activityType);
   const contentState = buildRobotContentState(name, status);
   const { running } = contentState.device;
 

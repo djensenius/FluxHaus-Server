@@ -18,6 +18,7 @@ export type OperationState =
   'Inactive' | 'Ready' | 'DelayedStart' | 'Run' | 'Pause' | 'ActionRequired' | 'Finished' | 'Error' | 'Aborting';
 
 export interface DishWasher {
+  stateKnown?: boolean;
   status?: 'Running' | 'Paused' | 'Finished' | 'Aborted';
   program?: string;
   remainingTime?: number;

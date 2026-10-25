@@ -2,8 +2,8 @@ import { EventEmitter } from 'events';
 import * as http2 from 'http2';
 import fs from 'fs';
 import { importPKCS8 } from 'jose';
-import { closeApns, initApns, sendAlertNotification } from '../apns';
-import { deleteApnsToken } from '../push-token-store';
+import { closeApns, initApns, sendAlertNotification, sendMultiDeviceDirectUpdate } from '../apns';
+import { deleteActivityToken, deleteApnsToken } from '../push-token-store';
 
 vi.mock('fs');
 vi.mock('http2', () => ({
@@ -94,6 +94,19 @@ describe('APNs HTTP/2 transport', () => {
   afterEach(() => {
     closeApns();
     process.env = originalEnv;
+  });
+
+  it.each([
+    { status: 200, reason: '', completed: true },
+    { status: 503, reason: 'ServiceUnavailable', completed: false },
+    { status: 410, reason: 'Unregistered', completed: true },
+  ])('reports direct cleanup delivery outcome for APNs $status', async ({ status, reason, completed }) => {
+    mockApnsResponse(status, reason ? JSON.stringify({ reason }) : '');
+    initApns();
+    await expect(sendMultiDeviceDirectUpdate(
+      [{ activityToken: 'activity' }], { devices: [] }, 'end',
+    )).resolves.toBe(completed);
+    if (status === 410) expect(deleteActivityToken).toHaveBeenCalledWith('activity');
   });
 
   it('sends alert pushes with direct APNs HTTP/2 headers and payload', async () => {
