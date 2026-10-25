@@ -41,6 +41,7 @@ export interface WidgetDevicePayload {
   trailingText: string;
   shortText: string;
   running: boolean;
+  battery?: number;
   programName?: string;
   startedAt?: number;
   endsAt?: number;
