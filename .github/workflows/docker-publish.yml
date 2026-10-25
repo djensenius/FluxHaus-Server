@@ -2,6 +2,9 @@
 name: Docker
 
 "on":
+  # Tags created by Tag on Merge use GITHUB_TOKEN and cannot trigger push workflows.
+  # Dispatch this workflow on the release tag to publish its versioned image.
+  workflow_dispatch:
   push:
     branches: ["main"]
     # Publish semver tags as releases.
