@@ -526,6 +526,7 @@ export async function createServer(): Promise<Express> {
         battery: RobotClass.batteryStatus(robot.cachedStatus),
         timestamp: robot.cachedStatus.timestamp,
         paused: robot.cachedStatus.paused,
+        stateKnown: robot.cachedStatus.stateKnown,
         timeStarted: robot.cachedStatus.timeStarted,
         progressPercent: robot.cachedStatus.progressPercent,
         elapsedMinutes: robot.cachedStatus.elapsedMinutes,

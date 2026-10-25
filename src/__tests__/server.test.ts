@@ -160,6 +160,15 @@ describe('Server', () => {
     await request(app).get('/').expect(401);
   });
 
+  it.each([oidcAuthHeader, basicAuthHeader('demo', 'demopassword')])('forwards robot availability in API snapshots', async (authorization) => {
+    mockCleanbot.cachedStatus.stateKnown = false;
+    const unavailable = await request(app).get('/').set('Authorization', authorization).expect(200);
+    expect(unavailable.body.cleanbot.stateKnown).toBe(false);
+    mockCleanbot.cachedStatus.stateKnown = true;
+    const recovered = await request(app).get('/').set('Authorization', authorization).expect(200);
+    expect(recovered.body.cleanbot.stateKnown).toBe(true);
+  });
+
   it('should return data for admin user', async () => {
     const response = await request(app)
       .get('/')
