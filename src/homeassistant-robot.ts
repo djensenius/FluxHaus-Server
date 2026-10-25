@@ -25,6 +25,7 @@ export interface RobotMaintenance {
 
 interface Status {
   timestamp: Date;
+  stateKnown?: boolean;
   running?: boolean;
   docking?: boolean;
   docked?: boolean;
@@ -184,7 +185,12 @@ export default class HomeAssistantRobot {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private updateStatus(state: any, batteryState?: any, extras: Record<string, any> = {}) {
     // Home Assistant Vacuum states: cleaning, docked, paused, idle, returning, error
-    const status = state.state;
+    const status = state?.state;
+    if (!['cleaning', 'docked', 'paused', 'idle', 'returning', 'error'].includes(status)) {
+      this.cachedStatus = { ...this.cachedStatus, timestamp: new Date(), stateKnown: false };
+      this.onStatusChange?.(this.config.name, this.cachedStatus);
+      return;
+    }
     const { attributes } = state;
 
     const running = status === 'cleaning';
@@ -234,6 +240,7 @@ export default class HomeAssistantRobot {
 
     this.cachedStatus = {
       timestamp: new Date(Date.now()),
+      stateKnown: true,
       running,
       docking,
       docked,

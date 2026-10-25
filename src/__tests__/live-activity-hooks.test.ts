@@ -53,7 +53,7 @@ beforeEach(() => {
   mockGetAllActivityTokens.mockReset();
   mockGetFilteredApnsTokens.mockResolvedValue([]);
   mockMultiDeviceBroadcast.mockResolvedValue(true);
-  mockDirectUpdate.mockResolvedValue(undefined);
+  mockDirectUpdate.mockResolvedValue(true);
   mockSendAlertToAll.mockResolvedValue(undefined);
   mockGetSubscribedTokens.mockResolvedValue([]);
   mockMultiPushToStart.mockResolvedValue(undefined);

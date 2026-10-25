@@ -127,8 +127,15 @@ export default class HomeAssistantDishwasher {
       const prev = { ...this.dishwasher };
 
       // Operation state
-      const opStateValue = opState?.state?.toLowerCase() || 'inactive';
-      this.dishwasher.operationState = OPERATION_STATE_MAP[opStateValue] || 'Inactive';
+      const opStateValue = opState?.state?.toLowerCase();
+      const operationState = OPERATION_STATE_MAP[opStateValue];
+      if (!operationState) {
+        this.dishwasher.stateKnown = false;
+        if (prev.stateKnown !== false) this.onStatusChange?.(this.dishwasher);
+        return; // Unknown connectivity is not an Inactive/finished cycle.
+      }
+      this.dishwasher.stateKnown = true;
+      this.dishwasher.operationState = operationState;
 
       // Door state
       this.dishwasher.doorState = door?.state === 'open' ? 'Open' : 'Closed';
@@ -176,7 +183,8 @@ export default class HomeAssistantDishwasher {
       }
 
       // Fire callback if state changed
-      const changed = prev.operationState !== this.dishwasher.operationState
+      const changed = prev.stateKnown !== this.dishwasher.stateKnown
+        || prev.operationState !== this.dishwasher.operationState
         || prev.programProgress !== this.dishwasher.programProgress
         || prev.doorState !== this.dishwasher.doorState
         || prev.remainingTime !== this.dishwasher.remainingTime

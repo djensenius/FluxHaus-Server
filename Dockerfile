@@ -1,10 +1,11 @@
-FROM node:24-alpine
+# Track Node 26 updates; npm's strict engine check enforces the security floor.
+FROM node:26-alpine
 
 WORKDIR /app
 
-COPY package*.json ./
+COPY package*.json .npmrc ./
 
-RUN npm ci
+RUN node --version && npm ci
 
 COPY . .
 

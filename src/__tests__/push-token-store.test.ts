@@ -2,6 +2,8 @@ import {
   deleteDeviceToken,
   deletePushToken,
   getAllActivePushTokens,
+  getAllActivityTokens,
+  getAllApnsTokens,
   getAllDeviceTokens,
   getApnsTokensByUser,
   getDeviceTokensByUser,
@@ -34,6 +36,16 @@ beforeEach(() => {
 });
 
 describe('push-token-store', () => {
+  it.each([getAllActivityTokens, getAllApnsTokens])('strict lookup distinguishes failed reads from no tokens', async (lookup) => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    await expect(lookup({ strict: true })).resolves.toEqual([]);
+    mockQuery.mockRejectedValue(new Error('database unavailable'));
+    await expect(lookup({ strict: true })).rejects.toThrow('database unavailable');
+    await expect(lookup()).resolves.toEqual([]);
+    (getPool as vi.Mock).mockReturnValueOnce(null);
+    await expect(lookup({ strict: true })).rejects.toThrow('database unavailable');
+  });
+
   const sampleToken: PushTokenData = {
     userSub: 'user-123',
     pushToken: 'abc-token-xyz',
