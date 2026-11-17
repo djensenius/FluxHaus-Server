@@ -28,7 +28,7 @@ import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import { createMetricsRouter } from './metrics';
 import Blueair from './blueair';
-import IndoorClimate from './indoor-climate';
+import IndoorClimate, { IndoorClimateStatus, ThermostatControlError } from './indoor-climate';
 import AirQuality from './air-quality';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
@@ -91,6 +91,18 @@ function parseOnFlag(value: unknown): boolean | null {
     const v = value.trim().toLowerCase();
     if (['true', '1', 'on', 'yes'].includes(v)) return true;
     if (['false', '0', 'off', 'no'].includes(v)) return false;
+  }
+  return null;
+}
+
+// Parses a numeric request field (a number or numeric string). Returns
+// undefined when the field is absent and null when it isn't a finite number.
+function parseNumberField(value: unknown): number | null | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
   return null;
 }
@@ -812,6 +824,121 @@ export async function createServer(): Promise<Express> {
       serverLogger.error({ err }, 'airPurifierLight failed');
       res.status(502).send('Air purifier light control failed');
     }
+  });
+
+  // Ecobee thermostat controls. Each responds with the refreshed indoor climate
+  // status; invalid requests are 400 and a missing/unavailable thermostat 409.
+  const sendThermostatControl = async (
+    res: express.Response,
+    label: string,
+    control: (climate: IndoorClimate) => Promise<IndoorClimateStatus>,
+  ) => {
+    if (!indoorClimate) {
+      res.status(503).send('Indoor climate unavailable');
+      return;
+    }
+    try {
+      res.json(await control(indoorClimate));
+    } catch (err) {
+      if (err instanceof ThermostatControlError) {
+        res.status(err.status).send(err.message);
+        return;
+      }
+      serverLogger.error({ err }, `${label} failed`);
+      res.status(502).send('Thermostat control failed');
+    }
+  };
+
+  app.post('/thermostat/temperature', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    const temperature = parseNumberField(req.body?.temperature);
+    const targetTempLow = parseNumberField(req.body?.targetTempLow);
+    const targetTempHigh = parseNumberField(req.body?.targetTempHigh);
+    if (temperature !== undefined) {
+      if (targetTempLow !== undefined || targetTempHigh !== undefined) {
+        res.status(400).send('Provide either temperature or targetTempLow and targetTempHigh');
+        return;
+      }
+      if (temperature === null) {
+        res.status(400).send('temperature must be a number');
+        return;
+      }
+      await sendThermostatControl(res, 'thermostat/temperature', (climate) => (
+        climate.setTemperature({ temperature })
+      ));
+      return;
+    }
+    if (targetTempLow === undefined || targetTempHigh === undefined) {
+      res.status(400).send('temperature, or targetTempLow and targetTempHigh, are required');
+      return;
+    }
+    if (targetTempLow === null || targetTempHigh === null) {
+      res.status(400).send('targetTempLow and targetTempHigh must be numbers');
+      return;
+    }
+    await sendThermostatControl(res, 'thermostat/temperature', (climate) => (
+      climate.setTemperature({ targetTempLow, targetTempHigh })
+    ));
+  });
+
+  app.post('/thermostat/mode', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    const mode = req.body?.mode;
+    if (typeof mode !== 'string' || mode.trim() === '') {
+      res.status(400).send('mode is required');
+      return;
+    }
+    await sendThermostatControl(res, 'thermostat/mode', (climate) => climate.setHvacMode(mode));
+  });
+
+  app.post('/thermostat/preset', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    const preset = req.body?.preset;
+    if (typeof preset !== 'string' || preset.trim() === '') {
+      res.status(400).send('preset is required');
+      return;
+    }
+    await sendThermostatControl(res, 'thermostat/preset', (climate) => climate.setPresetMode(preset));
+  });
+
+  app.post('/thermostat/fan', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    const mode = req.body?.mode;
+    if (typeof mode !== 'string' || mode.trim() === '') {
+      res.status(400).send('mode is required');
+      return;
+    }
+    await sendThermostatControl(res, 'thermostat/fan', (climate) => climate.setFanMode(mode));
+  });
+
+  app.post('/thermostat/resume', cors(corsOptions), csrfMiddleware, async (req, res) => {
+    if (req.user?.role !== 'admin') {
+      res.status(403).send('Forbidden');
+      return;
+    }
+    const rawResumeAll = req.body?.resumeAll;
+    let resumeAll = false;
+    if (rawResumeAll !== undefined && rawResumeAll !== null && rawResumeAll !== '') {
+      const parsed = parseOnFlag(rawResumeAll);
+      if (parsed === null) {
+        res.status(400).send('resumeAll must be a boolean');
+        return;
+      }
+      resumeAll = parsed;
+    }
+    await sendThermostatControl(res, 'thermostat/resume', (climate) => climate.resumeProgram(resumeAll));
   });
 
   app.post('/startCar', cors(corsOptions), csrfMiddleware, async (req, res) => {

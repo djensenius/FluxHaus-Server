@@ -912,6 +912,62 @@ export default function createMcpServer(
   );
 
   server.tool(
+    'set_thermostat',
+    'Control the Ecobee thermostat. Provide at least one option; they are applied in order: resume_program, '
+    + 'hvac_mode, preset_mode, fan_mode, then the set point(s). Use temperature in heat/cool mode, or '
+    + 'target_temp_low + target_temp_high in heat_cool mode. Supported modes, presets, fan modes and the '
+    + 'min/max temperature are in get_home_summary (indoorClimate.thermostat). Returns the updated indoor '
+    + 'climate status.',
+    {
+      temperature: z.number().optional()
+        .describe('Target temperature in the thermostat unit (not in heat_cool mode)'),
+      target_temp_low: z.number().optional()
+        .describe('Heating set point for heat_cool mode (requires target_temp_high)'),
+      target_temp_high: z.number().optional()
+        .describe('Cooling set point for heat_cool mode (requires target_temp_low)'),
+      hvac_mode: z.string().optional().describe('HVAC mode, e.g. off, heat, cool, heat_cool'),
+      preset_mode: z.string().optional().describe('Preset / comfort setting, e.g. home, away, sleep'),
+      fan_mode: z.string().optional().describe('Fan mode, e.g. auto, on'),
+      resume_program: z.boolean().optional()
+        .describe('Cancel the current hold and resume the thermostat schedule'),
+    },
+    IDEMPOTENT_WRITE_CLOSED,
+    async (args) => {
+      const { indoorClimate } = services;
+      if (!indoorClimate) {
+        return { isError: true, content: [{ type: 'text' as const, text: 'Indoor climate is not configured' }] };
+      }
+      const setsTemperature = args.temperature !== undefined
+        || args.target_temp_low !== undefined
+        || args.target_temp_high !== undefined;
+      if (!setsTemperature && !args.resume_program && args.hvac_mode === undefined
+        && args.preset_mode === undefined && args.fan_mode === undefined) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: 'Provide at least one of temperature, target_temp_low/target_temp_high, hvac_mode, '
+              + 'preset_mode, fan_mode or resume_program',
+          }],
+        };
+      }
+      let status = indoorClimate.cachedStatus;
+      if (args.resume_program) status = await indoorClimate.resumeProgram();
+      if (args.hvac_mode !== undefined) status = await indoorClimate.setHvacMode(args.hvac_mode);
+      if (args.preset_mode !== undefined) status = await indoorClimate.setPresetMode(args.preset_mode);
+      if (args.fan_mode !== undefined) status = await indoorClimate.setFanMode(args.fan_mode);
+      if (setsTemperature) {
+        status = await indoorClimate.setTemperature({
+          temperature: args.temperature,
+          targetTempLow: args.target_temp_low,
+          targetTempHigh: args.target_temp_high,
+        });
+      }
+      return jsonResult(status);
+    },
+  );
+
+  server.tool(
     'get_home_summary',
     'Get a full summary of the home: car, robots, appliances, indoor temperatures (per-room sensors, '
     + 'occupancy and thermostat), and active HA entities — useful for a quick overview',

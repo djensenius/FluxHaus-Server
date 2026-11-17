@@ -6,6 +6,29 @@ const indoorClimateLogger = logger.child({ subsystem: 'indoor-climate' });
 const SAFE_NAME = /^[a-z0-9_]+$/;
 const SUPPORTED_ENTITY = /^(sensor|binary_sensor|climate)\.[a-z0-9_]+$/;
 const UNAVAILABLE_STATES = new Set(['unavailable', 'unknown']);
+// Used to validate set_hvac_mode when the thermostat doesn't report hvac_modes.
+const DEFAULT_HVAC_MODES = ['off', 'heat', 'cool', 'heat_cool', 'auto', 'dry', 'fan_only'];
+
+// A control request the thermostat can't accept: 400 for invalid input, 409
+// when there is no usable thermostat. Anything else thrown by a control method
+// is a Home Assistant failure or timeout.
+export class ThermostatControlError extends Error {
+  public readonly status: 400 | 409;
+
+  constructor(status: 400 | 409, message: string) {
+    super(message);
+    this.name = 'ThermostatControlError';
+    this.status = status;
+  }
+}
+
+export interface ThermostatTemperatureRequest {
+  // Single set point (any mode except heat_cool).
+  temperature?: number;
+  // Heat/cool set points (heat_cool mode only); both are required together.
+  targetTempLow?: number;
+  targetTempHigh?: number;
+}
 
 export interface IndoorTemperatureSensor {
   entityId: string;
@@ -32,6 +55,13 @@ export interface ThermostatStatus {
   targetTemperatureLow: number | null;
   targetTemperatureHigh: number | null;
   presetMode: string | null;
+  hvacModes: string[];
+  presetModes: string[];
+  fanMode: string | null;
+  fanModes: string[];
+  minTemp: number | null;
+  maxTemp: number | null;
+  targetTempStep: number | null;
 }
 
 export interface IndoorClimateStatus {
@@ -48,6 +78,8 @@ export interface IndoorClimateConfig {
   discoveryInterval?: number;
   // Per-request timeout for Home Assistant calls made by this poller.
   requestTimeout?: number;
+  // Timeout for thermostat control service calls (Ecobee cloud calls are slow).
+  controlTimeout?: number;
 }
 
 interface DiscoveredEntity {
@@ -70,9 +102,9 @@ function emptyStatus(): IndoorClimateStatus {
   };
 }
 
-// Bounds a single Home Assistant request so one hung call cannot stall polling.
-// Deliberately local to this poller: other HA calls (e.g. car commands) can
-// legitimately take much longer.
+// Bounds a single Home Assistant request so one hung call cannot stall polling
+// or a thermostat control request. Deliberately local to this module: other HA
+// calls (e.g. car commands) can legitimately take much longer.
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
@@ -89,6 +121,10 @@ function toNumber(value: unknown): number | null {
 
 function toStringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
+}
+
+function toStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 }
 
 function isAvailable(state: HaState | null | undefined): state is HaState {
@@ -186,7 +222,34 @@ function toThermostat(
     targetTemperatureLow: toNumber(attributes.target_temp_low),
     targetTemperatureHigh: toNumber(attributes.target_temp_high),
     presetMode: toStringOrNull(attributes.preset_mode),
+    hvacModes: toStringArray(attributes.hvac_modes),
+    presetModes: toStringArray(attributes.preset_modes),
+    fanMode: toStringOrNull(attributes.fan_mode),
+    fanModes: toStringArray(attributes.fan_modes),
+    minTemp: toNumber(attributes.min_temp),
+    maxTemp: toNumber(attributes.max_temp),
+    targetTempStep: toNumber(attributes.target_temp_step),
   };
+}
+
+// Error messages never echo the requested value: routes send them as text.
+function requireSupported(value: string, supported: string[], label: string): void {
+  if (supported.length === 0) {
+    throw new ThermostatControlError(400, `Thermostat does not report any ${label}s`);
+  }
+  if (!supported.includes(value)) {
+    throw new ThermostatControlError(400, `Unsupported ${label} (supported: ${supported.join(', ')})`);
+  }
+}
+
+function checkRange(value: number, thermostat: ThermostatStatus, label: string): void {
+  const { minTemp, maxTemp } = thermostat;
+  if ((minTemp !== null && value < minTemp) || (maxTemp !== null && value > maxTemp)) {
+    let range = `between ${minTemp} and ${maxTemp}`;
+    if (maxTemp === null) range = `at least ${minTemp}`;
+    else if (minTemp === null) range = `at most ${maxTemp}`;
+    throw new ThermostatControlError(400, `${label} must be ${range}`);
+  }
 }
 
 export default class IndoorClimate {
@@ -203,6 +266,8 @@ export default class IndoorClimate {
   private discoveryInterval: number;
 
   private requestTimeout: number;
+
+  private controlTimeout: number;
 
   private discovered: DiscoveredEntity[] = [];
 
@@ -221,6 +286,7 @@ export default class IndoorClimate {
     this.integration = config.integration ?? 'ecobee';
     this.discoveryInterval = config.discoveryInterval ?? 10 * 60_000;
     this.requestTimeout = config.requestTimeout ?? 15_000;
+    this.controlTimeout = config.controlTimeout ?? 30_000;
     this.integrationValid = SAFE_NAME.test(this.integration);
     if (!this.integrationValid) {
       indoorClimateLogger.error(
@@ -264,6 +330,108 @@ export default class IndoorClimate {
     return this.cachedStatus.sensors
       .map((sensor) => objectId(sensor.entityId))
       .filter((id) => SAFE_NAME.test(id));
+  }
+
+  public async setTemperature(request: ThermostatTemperatureRequest): Promise<IndoorClimateStatus> {
+    const thermostat = await this.controllableThermostat();
+    const { temperature, targetTempLow, targetTempHigh } = request;
+    if (temperature !== undefined) {
+      if (targetTempLow !== undefined || targetTempHigh !== undefined) {
+        throw new ThermostatControlError(400, 'Provide either temperature or targetTempLow and targetTempHigh');
+      }
+      if (!Number.isFinite(temperature)) {
+        throw new ThermostatControlError(400, 'temperature must be a finite number');
+      }
+      if (thermostat.hvacMode === 'heat_cool') {
+        throw new ThermostatControlError(
+          400,
+          'Thermostat is in heat_cool mode; set targetTempLow and targetTempHigh instead',
+        );
+      }
+      checkRange(temperature, thermostat, 'temperature');
+      return this.callControl('climate', 'set_temperature', { entity_id: thermostat.entityId, temperature });
+    }
+    if (targetTempLow === undefined || targetTempHigh === undefined) {
+      throw new ThermostatControlError(400, 'temperature, or targetTempLow and targetTempHigh, are required');
+    }
+    if (!Number.isFinite(targetTempLow) || !Number.isFinite(targetTempHigh)) {
+      throw new ThermostatControlError(400, 'targetTempLow and targetTempHigh must be finite numbers');
+    }
+    if (thermostat.hvacMode !== 'heat_cool') {
+      throw new ThermostatControlError(400, 'targetTempLow and targetTempHigh require heat_cool mode');
+    }
+    if (targetTempLow >= targetTempHigh) {
+      throw new ThermostatControlError(400, 'targetTempLow must be lower than targetTempHigh');
+    }
+    checkRange(targetTempLow, thermostat, 'targetTempLow');
+    checkRange(targetTempHigh, thermostat, 'targetTempHigh');
+    return this.callControl('climate', 'set_temperature', {
+      entity_id: thermostat.entityId,
+      target_temp_low: targetTempLow,
+      target_temp_high: targetTempHigh,
+    });
+  }
+
+  public async setHvacMode(mode: string): Promise<IndoorClimateStatus> {
+    const thermostat = await this.controllableThermostat();
+    requireSupported(
+      mode,
+      thermostat.hvacModes.length > 0 ? thermostat.hvacModes : DEFAULT_HVAC_MODES,
+      'HVAC mode',
+    );
+    return this.callControl('climate', 'set_hvac_mode', { entity_id: thermostat.entityId, hvac_mode: mode });
+  }
+
+  public async setPresetMode(preset: string): Promise<IndoorClimateStatus> {
+    const thermostat = await this.controllableThermostat();
+    requireSupported(preset, thermostat.presetModes, 'preset mode');
+    return this.callControl('climate', 'set_preset_mode', { entity_id: thermostat.entityId, preset_mode: preset });
+  }
+
+  public async setFanMode(mode: string): Promise<IndoorClimateStatus> {
+    const thermostat = await this.controllableThermostat();
+    requireSupported(mode, thermostat.fanModes, 'fan mode');
+    return this.callControl('climate', 'set_fan_mode', { entity_id: thermostat.entityId, fan_mode: mode });
+  }
+
+  // Cancels the active hold (or every hold with resumeAll) so the Ecobee
+  // schedule takes over again.
+  public async resumeProgram(resumeAll = false): Promise<IndoorClimateStatus> {
+    if (this.integration !== 'ecobee') {
+      throw new ThermostatControlError(400, 'Resume program is not supported by this integration');
+    }
+    const thermostat = await this.controllableThermostat();
+    return this.callControl('ecobee', 'resume_program', {
+      entity_id: thermostat.entityId,
+      resume_all: resumeAll,
+    });
+  }
+
+  private async controllableThermostat(): Promise<ThermostatStatus> {
+    // Before the first successful poll (e.g. right after startup) try once
+    // rather than rejecting a thermostat we simply haven't seen yet.
+    if (!this.cachedStatus.thermostat) await this.refresh();
+    const { thermostat } = this.cachedStatus;
+    if (!thermostat) throw new ThermostatControlError(409, 'No thermostat discovered');
+    if (!thermostat.available) throw new ThermostatControlError(409, 'Thermostat unavailable');
+    return thermostat;
+  }
+
+  private async callControl(
+    domain: string,
+    service: string,
+    serviceData: Record<string, unknown>,
+  ): Promise<IndoorClimateStatus> {
+    await withTimeout(
+      this.client.callService(domain, service, serviceData),
+      this.controlTimeout,
+      `${domain}.${service}`,
+    );
+    // A poll already in flight may have read the state before this change, so
+    // let it finish and then poll again for the updated thermostat.
+    if (this.inFlight) await this.inFlight;
+    await this.refresh();
+    return this.cachedStatus;
   }
 
   private async discover(): Promise<void> {

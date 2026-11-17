@@ -256,7 +256,10 @@ The server auto-discovers the entities of one Home Assistant integration
   (`unit_of_measurement`, `null` if unknown);
 - an `occupancy` `binary_sensor` on the same device supplies `occupied`;
 - the first `climate.*` entity (by entity id) is reported as the thermostat
-  (mode, action, set points, preset, current temperature/humidity, area);
+  (mode, action, set points, preset, current temperature/humidity, area, plus
+  the control capabilities `hvacModes`, `presetModes`, `fanMode`, `fanModes`,
+  `minTemp`, `maxTemp` and `targetTempStep` — lists are `[]` and values `null`
+  when HA doesn't report them);
   temperature sensors on the device of *any* discovered `climate.*` entity are
   flagged `isThermostat` and listed first.
 
@@ -278,6 +281,38 @@ must be allowed to render templates — the same requirement as the MCP
 `render_template` tool. If discovery fails, the last discovered entities are kept.
 Each Home Assistant request made by this poller times out after 15 seconds, so a
 hung request can't stall polling.
+
+### Thermostat controls
+
+Admin-only (`403` otherwise; cookie sessions need the CSRF token) routes that
+control the reported thermostat:
+
+| Route | Body | Home Assistant service |
+|-------|------|------------------------|
+| `POST /thermostat/temperature` | `{ temperature }` or `{ targetTempLow, targetTempHigh }` | `climate.set_temperature` |
+| `POST /thermostat/mode` | `{ mode }` (one of `hvacModes`) | `climate.set_hvac_mode` |
+| `POST /thermostat/preset` | `{ preset }` (one of `presetModes`) | `climate.set_preset_mode` |
+| `POST /thermostat/fan` | `{ mode }` (one of `fanModes`) | `climate.set_fan_mode` |
+| `POST /thermostat/resume` | `{ resumeAll? }` (default `false`) | `ecobee.resume_program` |
+
+Temperatures accept numbers or numeric strings and must be within
+`minTemp`..`maxTemp` when known. Use `temperature` outside `heat_cool` mode and
+`targetTempLow` < `targetTempHigh` in `heat_cool` mode. If the thermostat
+doesn't report `hvacModes`, `mode` must be one of `off`, `heat`, `cool`,
+`heat_cool`, `auto`, `dry` or `fan_only`. Resume is only available when
+`INDOOR_CLIMATE_INTEGRATION=ecobee`.
+
+Success returns `200` with the refreshed `indoorClimate` snapshot. Invalid
+requests return `400`, and a missing or unavailable thermostat returns `409`,
+each with a plain-text reason. Home Assistant errors return `502`
+`Thermostat control failed`. Control calls time out after 30 seconds because
+Ecobee cloud calls can be slow. A timed-out change may still be applied.
+
+The MCP `set_thermostat` tool takes `temperature`, `target_temp_low`,
+`target_temp_high`, `hvac_mode`, `preset_mode`, `fan_mode` and
+`resume_program` (at least one is required). It applies them in the order
+resume → HVAC mode → preset → fan → temperature and returns the resulting
+snapshot. A failing step stops the sequence, but earlier steps stay applied.
 
 ## Car analytics
 

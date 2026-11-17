@@ -6,7 +6,7 @@ import HomeAssistantRobot from '../homeassistant-robot';
 import Car from '../car';
 import Miele from '../miele';
 import HomeConnect from '../homeconnect';
-import IndoorClimate from '../indoor-climate';
+import IndoorClimate, { ThermostatControlError } from '../indoor-climate';
 import transcribeAudio from '../stt';
 import synthesizeSpeech from '../tts';
 import { executeAICommand } from '../ai-command';
@@ -18,7 +18,11 @@ vi.mock('../homeassistant-robot');
 vi.mock('../car');
 vi.mock('../miele');
 vi.mock('../homeconnect');
-vi.mock('../indoor-climate');
+// Keep the real ThermostatControlError so the routes' instanceof check works.
+vi.mock('../indoor-climate', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../indoor-climate')>()),
+  default: vi.fn(),
+}));
 vi.mock('../homeassistant-client');
 vi.mock('../stt', () => ({
   __esModule: true,
@@ -175,6 +179,12 @@ describe('Server', () => {
       },
       temperatureObjectIds: vi.fn().mockReturnValue(['bedroom_temperature']),
     };
+    const resolveStatus = () => Promise.resolve(mockIndoorClimate.cachedStatus);
+    mockIndoorClimate.setTemperature = vi.fn(resolveStatus);
+    mockIndoorClimate.setHvacMode = vi.fn(resolveStatus);
+    mockIndoorClimate.setPresetMode = vi.fn(resolveStatus);
+    mockIndoorClimate.setFanMode = vi.fn(resolveStatus);
+    mockIndoorClimate.resumeProgram = vi.fn(resolveStatus);
     (IndoorClimate as unknown as vi.Mock).mockImplementation(function () { return mockIndoorClimate; });
 
     app = await createServer();
@@ -396,6 +406,79 @@ describe('Server', () => {
       .set('Authorization', oidcAuthHeader)
       .send({ on: true })
       .expect(200);
+  });
+
+  it.each([
+    ['/thermostat/temperature', { temperature: '21.5' }, 'setTemperature', [{ temperature: 21.5 }]],
+    ['/thermostat/temperature', { targetTempLow: 20, targetTempHigh: '24' }, 'setTemperature',
+      [{ targetTempLow: 20, targetTempHigh: 24 }]],
+    ['/thermostat/mode', { mode: 'heat_cool' }, 'setHvacMode', ['heat_cool']],
+    ['/thermostat/preset', { preset: 'Work From Home' }, 'setPresetMode', ['Work From Home']],
+    ['/thermostat/fan', { mode: 'on' }, 'setFanMode', ['on']],
+    ['/thermostat/resume', {}, 'resumeProgram', [false]],
+    ['/thermostat/resume', { resumeAll: true }, 'resumeProgram', [true]],
+  ])('controls the thermostat via %s for admin and returns the status', async (route, body, method, args) => {
+    const response = await request(app)
+      .post(route)
+      .set('Authorization', oidcAuthHeader)
+      .send(body)
+      .expect(200);
+    expect(mockIndoorClimate[method]).toHaveBeenCalledWith(...args);
+    expect(response.body).toEqual(JSON.parse(JSON.stringify(mockIndoorClimate.cachedStatus)));
+  });
+
+  it('rejects thermostat control for non-admin users', async () => {
+    await request(app)
+      .post('/thermostat/temperature')
+      .set('Authorization', basicAuthHeader('demo', 'demopassword'))
+      .send({ temperature: 21 })
+      .expect(403);
+    expect(mockIndoorClimate.setTemperature).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['/thermostat/temperature', {}],
+    ['/thermostat/temperature', { temperature: 'warm' }],
+    ['/thermostat/temperature', { temperature: 21, targetTempLow: 20 }],
+    ['/thermostat/temperature', { targetTempLow: 20 }],
+    ['/thermostat/mode', { mode: '' }],
+    ['/thermostat/preset', {}],
+    ['/thermostat/fan', { mode: 3 }],
+    ['/thermostat/resume', { resumeAll: 'maybe' }],
+  ])('rejects an invalid %s body with 400', async (route, body) => {
+    await request(app)
+      .post(route)
+      .set('Authorization', oidcAuthHeader)
+      .send(body)
+      .expect(400);
+    expect(mockIndoorClimate.setTemperature).not.toHaveBeenCalled();
+    expect(mockIndoorClimate.setHvacMode).not.toHaveBeenCalled();
+    expect(mockIndoorClimate.setPresetMode).not.toHaveBeenCalled();
+    expect(mockIndoorClimate.setFanMode).not.toHaveBeenCalled();
+    expect(mockIndoorClimate.resumeProgram).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 'Unsupported preset mode (supported: home, away)'],
+    [409, 'No thermostat discovered'],
+  ] as const)('maps a %i thermostat control error to its status and message', async (status, message) => {
+    mockIndoorClimate.setPresetMode.mockRejectedValueOnce(new ThermostatControlError(status, message));
+    const response = await request(app)
+      .post('/thermostat/preset')
+      .set('Authorization', oidcAuthHeader)
+      .send({ preset: 'vacation' })
+      .expect(status);
+    expect(response.text).toBe(message);
+  });
+
+  it('returns 502 when Home Assistant fails a thermostat control', async () => {
+    mockIndoorClimate.setHvacMode.mockRejectedValueOnce(new Error('climate.set_hvac_mode timed out after 30000ms'));
+    const response = await request(app)
+      .post('/thermostat/mode')
+      .set('Authorization', oidcAuthHeader)
+      .send({ mode: 'heat' })
+      .expect(502);
+    expect(response.text).toBe('Thermostat control failed');
   });
 
   it('should handle deep clean', async () => {

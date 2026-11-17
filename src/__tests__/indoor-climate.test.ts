@@ -1,4 +1,4 @@
-import IndoorClimate from '../indoor-climate';
+import IndoorClimate, { ThermostatControlError } from '../indoor-climate';
 import { HomeAssistantClient } from '../homeassistant-client';
 
 vi.mock('../homeassistant-client');
@@ -140,8 +140,44 @@ describe('IndoorClimate', () => {
       targetTemperatureLow: null,
       targetTemperatureHigh: null,
       presetMode: 'home',
+      hvacModes: [],
+      presetModes: [],
+      fanMode: null,
+      fanModes: [],
+      minTemp: null,
+      maxTemp: null,
+      targetTempStep: null,
     });
     expect(indoorClimate.cachedStatus.unit).toBe('°C');
+  });
+
+  it('maps the thermostat control capabilities, keeping only strings and finite numbers', async () => {
+    mockStates({
+      ...STATES,
+      'climate.home': {
+        state: 'heat',
+        attributes: {
+          hvac_modes: ['off', 'heat', 3, null, 'cool'],
+          preset_modes: 'home',
+          fan_mode: 'auto',
+          fan_modes: ['auto', 'on'],
+          min_temp: 7,
+          max_temp: 'warm',
+          target_temp_step: 0.5,
+        },
+      },
+    });
+    indoorClimate = new IndoorClimate({ client: mockClient });
+    await indoorClimate.refresh();
+    expect(indoorClimate.cachedStatus.thermostat).toMatchObject({
+      hvacModes: ['off', 'heat', 'cool'],
+      presetModes: [],
+      fanMode: 'auto',
+      fanModes: ['auto', 'on'],
+      minTemp: 7,
+      maxTemp: null,
+      targetTempStep: 0.5,
+    });
   });
 
   it('maps heat_cool set points and falls back to the thermostat humidity sensor', async () => {
@@ -278,6 +314,198 @@ describe('IndoorClimate', () => {
     expect(mockClient.getState).not.toHaveBeenCalled();
     expect(indoorClimate.cachedStatus).toEqual({
       timestamp: new Date(0), thermostat: null, sensors: [], unit: null,
+    });
+  });
+
+  describe('thermostat controls', () => {
+    type Control = (climate: IndoorClimate) => Promise<unknown>;
+
+    const CONTROLLABLE = {
+      state: 'heat',
+      attributes: {
+        friendly_name: 'Home',
+        current_temperature: 21.5,
+        temperature: 21,
+        hvac_modes: ['off', 'heat', 'cool', 'heat_cool'],
+        preset_modes: ['home', 'away', 'sleep'],
+        fan_mode: 'auto',
+        fan_modes: ['auto', 'on'],
+        min_temp: 7,
+        max_temp: 35,
+        target_temp_step: 0.5,
+      },
+    };
+    const HEAT_COOL = {
+      state: 'heat_cool',
+      attributes: {
+        ...CONTROLLABLE.attributes, temperature: null, target_temp_low: 20, target_temp_high: 24,
+      },
+    };
+
+    function withTarget(temperature: number) {
+      return { ...CONTROLLABLE, attributes: { ...CONTROLLABLE.attributes, temperature } };
+    }
+
+    async function start(climateState: unknown = CONTROLLABLE, integration?: string): Promise<IndoorClimate> {
+      mockStates({ ...STATES, 'climate.home': climateState });
+      const climate = new IndoorClimate({ client: mockClient, integration, controlTimeout: 50 });
+      indoorClimate = climate;
+      await climate.refresh();
+      return climate;
+    }
+
+    beforeEach(() => {
+      mockClient.callService = vi.fn().mockResolvedValue([]);
+    });
+
+    it('sets a single set point and returns the status refreshed after the call', async () => {
+      const climate = await start();
+      mockClient.callService = vi.fn().mockImplementation(async () => {
+        mockStates({ ...STATES, 'climate.home': withTarget(22.5) });
+        return [];
+      });
+      const status = await climate.setTemperature({ temperature: 22.5 });
+      expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_temperature', {
+        entity_id: 'climate.home', temperature: 22.5,
+      });
+      expect(status).toBe(climate.cachedStatus);
+      expect(status.thermostat?.targetTemperature).toBe(22.5);
+    });
+
+    it('sets the heat and cool set points in heat_cool mode', async () => {
+      const climate = await start(HEAT_COOL);
+      await climate.setTemperature({ targetTempLow: 19.5, targetTempHigh: 25 });
+      expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_temperature', {
+        entity_id: 'climate.home', target_temp_low: 19.5, target_temp_high: 25,
+      });
+    });
+
+    it.each<[string, Control, string, string, Record<string, unknown>]>([
+      ['HVAC mode', (c) => c.setHvacMode('cool'), 'climate', 'set_hvac_mode', { hvac_mode: 'cool' }],
+      ['preset mode', (c) => c.setPresetMode('away'), 'climate', 'set_preset_mode', { preset_mode: 'away' }],
+      ['fan mode', (c) => c.setFanMode('on'), 'climate', 'set_fan_mode', { fan_mode: 'on' }],
+      ['resume program', (c) => c.resumeProgram(), 'ecobee', 'resume_program', { resume_all: false }],
+      ['resume all', (c) => c.resumeProgram(true), 'ecobee', 'resume_program', { resume_all: true }],
+    ])('sends the %s service call', async (_label, control, domain, service, data) => {
+      const climate = await start();
+      await control(climate);
+      expect(mockClient.callService).toHaveBeenCalledWith(domain, service, { entity_id: 'climate.home', ...data });
+    });
+
+    it('validates HVAC modes against the HA defaults when the thermostat lists none', async () => {
+      const climate = await start({ state: 'heat', attributes: {} });
+      await climate.setHvacMode('fan_only');
+      expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_hvac_mode', {
+        entity_id: 'climate.home', hvac_mode: 'fan_only',
+      });
+      await expect(climate.setHvacMode('eco')).rejects.toMatchObject({ status: 400 });
+    });
+
+    it.each<[string, unknown, Control, string]>([
+      ['an out-of-range temperature', CONTROLLABLE, (c) => c.setTemperature({ temperature: 40 }),
+        'temperature must be between 7 and 35'],
+      ['a temperature below a known minimum', { state: 'heat', attributes: { min_temp: 10 } },
+        (c) => c.setTemperature({ temperature: 5 }), 'temperature must be at least 10'],
+      ['a non-finite temperature', CONTROLLABLE, (c) => c.setTemperature({ temperature: Number.NaN }),
+        'temperature must be a finite number'],
+      ['a single temperature in heat_cool mode', HEAT_COOL, (c) => c.setTemperature({ temperature: 21 }),
+        'Thermostat is in heat_cool mode; set targetTempLow and targetTempHigh instead'],
+      ['low/high set points outside heat_cool mode', CONTROLLABLE,
+        (c) => c.setTemperature({ targetTempLow: 20, targetTempHigh: 24 }),
+        'targetTempLow and targetTempHigh require heat_cool mode'],
+      ['a low set point that is not below the high one', HEAT_COOL,
+        (c) => c.setTemperature({ targetTempLow: 24, targetTempHigh: 24 }),
+        'targetTempLow must be lower than targetTempHigh'],
+      ['a low set point below min_temp', HEAT_COOL,
+        (c) => c.setTemperature({ targetTempLow: 5, targetTempHigh: 24 }),
+        'targetTempLow must be between 7 and 35'],
+      ['only one heat_cool set point', HEAT_COOL, (c) => c.setTemperature({ targetTempLow: 20 }),
+        'temperature, or targetTempLow and targetTempHigh, are required'],
+      ['an unknown HVAC mode', CONTROLLABLE, (c) => c.setHvacMode('auto'),
+        'Unsupported HVAC mode (supported: off, heat, cool, heat_cool)'],
+      ['an unknown preset mode', CONTROLLABLE, (c) => c.setPresetMode('vacation'),
+        'Unsupported preset mode (supported: home, away, sleep)'],
+      ['a preset when none are reported', { state: 'heat', attributes: {} }, (c) => c.setPresetMode('home'),
+        'Thermostat does not report any preset modes'],
+      ['an unknown fan mode', CONTROLLABLE, (c) => c.setFanMode('circulate'),
+        'Unsupported fan mode (supported: auto, on)'],
+    ])('rejects %s with a 400 and no service call', async (_label, climateState, control, message) => {
+      const climate = await start(climateState);
+      const error = await control(climate).catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(ThermostatControlError);
+      expect(error).toMatchObject({ status: 400, message });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+    });
+
+    it('only supports resume_program for the ecobee integration', async () => {
+      const climate = await start(CONTROLLABLE, 'honeywell');
+      await expect(climate.resumeProgram()).rejects.toMatchObject({
+        status: 400, message: 'Resume program is not supported by this integration',
+      });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 409 when no thermostat is discovered or it is unavailable', async () => {
+      mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify(
+        DISCOVERY.filter((entity) => entity.entity_id !== 'climate.home'),
+      ));
+      indoorClimate = new IndoorClimate({ client: mockClient });
+      await indoorClimate.refresh();
+      await expect(indoorClimate.setFanMode('on')).rejects.toMatchObject({
+        status: 409, message: 'No thermostat discovered',
+      });
+      indoorClimate.stop();
+
+      mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify(DISCOVERY));
+      const unavailable = await start({ state: 'unavailable', attributes: {} });
+      await expect(unavailable.setFanMode('on')).rejects.toMatchObject({
+        status: 409, message: 'Thermostat unavailable',
+      });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+    });
+
+    it('waits for the first poll instead of rejecting right after startup', async () => {
+      mockStates({ ...STATES, 'climate.home': CONTROLLABLE });
+      indoorClimate = new IndoorClimate({ client: mockClient });
+      await indoorClimate.setFanMode('on');
+      expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_fan_mode', {
+        entity_id: 'climate.home', fan_mode: 'on',
+      });
+    });
+
+    it('surfaces Home Assistant failures and timeouts as plain errors', async () => {
+      const climate = await start();
+      mockClient.callService = vi.fn().mockRejectedValue(new Error('Home Assistant request failed: 500'));
+      const failure = await climate.setFanMode('on').catch((err: unknown) => err);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).not.toBeInstanceOf(ThermostatControlError);
+
+      mockClient.callService = vi.fn().mockReturnValue(new Promise(() => {}));
+      await expect(climate.setFanMode('on')).rejects.toThrow('climate.set_fan_mode timed out after 50ms');
+    });
+
+    it('polls again when a poll was already in flight during the service call', async () => {
+      const climate = await start();
+      let current: Record<string, unknown> = { ...STATES, 'climate.home': CONTROLLABLE };
+      let releasePoll!: () => void;
+      const gate = new Promise<void>((resolve) => { releasePoll = resolve; });
+      // Each read captures the state at request time, so the stale poll sees the old set point.
+      mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
+        const snapshot = current[entityId];
+        return gate.then(() => snapshot ?? Promise.reject(new Error('Not found')));
+      });
+      const stalePoll = climate.refresh();
+      mockClient.callService = vi.fn().mockImplementation(async () => {
+        current = { ...current, 'climate.home': withTarget(23) };
+        return [];
+      });
+
+      const pending = climate.setTemperature({ temperature: 23 });
+      await vi.waitFor(() => expect(mockClient.callService).toHaveBeenCalled());
+      releasePoll();
+      await stalePoll;
+      const status = await pending;
+      expect(status.thermostat?.targetTemperature).toBe(23);
     });
   });
 });

@@ -458,6 +458,62 @@ describe('MCP Server', () => {
       expect(JSON.parse(withClimate.content[0].text as string).indoorClimate).toEqual(status);
     });
 
+    it('set_thermostat applies options in order and returns the final status', async () => {
+      const statusAfter = (step: string) => ({
+        timestamp: '2026-01-01T00:00:00.000Z', thermostat: { step }, sensors: [], unit: '°C',
+      });
+      const indoorClimate = {
+        cachedStatus: statusAfter('initial'),
+        resumeProgram: vi.fn().mockResolvedValue(statusAfter('resume')),
+        setHvacMode: vi.fn().mockResolvedValue(statusAfter('mode')),
+        setPresetMode: vi.fn().mockResolvedValue(statusAfter('preset')),
+        setFanMode: vi.fn().mockResolvedValue(statusAfter('fan')),
+        setTemperature: vi.fn().mockResolvedValue(statusAfter('temperature')),
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = indoorClimate as any;
+      const result = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        target_temp_low: 20,
+        target_temp_high: 24,
+        hvac_mode: 'heat_cool',
+        preset_mode: 'home',
+        fan_mode: 'auto',
+        resume_program: true,
+      }, {});
+
+      expect(result.isError).toBeUndefined();
+      expect(indoorClimate.resumeProgram).toHaveBeenCalledWith();
+      expect(indoorClimate.setHvacMode).toHaveBeenCalledWith('heat_cool');
+      expect(indoorClimate.setPresetMode).toHaveBeenCalledWith('home');
+      expect(indoorClimate.setFanMode).toHaveBeenCalledWith('auto');
+      expect(indoorClimate.setTemperature).toHaveBeenCalledWith({
+        temperature: undefined, targetTempLow: 20, targetTempHigh: 24,
+      });
+      const order = [
+        indoorClimate.resumeProgram, indoorClimate.setHvacMode, indoorClimate.setPresetMode,
+        indoorClimate.setFanMode, indoorClimate.setTemperature,
+      ].map((fn) => fn.mock.invocationCallOrder[0]);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      expect(JSON.parse(result.content[0].text as string)).toEqual(statusAfter('temperature'));
+    });
+
+    it('set_thermostat requires at least one option and a configured indoor climate', async () => {
+      const unconfigured = await getTools(createMcpServer(mockServices)).set_thermostat.handler({ fan_mode: 'on' }, {});
+      expect(unconfigured.isError).toBe(true);
+      expect(unconfigured.content[0].text).toBe('Indoor climate is not configured');
+
+      const indoorClimate = { cachedStatus: {}, resumeProgram: vi.fn() };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = indoorClimate as any;
+      const result = await getTools(createMcpServer(mockServices)).set_thermostat.handler(
+        { resume_program: false },
+        {},
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Provide at least one of');
+      expect(indoorClimate.resumeProgram).not.toHaveBeenCalled();
+    });
+
     it('calendar mutation tools report when calendar service is unavailable', async () => {
       const server = createMcpServer(mockServices);
 
