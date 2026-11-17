@@ -109,6 +109,8 @@ export interface ThermostatControls {
   // Whether the thermostat has since reported a change that `result` returned
   // unconfirmed (e.g. seen while a later control waited for it).
   wasReported(result: ThermostatControlResult): boolean;
+  // The thermostat this operation acts on, once its first control has picked it.
+  thermostatId(): string | null;
 }
 
 // Service domains that can change a thermostat; raw calls to them take their
@@ -149,6 +151,7 @@ interface UnsettledControl {
   entityId: string;
   service: string;
   applied: (thermostat: ThermostatStatus) => boolean;
+  // When the outcome was recorded; the settle window starts here.
   since: number;
 }
 
@@ -541,6 +544,7 @@ export default class IndoorClimate {
             const change = this.resultChanges.get(result);
             return change !== undefined && this.reportedChanges.has(change);
           },
+          thermostatId: () => batch.entityId,
         });
       } finally {
         open = false;
@@ -551,14 +555,35 @@ export default class IndoorClimate {
 
   // Runs a raw Home Assistant service call (e.g. the call_ha_service tools).
   // One that can change a thermostat takes its turn with the thermostat
-  // controls, so it can't land between the steps of a withControls operation.
-  public runServiceCall<T>(domain: string, call: () => Promise<T>): Promise<T> {
-    return THERMOSTAT_SERVICE_DOMAINS.has(domain) ? this.exclusive(call) : call();
+  // controls, so it can't land between the steps of a withControls operation,
+  // and is bounded (then aborted) like a control so a stalled call can't hold
+  // them up. Other calls run immediately with no signal or deadline.
+  public runServiceCall<T>(
+    domain: string,
+    service: string,
+    call: (signal?: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    if (!THERMOSTAT_SERVICE_DOMAINS.has(domain)) return call();
+    return this.exclusive(async () => {
+      try {
+        return await withTimeout(call, this.controlTimeout, `${domain}.${service}`);
+      } catch (err) {
+        if (!(err instanceof TimeoutError)) throw err;
+        indoorClimateLogger.warn({ domain, service }, 'Thermostat service call timed out');
+        throw new ThermostatControlError(
+          504,
+          `${domain}.${service} did not respond in time; the change may still be applied, `
+          + 'so check the thermostat before retrying',
+        );
+      }
+    });
   }
 
-  // A fresh read of the thermostat for reporting, or null if it can't be read.
-  public async currentThermostat(): Promise<ThermostatStatus | null> {
-    const entityId = this.cachedStatus.thermostat?.entityId;
+  // A fresh read of a thermostat (by default the reported one) for reporting,
+  // or null if it can't be read.
+  public async currentThermostat(
+    entityId = this.cachedStatus.thermostat?.entityId,
+  ): Promise<ThermostatStatus | null> {
     const entity = this.discovered.find((candidate) => candidate.entityId === entityId);
     if (!entity) return null;
     const thermostat = await this.readThermostat(entity);
@@ -799,9 +824,14 @@ export default class IndoorClimate {
     // Replaces any pending change of the same kind (see settle), but only once
     // Home Assistant may have accepted this one.
     const change: UnsettledControl = {
-      entityId: entity.entityId, service, applied, since: Date.now(),
+      entityId: entity.entityId, service, applied, since: 0,
     };
-    const hold = () => { this.unsettled = change; };
+    // The window starts once the outcome is known: the call and its
+    // confirmation reads can take longer than the window itself.
+    const hold = () => {
+      change.since = Date.now();
+      this.unsettled = change;
+    };
     try {
       await withTimeout(
         (signal) => this.client.callService(domain, service, serviceData, { signal }),
@@ -851,7 +881,8 @@ export default class IndoorClimate {
     }
     // Confirmed only by the snapshot returned, which must still be this thermostat.
     const confirmed = reported !== null && reported.available && applied(reported);
-    this.unsettled = !confirmed && holdUnconfirmed ? change : null;
+    if (!confirmed && holdUnconfirmed) hold();
+    else this.unsettled = null;
     const result = { ...this.cachedStatus, confirmed };
     if (!confirmed) {
       indoorClimateLogger.warn({ domain, service }, 'Thermostat has not reported a control yet');

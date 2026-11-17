@@ -324,7 +324,7 @@ recently, its result is kept.
 
 A change that may still take effect (unconfirmed, timed out, or with an
 unknown outcome) holds back the next control of a different kind until the
-thermostat reports it, for up to 60 seconds, so a late mode change can't
+thermostat reports it, for up to 60 seconds from when that outcome was known, so a late mode change can't
 invalidate a set point chosen for the new mode. That control re-reads the
 thermostat and, if the change still hasn't shown up, returns `409`
 `The previous thermostat change has not taken effect yet; try again shortly`.
@@ -357,13 +357,15 @@ counts as reported. Every step acts on the same thermostat: if discovery
 selects a different one partway, the remaining steps stop with `409`. A
 failing step stops the sequence (including a `409` because an earlier step
 hasn't taken effect yet), but earlier steps stay applied. The error lists them
-and includes a fresh thermostat status, or the last known one (labelled as
-such) if the thermostat can't be read.
+and includes a fresh status of the thermostat they changed, or its last known
+one (labelled as such) if it can't be read.
 
 The web server and its HTTP MCP endpoint (`/mcp`) share one controller, so
 the guarantees above hold between them. Raw `climate.*` and `ecobee.*` calls
 through the `call_ha_service` tool (MCP and AI commands) also take their turn
 with the controls, so one can't land between the steps of `set_thermostat`.
+Like the controls, they time out (and are aborted) after 30 seconds with a
+`504` saying the change may still be applied.
 The local stdio MCP server
 (`node dist/mcp.js`) runs in its own process with its own controller and isn't
 coordinated with a running web server.

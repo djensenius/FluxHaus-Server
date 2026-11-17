@@ -385,19 +385,28 @@ describe('MCP Server', () => {
         'light',
         'turn_on',
         { entity_id: 'light.bedroom' },
+        { signal: undefined },
       );
       expect(result.content[0].text).toBe('Called light.turn_on on light.bedroom');
 
       // With indoor climate configured, the call takes its turn with the thermostat controls.
-      const runServiceCall = vi.fn((_domain: string, call: () => Promise<unknown>) => call());
+      const signal = new AbortController().signal;
+      const runServiceCall = vi.fn((_domain: string, _service: string, call: (s?: AbortSignal) => Promise<unknown>) => (
+        call(signal)
+      ));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockServices.indoorClimate = { runServiceCall } as any;
       await getTools(createMcpServer(mockServices)).call_ha_service.handler(
         { domain: 'climate', service: 'turn_off', entity_id: 'climate.home' },
         {},
       );
-      expect(runServiceCall).toHaveBeenCalledWith('climate', expect.any(Function));
-      expect(mockHaClient.callService).toHaveBeenLastCalledWith('climate', 'turn_off', { entity_id: 'climate.home' });
+      expect(runServiceCall).toHaveBeenCalledWith('climate', 'turn_off', expect.any(Function));
+      expect(mockHaClient.callService).toHaveBeenLastCalledWith(
+        'climate',
+        'turn_off',
+        { entity_id: 'climate.home' },
+        { signal },
+      );
     });
 
     it('list_entities tool returns filtered entity list', async () => {
@@ -568,6 +577,7 @@ describe('MCP Server', () => {
         setTemperature: vi.fn(),
         currentThermostat: vi.fn().mockResolvedValue({ ...thermostat, fanMode: 'on' }),
         wasReported: vi.fn().mockReturnValue(false),
+        thermostatId: vi.fn().mockReturnValue('climate.home'),
         withControls: vi.fn(),
       };
       indoorClimate.withControls.mockImplementation((run: (c: typeof indoorClimate) => Promise<unknown>) => (
@@ -597,6 +607,17 @@ describe('MCP Server', () => {
       expect(staleText).not.toContain('Current thermostat status:');
       expect(staleText).toContain('The thermostat could not be read; last known status (may predate the failed option):');
       expect(staleText).toContain('"fanMode": "auto"');
+
+      // After discovery picks another thermostat, the one the earlier options changed is reported.
+      expect(indoorClimate.currentThermostat).toHaveBeenLastCalledWith('climate.home');
+      indoorClimate.cachedStatus = { ...indoorClimate.cachedStatus, thermostat: { ...thermostat, entityId: 'climate.attic' } };
+      indoorClimate.currentThermostat.mockResolvedValueOnce(null);
+      const switched = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, fan_mode: 'circulate',
+      }, {});
+      const switchedText = switched.content[0].text as string;
+      expect(switchedText).toContain('The thermostat changed (climate.home) could not be read.');
+      expect(switchedText).not.toContain('climate.attic');
 
       indoorClimate.resumeProgram.mockRejectedValueOnce(new Error('Thermostat unavailable'));
       const first = await getTools(createMcpServer(mockServices)).set_thermostat.handler({

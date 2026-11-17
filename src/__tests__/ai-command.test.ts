@@ -166,16 +166,19 @@ describe('executeTool', () => {
       { domain: 'light', service: 'turn_on', entity_id: 'light.bedroom' },
       mockServices,
     );
-    expect(mockHaClient.callService).toHaveBeenCalledWith('light', 'turn_on', { entity_id: 'light.bedroom' });
+    expect(mockHaClient.callService).toHaveBeenCalledWith('light', 'turn_on', { entity_id: 'light.bedroom' }, { signal: undefined });
     expect(result).toBe('Called light.turn_on on light.bedroom');
 
     // With indoor climate configured, the call takes its turn with the thermostat controls.
-    const runServiceCall = vi.fn((_domain: string, call: () => Promise<unknown>) => call());
+    const signal = new AbortController().signal;
+    const runServiceCall = vi.fn((_domain: string, _service: string, call: (s?: AbortSignal) => Promise<unknown>) => (
+      call(signal)
+    ));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     mockServices.indoorClimate = { runServiceCall } as any;
     await executeTool('call_ha_service', { domain: 'climate', service: 'turn_off', entity_id: 'climate.home' }, mockServices);
-    expect(runServiceCall).toHaveBeenCalledWith('climate', expect.any(Function));
-    expect(mockHaClient.callService).toHaveBeenLastCalledWith('climate', 'turn_off', { entity_id: 'climate.home' });
+    expect(runServiceCall).toHaveBeenCalledWith('climate', 'turn_off', expect.any(Function));
+    expect(mockHaClient.callService).toHaveBeenLastCalledWith('climate', 'turn_off', { entity_id: 'climate.home' }, { signal });
   });
 
   it('get_car_status returns car status and odometer', async () => {

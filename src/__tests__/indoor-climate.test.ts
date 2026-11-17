@@ -984,7 +984,9 @@ describe('IndoorClimate', () => {
     it('stops a withControls operation if another thermostat is selected partway', async () => {
       const climate = await start(CONTROLLABLE, undefined, { discoveryInterval: 0 });
       await expect(climate.withControls(async (controls) => {
+        expect(controls.thermostatId()).toBeNull();
         await controls.setHvacMode('cool');
+        expect(controls.thermostatId()).toBe('climate.home');
         mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([ATTIC, ...DISCOVERY]));
         mockStates({ ...STATES, 'climate.home': CONTROLLABLE, 'climate.attic': CONTROLLABLE });
         await climate.refresh();
@@ -1015,11 +1017,45 @@ describe('IndoorClimate', () => {
       let release!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const batch = climate.withControls(async () => { await gate; order.push('batch'); });
-      const raw = climate.runServiceCall('climate', async () => { order.push('climate'); });
-      await climate.runServiceCall('light', async () => { order.push('light'); });
+      const raw = climate.runServiceCall('climate', 'turn_off', async () => { order.push('climate'); });
+      await climate.runServiceCall('light', 'turn_on', async () => { order.push('light'); });
       release();
       await Promise.all([batch, raw]);
       expect(order).toEqual(['light', 'batch', 'climate']);
+    });
+
+    it('aborts a stalled raw thermostat call so it cannot hold up the controls', async () => {
+      const climate = await start();
+      let aborted = false;
+      const stalled = climate.runServiceCall('ecobee', 'resume_program', (signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => { aborted = true; reject(signal.reason); });
+      }));
+      const control = climate.setFanMode('on');
+      await expect(stalled).rejects.toMatchObject({
+        status: 504,
+        message: 'ecobee.resume_program did not respond in time; the change may still be applied, '
+          + 'so check the thermostat before retrying',
+      });
+      expect(aborted).toBe(true);
+      await expect(control).resolves.toMatchObject({ confirmed: false });
+    });
+
+    it('starts the hold-back window once an unconfirmed change is recorded', async () => {
+      const climate = await start();
+      let now = Date.now();
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      try {
+        // Each read takes 20 s, so the call and its confirmation reads outlast the 60 s window.
+        mockClient.getState = vi.fn().mockImplementation(async (entityId: string) => {
+          now += 20_000;
+          return entityId === 'climate.home' ? CONTROLLABLE : STATES[entityId];
+        });
+        await expect(climate.setHvacMode('heat_cool')).resolves.toMatchObject({ confirmed: false });
+        await expect(climate.setTemperature({ temperature: 22 })).rejects.toMatchObject({ status: 409 });
+        expect(mockClient.callService).toHaveBeenCalledTimes(1);
+      } finally {
+        clock.mockRestore();
+      }
     });
 
     it('keeps a newer poll result over the control read it waited for', async () => {

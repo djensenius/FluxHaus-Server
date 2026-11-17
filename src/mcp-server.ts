@@ -628,8 +628,8 @@ export default function createMcpServer(
       Object.entries(extraData).forEach(([key, value]) => {
         if (value !== undefined) { serviceData[key] = value; }
       });
-      const call = () => homeAssistantClient.callService(domain, service, serviceData);
-      await (services.indoorClimate ? services.indoorClimate.runServiceCall(domain, call) : call());
+      const call = (signal?: AbortSignal) => homeAssistantClient.callService(domain, service, serviceData, { signal });
+      await (services.indoorClimate ? services.indoorClimate.runServiceCall(domain, service, call) : call());
       return { content: [{ type: 'text' as const, text: `Called ${domain}.${service} on ${entityId}` }] };
     },
   );
@@ -1007,16 +1007,23 @@ export default function createMcpServer(
             ];
             const unconfirmed = unconfirmedSteps();
             if (unconfirmed.length > 0) lines.push(unconfirmedNote(unconfirmed));
+            // Report the thermostat the earlier steps changed, even if discovery
+            // has since picked another one.
+            const changedId = controls.thermostatId() ?? undefined;
             // eslint-disable-next-line no-await-in-loop
-            const current = await indoorClimate.currentThermostat();
-            const { timestamp, thermostat } = indoorClimate.cachedStatus;
+            const current = await indoorClimate.currentThermostat(changedId);
+            const lastKnown = [indoorClimate.cachedStatus, status]
+              .find((snapshot) => snapshot?.thermostat && snapshot.thermostat.entityId === changedId);
             if (current) {
               lines.push(`Current thermostat status: ${JSON.stringify(current, null, 2)}`);
-            } else if (thermostat) {
+            } else if (lastKnown) {
+              const { timestamp, thermostat } = lastKnown;
               lines.push(
                 'The thermostat could not be read; last known status (may predate the failed option): '
                 + `${JSON.stringify({ timestamp, thermostat }, null, 2)}`,
               );
+            } else if (changedId) {
+              lines.push(`The thermostat changed (${changedId}) could not be read.`);
             }
             return { isError: true, content: [{ type: 'text' as const, text: lines.join('\n') }] };
           }
