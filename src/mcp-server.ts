@@ -628,7 +628,8 @@ export default function createMcpServer(
       Object.entries(extraData).forEach(([key, value]) => {
         if (value !== undefined) { serviceData[key] = value; }
       });
-      await homeAssistantClient.callService(domain, service, serviceData);
+      const call = () => homeAssistantClient.callService(domain, service, serviceData);
+      await (services.indoorClimate ? services.indoorClimate.runServiceCall(domain, call) : call());
       return { content: [{ type: 'text' as const, text: `Called ${domain}.${service} on ${entityId}` }] };
     },
   );
@@ -978,14 +979,18 @@ export default function createMcpServer(
         };
       }
       const applied: string[] = [];
-      const unconfirmed: string[] = [];
-      const unconfirmedNote = () => (
-        `Home Assistant accepted ${unconfirmed.join('; ')}, but the thermostat has not reported `
+      const unconfirmedNote = (steps: string[]) => (
+        `Home Assistant accepted ${steps.join('; ')}, but the thermostat has not reported `
         + 'it yet, so the status may not reflect it.'
       );
       // One lock for the whole sequence, so e.g. a mode change from the app
       // can't land between this mode change and the set point meant for it.
       return indoorClimate.withControls(async (controls) => {
+        const unconfirmedResults: [string, ThermostatControlResult][] = [];
+        // A step can be reported later, e.g. while the next step waits for it.
+        const unconfirmedSteps = () => unconfirmedResults
+          .filter(([, result]) => !controls.wasReported(result))
+          .map(([label]) => label);
         let status: ThermostatControlResult | null = null;
         for (const [label, step] of steps) {
           try {
@@ -1000,7 +1005,8 @@ export default function createMcpServer(
               `Error in set_thermostat: ${message}`,
               `Already applied before the error: ${applied.join('; ')}.`,
             ];
-            if (unconfirmed.length > 0) lines.push(unconfirmedNote());
+            const unconfirmed = unconfirmedSteps();
+            if (unconfirmed.length > 0) lines.push(unconfirmedNote(unconfirmed));
             // eslint-disable-next-line no-await-in-loop
             const current = await indoorClimate.currentThermostat();
             const { timestamp, thermostat } = indoorClimate.cachedStatus;
@@ -1015,11 +1021,12 @@ export default function createMcpServer(
             return { isError: true, content: [{ type: 'text' as const, text: lines.join('\n') }] };
           }
           applied.push(label);
-          if (!status.confirmed) unconfirmed.push(label);
+          if (!status.confirmed) unconfirmedResults.push([label, status]);
         }
+        const unconfirmed = unconfirmedSteps();
         const result = jsonResult({ ...status, confirmed: unconfirmed.length === 0, unconfirmedSteps: unconfirmed });
         if (unconfirmed.length === 0) return result;
-        return { ...result, content: [{ type: 'text' as const, text: unconfirmedNote() }, ...result.content] };
+        return { ...result, content: [{ type: 'text' as const, text: unconfirmedNote(unconfirmed) }, ...result.content] };
       });
     },
   );

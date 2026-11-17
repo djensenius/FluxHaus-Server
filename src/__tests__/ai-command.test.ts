@@ -168,6 +168,14 @@ describe('executeTool', () => {
     );
     expect(mockHaClient.callService).toHaveBeenCalledWith('light', 'turn_on', { entity_id: 'light.bedroom' });
     expect(result).toBe('Called light.turn_on on light.bedroom');
+
+    // With indoor climate configured, the call takes its turn with the thermostat controls.
+    const runServiceCall = vi.fn((_domain: string, call: () => Promise<unknown>) => call());
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    mockServices.indoorClimate = { runServiceCall } as any;
+    await executeTool('call_ha_service', { domain: 'climate', service: 'turn_off', entity_id: 'climate.home' }, mockServices);
+    expect(runServiceCall).toHaveBeenCalledWith('climate', expect.any(Function));
+    expect(mockHaClient.callService).toHaveBeenLastCalledWith('climate', 'turn_off', { entity_id: 'climate.home' });
   });
 
   it('get_car_status returns car status and odometer', async () => {

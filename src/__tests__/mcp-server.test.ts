@@ -387,6 +387,17 @@ describe('MCP Server', () => {
         { entity_id: 'light.bedroom' },
       );
       expect(result.content[0].text).toBe('Called light.turn_on on light.bedroom');
+
+      // With indoor climate configured, the call takes its turn with the thermostat controls.
+      const runServiceCall = vi.fn((_domain: string, call: () => Promise<unknown>) => call());
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = { runServiceCall } as any;
+      await getTools(createMcpServer(mockServices)).call_ha_service.handler(
+        { domain: 'climate', service: 'turn_off', entity_id: 'climate.home' },
+        {},
+      );
+      expect(runServiceCall).toHaveBeenCalledWith('climate', expect.any(Function));
+      expect(mockHaClient.callService).toHaveBeenLastCalledWith('climate', 'turn_off', { entity_id: 'climate.home' });
     });
 
     it('list_entities tool returns filtered entity list', async () => {
@@ -468,6 +479,7 @@ describe('MCP Server', () => {
         setPresetMode: vi.fn().mockResolvedValue(statusAfter('preset')),
         setFanMode: vi.fn().mockResolvedValue(statusAfter('fan')),
         setTemperature: vi.fn().mockResolvedValue(statusAfter('temperature')),
+        wasReported: vi.fn().mockReturnValue(false),
       };
       // Only the controls handed to withControls exist, so every option must run under its one lock.
       const indoorClimate = {
@@ -516,6 +528,15 @@ describe('MCP Server', () => {
       const unconfirmedStatus = { ...statusAfter('fan', false), unconfirmedSteps: ['hvac_mode=heat_cool'] };
       expect(JSON.parse(unconfirmed.content[1].text as string)).toEqual(unconfirmedStatus);
       expect(unconfirmed.structuredContent).toEqual(unconfirmedStatus);
+
+      // Unless the thermostat reported it later, e.g. while the next option waited for it.
+      const reportedLater = statusAfter('mode', false);
+      controls.setHvacMode.mockResolvedValueOnce(reportedLater);
+      controls.wasReported.mockImplementation((result) => result === reportedLater);
+      const reported = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        hvac_mode: 'heat_cool', fan_mode: 'auto',
+      }, {});
+      expect(reported.structuredContent).toEqual({ ...statusAfter('fan'), unconfirmedSteps: [] });
     });
 
     it('set_thermostat requires at least one option and a configured indoor climate', async () => {
@@ -546,6 +567,7 @@ describe('MCP Server', () => {
         setFanMode: vi.fn().mockRejectedValue(new Error('Unsupported fan mode (supported: auto, on)')),
         setTemperature: vi.fn(),
         currentThermostat: vi.fn().mockResolvedValue({ ...thermostat, fanMode: 'on' }),
+        wasReported: vi.fn().mockReturnValue(false),
         withControls: vi.fn(),
       };
       indoorClimate.withControls.mockImplementation((run: (c: typeof indoorClimate) => Promise<unknown>) => (

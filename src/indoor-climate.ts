@@ -106,7 +106,14 @@ export interface ThermostatControls {
   setPresetMode(preset: string): Promise<ThermostatControlResult>;
   setFanMode(mode: string): Promise<ThermostatControlResult>;
   resumeProgram(resumeAll?: boolean): Promise<ThermostatControlResult>;
+  // Whether the thermostat has since reported a change that `result` returned
+  // unconfirmed (e.g. seen while a later control waited for it).
+  wasReported(result: ThermostatControlResult): boolean;
 }
+
+// Service domains that can change a thermostat; raw calls to them take their
+// turn with the thermostat controls (see IndoorClimate.runServiceCall).
+const THERMOSTAT_SERVICE_DOMAINS = new Set(['climate', 'ecobee']);
 
 export interface IndoorClimateConfig {
   client: HomeAssistantClient;
@@ -187,10 +194,12 @@ function reports(actual: number | null, expected: number, previous: number | nul
   return Math.abs(actual - expected) < tolerance;
 }
 
-// Converts between °C and °F (to 0.1°). Returns the value unchanged when
-// either unit is unknown, and null when it can't be converted (e.g. K).
+// Converts between °C and °F (to 0.1°). Returns null when it can't be
+// converted, including when either unit is unknown: a unitless reading could
+// be on any scale.
 function convertTemperature(value: number | null, from: string | null, to: string | null): number | null {
-  if (value === null || !from || !to || from === to) return value;
+  if (value === null || !from || !to) return null;
+  if (from === to) return value;
   if (from === '°F' && to === '°C') return Math.round(((value - 32) * 50) / 9) / 10;
   if (from === '°C' && to === '°F') return Math.round(((value * 9) / 5 + 32) * 10) / 10;
   return null;
@@ -397,6 +406,15 @@ export default class IndoorClimate {
 
   private unsettled: UnsettledControl | null = null;
 
+  // Unsettled changes the thermostat has since reported, and the change each
+  // unconfirmed result left behind, so withControls can tell which steps landed.
+  private reportedChanges = new WeakSet<UnsettledControl>();
+
+  private resultChanges = new WeakMap<ThermostatControlResult, UnsettledControl>();
+
+  // The thermostat a withControls operation acts on, pinned by its first control.
+  private batch: { entityId: string | null } | null = null;
+
   private readSequence = 0;
 
   // readSeq of the read behind cachedStatus.thermostat.
@@ -498,12 +516,15 @@ export default class IndoorClimate {
   }
 
   // Runs several controls as one operation, so no other control (app or MCP)
-  // can change the thermostat between them. Use only the `controls` passed in:
-  // this instance's own control methods would wait for `run` to finish, and
-  // the passed controls stop working once it has.
+  // can change the thermostat between them, and all of them act on the same
+  // thermostat. Use only the `controls` passed in: this instance's own control
+  // methods would wait for `run` to finish, and the passed controls stop
+  // working once it has.
   public withControls<T>(run: (controls: ThermostatControls) => Promise<T>): Promise<T> {
     return this.exclusive(async () => {
       let open = true;
+      const batch: { entityId: string | null } = { entityId: null };
+      this.batch = batch;
       const guarded = <A extends unknown[]>(
         control: (...args: A) => Promise<ThermostatControlResult>,
       ) => (...args: A): Promise<ThermostatControlResult> => (
@@ -516,11 +537,23 @@ export default class IndoorClimate {
           setPresetMode: guarded((preset: string) => this.applyPresetMode(preset)),
           setFanMode: guarded((mode: string) => this.applyFanMode(mode)),
           resumeProgram: guarded((resumeAll?: boolean) => this.applyResume(resumeAll ?? false)),
+          wasReported: (result: ThermostatControlResult) => {
+            const change = this.resultChanges.get(result);
+            return change !== undefined && this.reportedChanges.has(change);
+          },
         });
       } finally {
         open = false;
+        if (this.batch === batch) this.batch = null;
       }
     });
+  }
+
+  // Runs a raw Home Assistant service call (e.g. the call_ha_service tools).
+  // One that can change a thermostat takes its turn with the thermostat
+  // controls, so it can't land between the steps of a withControls operation.
+  public runServiceCall<T>(domain: string, call: () => Promise<T>): Promise<T> {
+    return THERMOSTAT_SERVICE_DOMAINS.has(domain) ? this.exclusive(call) : call();
   }
 
   // A fresh read of the thermostat for reporting, or null if it can't be read.
@@ -652,28 +685,35 @@ export default class IndoorClimate {
   // A change that may still be on its way could land after the next control
   // and undo or invalidate it, e.g. a mode change arriving after a set point
   // chosen for the new mode. Until the thermostat reports it (or it expires),
-  // only a control of the same kind, which replaces it, may run. Returns the
-  // latest read of the thermostat to validate against.
+  // only a control of the same kind may run; it replaces the pending change
+  // only once Home Assistant accepts it (see callControl). Returns the latest
+  // read of the thermostat to validate against.
   private async settle(
     entity: DiscoveredEntity,
     service: string,
     thermostat: ThermostatStatus,
   ): Promise<ThermostatStatus> {
     const pending = this.unsettled;
-    if (!pending) return thermostat;
-    if (pending.entityId !== entity.entityId
-      || pending.service === service
-      || Date.now() - pending.since >= this.settleTimeout
-      || pending.applied(thermostat)) {
+    if (!pending || pending.service === service) return thermostat;
+    if (pending.entityId !== entity.entityId || Date.now() - pending.since >= this.settleTimeout) {
       this.unsettled = null;
+      return thermostat;
+    }
+    if (pending.applied(thermostat)) {
+      this.markReported(pending);
       return thermostat;
     }
     const read = await this.readUntil(entity, pending.applied, true);
     if (read && pending.applied(read.thermostat)) {
-      this.unsettled = null;
+      this.markReported(pending);
       return read.thermostat;
     }
     throw new ThermostatControlError(409, 'The previous thermostat change has not taken effect yet; try again shortly');
+  }
+
+  private markReported(change: UnsettledControl) {
+    this.reportedChanges.add(change);
+    if (this.unsettled === change) this.unsettled = null;
   }
 
   // The discovered climate entity behind the reported thermostat.
@@ -685,6 +725,15 @@ export default class IndoorClimate {
     const entityId = this.cachedStatus.thermostat?.entityId;
     const entity = this.discovered.find((candidate) => candidate.entityId === entityId);
     if (!entity) throw new ThermostatControlError(409, 'No thermostat discovered');
+    if (this.batch) {
+      this.batch.entityId ??= entity.entityId;
+      if (this.batch.entityId !== entity.entityId) {
+        throw new ThermostatControlError(
+          409,
+          'A different thermostat was selected during this operation; this change was not sent',
+        );
+      }
+    }
     return entity;
   }
 
@@ -747,11 +796,12 @@ export default class IndoorClimate {
     applied: (thermostat: ThermostatStatus) => boolean,
     { holdUnconfirmed = true }: { holdUnconfirmed?: boolean } = {},
   ): Promise<ThermostatControlResult> {
-    const hold = () => {
-      this.unsettled = {
-        entityId: entity.entityId, service, applied, since: Date.now(),
-      };
+    // Replaces any pending change of the same kind (see settle), but only once
+    // Home Assistant may have accepted this one.
+    const change: UnsettledControl = {
+      entityId: entity.entityId, service, applied, since: Date.now(),
     };
+    const hold = () => { this.unsettled = change; };
     try {
       await withTimeout(
         (signal) => this.client.callService(domain, service, serviceData, { signal }),
@@ -788,24 +838,26 @@ export default class IndoorClimate {
     }
     // A poll already in flight may have read the thermostat before this change;
     // let it finish, then keep whichever read is newer. A poll that picked a
-    // different thermostat is kept too, so later controls follow it.
+    // different thermostat (or none) is kept too, so later controls follow it.
     if (this.inFlight) await this.inFlight;
-    let { thermostat } = read;
     const latest = this.cachedStatus.thermostat;
-    const sameEntity = latest?.entityId === entity.entityId;
-    if (this.thermostatReadSeq > read.readSeq || (latest && !sameEntity)) {
-      if (latest && sameEntity) thermostat = latest;
+    let reported: ThermostatStatus | null = read.thermostat;
+    if (this.thermostatReadSeq > read.readSeq || (latest && latest.entityId !== entity.entityId)) {
+      reported = latest?.entityId === entity.entityId ? latest : null;
     } else {
       this.thermostatReadSeq = read.readSeq;
-      this.cachedStatus = { ...this.cachedStatus, timestamp: new Date(), thermostat };
+      this.cachedStatus = { ...this.cachedStatus, timestamp: new Date(), thermostat: read.thermostat };
       this.onStatusChange?.(this.cachedStatus);
     }
-    const confirmed = applied(thermostat);
+    // Confirmed only by the snapshot returned, which must still be this thermostat.
+    const confirmed = reported !== null && reported.available && applied(reported);
+    this.unsettled = !confirmed && holdUnconfirmed ? change : null;
+    const result = { ...this.cachedStatus, confirmed };
     if (!confirmed) {
       indoorClimateLogger.warn({ domain, service }, 'Thermostat has not reported a control yet');
-      if (holdUnconfirmed) hold();
+      if (holdUnconfirmed) this.resultChanges.set(result, change);
     }
-    return { ...this.cachedStatus, confirmed };
+    return result;
   }
 
   private async discover(): Promise<void> {
@@ -945,7 +997,7 @@ export default class IndoorClimate {
         : null;
       if (thermostat?.available && this.unsettled?.entityId === thermostat.entityId
         && this.unsettled.applied(thermostat)) {
-        this.unsettled = null;
+        this.markReported(this.unsettled);
       }
 
       this.knownTemperatureIds = new Set(sensors.map((sensor) => sensor.entityId));

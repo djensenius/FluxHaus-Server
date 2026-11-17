@@ -1481,7 +1481,8 @@ async function executeToolInner(
     Object.entries(extraData).forEach(([key, value]) => {
       if (value !== undefined) { serviceData[key] = value; }
     });
-    await homeAssistantClient.callService(domain, service, serviceData);
+    const call = () => homeAssistantClient.callService(domain, service, serviceData);
+    await (services.indoorClimate ? services.indoorClimate.runServiceCall(domain, call) : call());
     return `Called ${domain}.${service} on ${entityId}`;
   }
 

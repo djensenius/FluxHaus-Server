@@ -256,7 +256,9 @@ The server auto-discovers the entities of one Home Assistant integration
   (`unit_of_measurement`, `null` if unknown);
 - an `occupancy` `binary_sensor` on the same device supplies `occupied`;
 - the first `climate.*` entity (by entity id) is reported as the thermostat
-  (mode, action, set points, preset, current temperature/humidity, area, plus
+  (mode, action, set points, preset, current temperature/humidity — from the
+  thermostat device's own sensors if the climate entity omits them, dropping a
+  temperature whose unit is unknown — area, plus
   the control capabilities `hvacModes`, `presetModes`, `fanMode`, `fanModes`,
   `minTemp`, `maxTemp` and `targetTempStep` — lists are `[]` and values `null`
   when HA doesn't report them — and `temperatureUnit`, Home Assistant's unit
@@ -326,8 +328,9 @@ thermostat reports it, for up to 60 seconds, so a late mode change can't
 invalidate a set point chosen for the new mode. That control re-reads the
 thermostat and, if the change still hasn't shown up, returns `409`
 `The previous thermostat change has not taken effect yet; try again shortly`.
-A control of the same kind replaces the pending one and runs immediately. An
-unconfirmed resume doesn't hold anything back.
+A control of the same kind runs immediately and replaces the pending one once
+Home Assistant accepts it; if it is invalid or refused, the pending change
+keeps holding. An unconfirmed resume doesn't hold anything back.
 
 Invalid requests return `400`, and a missing or unavailable thermostat returns
 `409`, each with a plain-text reason. If the thermostat can't be read first,
@@ -349,13 +352,19 @@ holds (`resume_all: true`) and returns to the schedule. It applies them in the
 order resume → HVAC mode → preset → fan → temperature as one operation, so no
 other control can run between them, and returns the resulting snapshot with
 `confirmed` (true only if every step was reported) and `unconfirmedSteps`. A
+step the thermostat reports later (e.g. while the next step waits for it)
+counts as reported. Every step acts on the same thermostat: if discovery
+selects a different one partway, the remaining steps stop with `409`. A
 failing step stops the sequence (including a `409` because an earlier step
 hasn't taken effect yet), but earlier steps stay applied. The error lists them
 and includes a fresh thermostat status, or the last known one (labelled as
 such) if the thermostat can't be read.
 
 The web server and its HTTP MCP endpoint (`/mcp`) share one controller, so
-the guarantees above hold between them. The local stdio MCP server
+the guarantees above hold between them. Raw `climate.*` and `ecobee.*` calls
+through the `call_ha_service` tool (MCP and AI commands) also take their turn
+with the controls, so one can't land between the steps of `set_thermostat`.
+The local stdio MCP server
 (`node dist/mcp.js`) runs in its own process with its own controller and isn't
 coordinated with a running web server.
 
