@@ -6,6 +6,7 @@ import HomeAssistantRobot from '../homeassistant-robot';
 import Car from '../car';
 import Miele from '../miele';
 import HomeConnect from '../homeconnect';
+import IndoorClimate from '../indoor-climate';
 import transcribeAudio from '../stt';
 import synthesizeSpeech from '../tts';
 import { executeAICommand } from '../ai-command';
@@ -17,6 +18,7 @@ vi.mock('../homeassistant-robot');
 vi.mock('../car');
 vi.mock('../miele');
 vi.mock('../homeconnect');
+vi.mock('../indoor-climate');
 vi.mock('../homeassistant-client');
 vi.mock('../stt', () => ({
   __esModule: true,
@@ -88,6 +90,7 @@ describe('Server', () => {
   let mockCar: any;
   let mockMiele: any;
   let mockHomeConnect: any;
+  let mockIndoorClimate: any;
   /* eslint-enable @typescript-eslint/no-explicit-any */
 
   afterEach(() => {
@@ -152,6 +155,27 @@ describe('Server', () => {
       dishwasher: {},
     };
     (HomeConnect as unknown as vi.Mock).mockImplementation(function () { return mockHomeConnect; });
+
+    mockIndoorClimate = {
+      cachedStatus: {
+        timestamp: new Date(0),
+        thermostat: null,
+        sensors: [{
+          entityId: 'sensor.bedroom_temperature',
+          name: 'Bedroom',
+          area: 'Primary Bedroom',
+          temperature: 20.5,
+          unit: '°C',
+          available: true,
+          occupied: true,
+          isThermostat: false,
+          lastUpdated: null,
+        }],
+        unit: '°C',
+      },
+      temperatureObjectIds: vi.fn().mockReturnValue(['bedroom_temperature']),
+    };
+    (IndoorClimate as unknown as vi.Mock).mockImplementation(function () { return mockIndoorClimate; });
 
     app = await createServer();
   });
@@ -221,6 +245,41 @@ describe('Server', () => {
 
     expect(response.body).toHaveProperty('cleanbot');
     expect(response.body).not.toHaveProperty('mieleClientId'); // Admin only
+  });
+
+  it('includes indoor climate for admin and demo users but not rhizome', async () => {
+    const admin = await request(app).get('/').set('Authorization', oidcAuthHeader).expect(200);
+    expect(admin.body.indoorClimate.sensors).toEqual([
+      expect.objectContaining({ entityId: 'sensor.bedroom_temperature', name: 'Bedroom', temperature: 20.5 }),
+    ]);
+    const demo = await request(app)
+      .get('/')
+      .set('Authorization', basicAuthHeader('demo', 'demopassword'))
+      .expect(200);
+    expect(demo.body.indoorClimate).toEqual(admin.body.indoorClimate);
+    const rhizome = await request(app)
+      .get('/')
+      .set('Authorization', basicAuthHeader('rhizome', 'rhizomepassword'))
+      .expect(200);
+    expect(rhizome.body).not.toHaveProperty('indoorClimate');
+  });
+
+  it('returns the full empty indoor climate shape before the first poll', async () => {
+    const { default: RealIndoorClimate } = await vi.importActual<typeof import('../indoor-climate')>(
+      '../indoor-climate',
+    );
+    let instance: InstanceType<typeof RealIndoorClimate> | undefined;
+    (IndoorClimate as unknown as vi.Mock).mockImplementation(function (config) {
+      // The mocked HA client never yields a discovery result, so no poll succeeds.
+      instance = new RealIndoorClimate(config);
+      return instance;
+    });
+    app = await createServer();
+    const response = await request(app).get('/').set('Authorization', oidcAuthHeader).expect(200);
+    instance?.stop();
+    expect(response.body.indoorClimate).toEqual({
+      timestamp: new Date(0).toISOString(), thermostat: null, sensors: [], unit: null,
+    });
   });
 
   it('should turn on cleanbot', async () => {

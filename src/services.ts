@@ -22,6 +22,7 @@ import { PiHoleClient } from './clients/pihole';
 import { KagiClient } from './clients/kagi';
 import CalendarService, { createCalendarService } from './calendar';
 import { CarAnalyticsService } from './car-analytics';
+import IndoorClimate from './indoor-climate';
 import logger from './logger';
 
 const servicesLogger = logger.child({ subsystem: 'services' });
@@ -53,6 +54,7 @@ export interface FluxHausServices {
   kagi?: KagiClient;
   calendar?: CalendarService;
   carAnalytics?: CarAnalyticsService;
+  indoorClimate?: IndoorClimate;
 }
 
 export async function createServices(): Promise<FluxHausServices> {
@@ -87,6 +89,11 @@ export async function createServices(): Promise<FluxHausServices> {
   const dishwasher = new HomeAssistantDishwasher({
     client: homeAssistantClient,
     pollInterval: 10_000,
+  });
+
+  const indoorClimate = new IndoorClimate({
+    client: homeAssistantClient,
+    integration: process.env.INDOOR_CLIMATE_INTEGRATION?.trim() || 'ecobee',
   });
 
   const calendar = createCalendarService(homeAssistantClient);
@@ -183,5 +190,6 @@ export async function createServices(): Promise<FluxHausServices> {
     }),
     calendar,
     carAnalytics,
+    indoorClimate,
   };
 }

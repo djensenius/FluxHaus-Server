@@ -28,6 +28,7 @@ import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import { createMetricsRouter } from './metrics';
 import Blueair from './blueair';
+import IndoorClimate from './indoor-climate';
 import AirQuality from './air-quality';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
@@ -315,6 +316,11 @@ export async function createServer(): Promise<Express> {
     onlineEntityId: process.env.BLUEAIR_ONLINE_ENTITY_ID?.trim() || 'binary_sensor.blue_pure_online',
   });
 
+  const indoorClimate = new IndoorClimate({
+    client: homeAssistantClient,
+    integration: process.env.INDOOR_CLIMATE_INTEGRATION?.trim() || 'ecobee',
+  });
+
   setInterval(() => {
     fs.writeFileSync(
       'cache/dishwasher.json',
@@ -437,6 +443,7 @@ export async function createServer(): Promise<Express> {
     kagi,
     calendar,
     carAnalytics,
+    indoorClimate,
   };
 
   app.get('/', cors(corsOptions), async (req, res) => {
@@ -582,6 +589,7 @@ export async function createServer(): Promise<Express> {
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
         airPurifier: blueair.cachedStatus,
+        indoorClimate: indoorClimate.cachedStatus,
       };
     } else if (role === 'rhizome') {
       data = {
@@ -611,6 +619,7 @@ export async function createServer(): Promise<Express> {
         washer: mieleClient.washer,
         dryer: mieleClient.dryer,
         airPurifier: blueair.cachedStatus,
+        indoorClimate: indoorClimate.cachedStatus,
       };
     }
     res.end(JSON.stringify(data));
@@ -1591,6 +1600,7 @@ export async function createServer(): Promise<Express> {
         : []),
     ],
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+    dynamicEntityIds: { temperature: () => indoorClimate.temperatureObjectIds() },
   }, cors(corsOptions)));
   app.use(createCarAnalyticsRouter(carAnalytics, cors(corsOptions)));
   app.use('/gt3', gt3Router);

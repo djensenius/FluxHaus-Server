@@ -228,7 +228,11 @@ Catalog groups:
 - **Environment** — indoor + outdoor temperature/humidity (Environment Canada),
   indoor air quality (Blue Pure PM2.5), and outdoor air quality (AQHI). Outdoor
   readings are relabelled **"Outside"** via each metric's `seriesRename` map so the
-  app can colour them consistently across charts.
+  app can colour them consistently across charts. The temperature chart
+  automatically includes every indoor sensor discovered by
+  [Indoor climate](#indoor-climate) that Home Assistant logs to InfluxDB under
+  the `climate` or `°C` measurement, on top of its static entity list
+  (Fahrenheit installs log under `°F` and aren't charted).
 - **Energy** — live power draw (W) and cumulative energy (kWh) for the computer
   station, media centre, and server hardware.
 - **Outdoor** — the full weather-tab detail set: outdoor temperature/humidity,
@@ -239,6 +243,41 @@ Catalog groups:
 Outdoor/environment series read Home Assistant data already flowing into InfluxDB
 (measurements keyed by unit, e.g. `climate`, `°C`, `μg/m³`, `UV index`, and
 `state` for index-style sensors) — no extra collector or env vars required.
+
+## Indoor climate
+
+The server auto-discovers the entities of one Home Assistant integration
+(`INDOOR_CLIMATE_INTEGRATION`, default `ecobee`) and polls them every minute
+(re-discovering every 10 minutes, so new sensors appear without a restart):
+
+- every `sensor.*` with `device_class: temperature` becomes a room, named after
+  its HA device (e.g. an Ecobee SmartSensor called "Bedroom"), with its HA
+  `area` (entity area, else device area; `null` if unassigned) and `unit`
+  (`unit_of_measurement`, `null` if unknown);
+- an `occupancy` `binary_sensor` on the same device supplies `occupied`;
+- the first `climate.*` entity (by entity id) is reported as the thermostat
+  (mode, action, set points, preset, current temperature/humidity, area);
+  temperature sensors on the device of *any* discovered `climate.*` entity are
+  flagged `isThermostat` and listed first.
+
+The snapshot is returned as `indoorClimate`
+(`{ timestamp, thermostat, sensors, unit }`, where `unit` is the first known
+sensor unit) in `GET /` for admin and demo users, and in the MCP
+`get_home_summary` tool.
+
+```
+INDOOR_CLIMATE_INTEGRATION=ecobee
+```
+
+The value is passed to HA's `integration_entities()`, which matches a
+config-entry title first and then an integration domain. Choose it carefully:
+e.g. `homekit_controller` pulls in every HomeKit temperature sensor.
+
+Discovery uses Home Assistant's `/api/template` endpoint, so `HOMEASSISTANT_TOKEN`
+must be allowed to render templates — the same requirement as the MCP
+`render_template` tool. If discovery fails, the last discovered entities are kept.
+Each Home Assistant request made by this poller times out after 15 seconds, so a
+hung request can't stall polling.
 
 ## Car analytics
 
@@ -460,6 +499,7 @@ GET /audit?limit=50&offset=0&username=admin&since=2024-01-01T00:00:00Z
 | `CLEANBOT_ENTITY_ID` | Entity ID for Cleanbot | `vacuum.v70_ultra_complete` |
 | `CLEANBOT_BATTERY_ENTITY_ID` | Battery sensor entity for Cleanbot | `sensor.v70_ultra_complete_battery_level` |
 | `CAR_ENTITY_PREFIX` | HA entity prefix for the car | `kia` |
+| `INDOOR_CLIMATE_INTEGRATION` | HA integration whose temperature/occupancy sensors and thermostat are discovered | `ecobee` |
 | **AI** | | |
 | `AI_PROVIDER` | AI provider: `anthropic`, `copilot`, `github-copilot`, `zai`, `z.ai`, or `openai` | `anthropic` |
 | `AI_MODEL` | Model name override | *(provider default)* |

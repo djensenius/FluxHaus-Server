@@ -913,7 +913,8 @@ export default function createMcpServer(
 
   server.tool(
     'get_home_summary',
-    'Get a full summary of the home: car, robots, appliances, and active HA entities — useful for a quick overview',
+    'Get a full summary of the home: car, robots, appliances, indoor temperatures (per-room sensors, '
+    + 'occupancy and thermostat), and active HA entities — useful for a quick overview',
     READ_ONLY_CLOSED,
     async () => {
       const { mieleClient, dishwasher } = services;
@@ -935,6 +936,7 @@ export default function createMcpServer(
         },
         miele,
         homeconnect,
+        indoorClimate: services.indoorClimate?.cachedStatus ?? null,
       });
     },
   );

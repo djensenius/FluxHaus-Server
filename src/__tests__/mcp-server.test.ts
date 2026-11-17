@@ -445,6 +445,19 @@ describe('MCP Server', () => {
       expect(parsed).toHaveProperty('dishwasher');
     });
 
+    it('get_home_summary includes indoor climate, or null when unavailable', async () => {
+      const withoutClimate = await getTools(createMcpServer(mockServices)).get_home_summary.handler({}, {});
+      expect(JSON.parse(withoutClimate.content[0].text as string).indoorClimate).toBeNull();
+
+      const status = {
+        timestamp: '2026-01-01T00:00:00.000Z', thermostat: null, sensors: [], unit: '°C',
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = { cachedStatus: status } as any;
+      const withClimate = await getTools(createMcpServer(mockServices)).get_home_summary.handler({}, {});
+      expect(JSON.parse(withClimate.content[0].text as string).indoorClimate).toEqual(status);
+    });
+
     it('calendar mutation tools report when calendar service is unavailable', async () => {
       const server = createMcpServer(mockServices);
 

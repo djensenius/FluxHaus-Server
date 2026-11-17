@@ -29,7 +29,8 @@ interface InfluxMetric {
   unit: string;
   group: string;
   source: 'influx';
-  measurement: string;
+  // One or more measurements to read; arrays are OR-ed together.
+  measurement: string | string[];
   field: string;
   seriesTag: string;
   entityIds?: string[];
@@ -79,9 +80,13 @@ export const METRIC_CATALOG: MetricDefinition[] = [
     unit: '°C',
     group: 'Environment',
     source: 'influx',
-    measurement: 'climate',
+    // Home Assistant may log newly added sensors under the unit-based `°C`
+    // measurement rather than `climate`.
+    measurement: ['climate', '°C'],
     field: 'value',
     seriesTag: 'friendly_name',
+    // Static fallback; discovered indoor sensors are merged in at query time
+    // via MetricsDeps.dynamicEntityIds.
     entityIds: [
       'bedroom_temperature',
       'kitchen_temperature',
@@ -427,6 +432,32 @@ export interface MetricsDeps {
   prometheus?: PrometheusClient;
   prometheusServers?: { name: string; client: PrometheusClient }[];
   bucket?: string;
+  // Extra Influx entity ids per metric id, resolved on every query and merged
+  // with the metric's static entityIds.
+  dynamicEntityIds?: Record<string, () => string[]>;
+}
+
+// Entity ids are interpolated into Flux, so only allow HA object-id characters.
+const SAFE_ENTITY_ID = /^[a-z0-9_]+$/;
+
+function resolveEntityIds(metric: InfluxMetric, deps: MetricsDeps): string[] | undefined {
+  const provider = deps.dynamicEntityIds?.[metric.id];
+  if (!metric.entityIds && !provider) return undefined;
+  let dynamicIds: unknown = [];
+  if (provider) {
+    try {
+      dynamicIds = provider();
+    } catch (err) {
+      metricsLogger.warn({ err, metric: metric.id }, 'Dynamic entity id provider failed');
+    }
+  }
+  const merged = new Set<unknown>([
+    ...(metric.entityIds ?? []),
+    ...(Array.isArray(dynamicIds) ? dynamicIds : []),
+  ]);
+  return Array.from(merged).filter(
+    (id): id is string => typeof id === 'string' && SAFE_ENTITY_ID.test(id),
+  );
 }
 
 function normalizeRange(value: unknown): MetricRange {
@@ -441,16 +472,29 @@ async function fetchInflux(
   range: MetricRange,
   influxdb: InfluxDBClient,
   bucket: string,
+  entityIds: string[] | undefined,
 ): Promise<MetricSeries[]> {
+  // An entity-scoped metric with nothing to filter on must not fall back to
+  // reading every entity in the measurement.
+  if (entityIds && entityIds.length === 0) return [];
   const window = RANGE_WINDOW[range];
   const aggregateFn = metric.aggregateFn ?? 'mean';
-  const entityFilter = metric.entityIds?.length
+  const entityFilter = entityIds?.length
     ? `\n  |> filter(fn: (r) => contains(value: r.entity_id, set: [${
-      metric.entityIds.map((id) => `"${id}"`).join(', ')}]))`
+      entityIds.map((id) => `"${id}"`).join(', ')}]))`
+    : '';
+  const measurements = Array.isArray(metric.measurement) ? metric.measurement : [metric.measurement];
+  const measurementFilter = measurements.length === 1
+    ? `r._measurement == "${measurements[0]}"`
+    : `(${measurements.map((m) => `r._measurement == "${m}"`).join(' or ')})`;
+  // An entity logged under several measurements would otherwise yield one
+  // table per measurement; regroup so each entity aggregates to one point per window.
+  const mergeMeasurements = measurements.length > 1
+    ? `\n  |> group(columns: ["entity_id", "${metric.seriesTag}"])`
     : '';
   const flux = `from(bucket: "${bucket}")
   |> range(start: -${range})
-  |> filter(fn: (r) => r._measurement == "${metric.measurement}" and r._field == "${metric.field}")${entityFilter}
+  |> filter(fn: (r) => ${measurementFilter} and r._field == "${metric.field}")${entityFilter}${mergeMeasurements}
   |> aggregateWindow(every: ${window}, fn: ${aggregateFn}, createEmpty: false)
   |> keep(columns: ["_time", "_value", "${metric.seriesTag}"])`;
 
@@ -562,7 +606,13 @@ export async function fetchMetricSeries(
   let series: MetricSeries[] = [];
   if (metric.source === 'influx') {
     if (deps.influxdb?.configured) {
-      series = await fetchInflux(metric, range, deps.influxdb, deps.bucket ?? 'fluxhaus');
+      series = await fetchInflux(
+        metric,
+        range,
+        deps.influxdb,
+        deps.bucket ?? 'fluxhaus',
+        resolveEntityIds(metric, deps),
+      );
     }
   } else {
     series = await fetchPrometheus(metric, range, deps);
