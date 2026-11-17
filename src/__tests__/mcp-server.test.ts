@@ -482,7 +482,7 @@ describe('MCP Server', () => {
       }, {});
 
       expect(result.isError).toBeUndefined();
-      expect(indoorClimate.resumeProgram).toHaveBeenCalledWith();
+      expect(indoorClimate.resumeProgram).toHaveBeenCalledWith(true);
       expect(indoorClimate.setHvacMode).toHaveBeenCalledWith('heat_cool');
       expect(indoorClimate.setPresetMode).toHaveBeenCalledWith('home');
       expect(indoorClimate.setFanMode).toHaveBeenCalledWith('auto');
@@ -512,6 +512,39 @@ describe('MCP Server', () => {
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toContain('Provide at least one of');
       expect(indoorClimate.resumeProgram).not.toHaveBeenCalled();
+    });
+
+    it('set_thermostat reports options already applied when a later one fails', async () => {
+      const thermostat = { entityId: 'climate.home', hvacMode: 'heat', fanMode: 'auto' };
+      const indoorClimate = {
+        cachedStatus: {
+          timestamp: '2026-01-01T00:00:00.000Z', thermostat, sensors: [], unit: '°C',
+        },
+        resumeProgram: vi.fn().mockResolvedValue({}),
+        setHvacMode: vi.fn().mockResolvedValue({}),
+        setFanMode: vi.fn().mockRejectedValue(new Error('Unsupported fan mode (supported: auto, on)')),
+        setTemperature: vi.fn(),
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = indoorClimate as any;
+      const result = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, hvac_mode: 'heat', fan_mode: 'circulate', temperature: 21,
+      }, {});
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text as string;
+      expect(text).toContain('Error in set_thermostat: Unsupported fan mode (supported: auto, on)');
+      expect(text).toContain('Already applied before the error: resume_program; hvac_mode=heat.');
+      expect(text).toContain('Current thermostat status:');
+      expect(text).toContain('"fanMode": "auto"');
+      expect(indoorClimate.setTemperature).not.toHaveBeenCalled();
+
+      indoorClimate.resumeProgram.mockRejectedValueOnce(new Error('Thermostat unavailable'));
+      const first = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, hvac_mode: 'heat',
+      }, {});
+      expect(first.isError).toBe(true);
+      expect(first.content[0].text).toBe('Error in set_thermostat: Thermostat unavailable');
     });
 
     it('calendar mutation tools report when calendar service is unavailable', async () => {

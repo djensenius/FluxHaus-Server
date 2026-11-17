@@ -461,6 +461,8 @@ describe('Server', () => {
   it.each([
     [400, 'Unsupported preset mode (supported: home, away)'],
     [409, 'No thermostat discovered'],
+    [502, 'Thermostat change was sent but its new state could not be read'],
+    [503, 'Could not read the thermostat state; no change was sent'],
   ] as const)('maps a %i thermostat control error to its status and message', async (status, message) => {
     mockIndoorClimate.setPresetMode.mockRejectedValueOnce(new ThermostatControlError(status, message));
     const response = await request(app)

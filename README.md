@@ -300,20 +300,30 @@ Temperatures accept numbers or numeric strings and must be within
 `minTemp`..`maxTemp` when known. Use `temperature` outside `heat_cool` mode and
 `targetTempLow` < `targetTempHigh` in `heat_cool` mode. If the thermostat
 doesn't report `hvacModes`, `mode` must be one of `off`, `heat`, `cool`,
-`heat_cool`, `auto`, `dry` or `fan_only`. Resume is only available when
+`heat_cool`, `auto`, `dry` or `fan_only`. Resume is only available when the
+thermostat's own integration (its config entry domain) is `ecobee`. On Home
+Assistant older than 2024.7, which can't report it, Resume requires
 `INDOOR_CLIMATE_INTEGRATION=ecobee`.
 
-Success returns `200` with the refreshed `indoorClimate` snapshot. Invalid
-requests return `400`, and a missing or unavailable thermostat returns `409`,
-each with a plain-text reason. Home Assistant errors return `502`
-`Thermostat control failed`. Control calls time out after 30 seconds because
-Ecobee cloud calls can be slow. A timed-out change may still be applied.
+Each control first waits for any in-flight poll and reads the thermostat
+fresh, so validation uses its current mode and limits. Success returns `200`
+with the refreshed `indoorClimate` snapshot. Invalid requests return `400`, and
+a missing or unavailable thermostat returns `409`, each with a plain-text
+reason. If the thermostat can't be read first, the route returns `503`
+`Could not read the thermostat state; no change was sent`. If the change was
+sent but the state read afterwards fails, it returns `502`
+`Thermostat change was sent but its new state could not be read`. Other Home
+Assistant errors return `502` `Thermostat control failed`. Control calls time
+out after 30 seconds because Ecobee cloud calls can be slow. A timed-out change
+may still be applied.
 
 The MCP `set_thermostat` tool takes `temperature`, `target_temp_low`,
 `target_temp_high`, `hvac_mode`, `preset_mode`, `fan_mode` and
-`resume_program` (at least one is required). It applies them in the order
-resume → HVAC mode → preset → fan → temperature and returns the resulting
-snapshot. A failing step stops the sequence, but earlier steps stay applied.
+`resume_program` (at least one is required). `resume_program` cancels all
+holds (`resume_all: true`) and returns to the schedule. It applies them in the
+order resume → HVAC mode → preset → fan → temperature and returns the resulting
+snapshot. A failing step stops the sequence, but earlier steps stay applied. The
+error lists them and includes the current thermostat status.
 
 ## Car analytics
 

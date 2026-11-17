@@ -827,7 +827,8 @@ export async function createServer(): Promise<Express> {
   });
 
   // Ecobee thermostat controls. Each responds with the refreshed indoor climate
-  // status; invalid requests are 400 and a missing/unavailable thermostat 409.
+  // status; ThermostatControlError carries its own status and plain-text reason
+  // (400 invalid, 409 no usable thermostat, 503 nothing sent, 502 sent but unread).
   const sendThermostatControl = async (
     res: express.Response,
     label: string,

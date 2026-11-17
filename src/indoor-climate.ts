@@ -14,13 +14,15 @@ const UNAVAILABLE_STATES = new Set(['unavailable', 'unknown']);
 // Used to validate set_hvac_mode when the thermostat doesn't report hvac_modes.
 const DEFAULT_HVAC_MODES = ['off', 'heat', 'cool', 'heat_cool', 'auto', 'dry', 'fan_only'];
 
-// A control request the thermostat can't accept: 400 for invalid input, 409
-// when there is no usable thermostat. Anything else thrown by a control method
-// is a Home Assistant failure or timeout.
+// A control request that failed in a known way, with the HTTP status and a
+// plain-text reason: 400 for invalid input, 409 when there is no usable
+// thermostat, 503 when its state couldn't be read so nothing was sent, and 502
+// when a change was sent but its result couldn't be read. Anything else thrown
+// by a control method is a Home Assistant failure or timeout of the service call.
 export class ThermostatControlError extends Error {
-  public readonly status: 400 | 409;
+  public readonly status: 400 | 409 | 502 | 503;
 
-  constructor(status: 400 | 409, message: string) {
+  constructor(status: 400 | 409 | 502 | 503, message: string) {
     super(message);
     this.name = 'ThermostatControlError';
     this.status = status;
@@ -92,6 +94,9 @@ interface DiscoveredEntity {
   deviceId: string | null;
   deviceName: string | null;
   area: string | null;
+  // Integration domain of the entity's config entry (e.g. "ecobee"); null when
+  // Home Assistant can't say (no config entry, or HA older than 2024.7).
+  platform: string | null;
 }
 
 interface HaState {
@@ -175,9 +180,12 @@ function isValidIntegration(integration: string): boolean {
 // JSON.stringify yields a double-quoted literal with every `"` and `\` escaped,
 // which Jinja reads as one string token, so Jinja delimiters in the value stay
 // inert text. Control characters are rejected earlier by isValidIntegration().
+// `platform` uses config_entry_id (HA 2022.11+) and config_entry_attr (HA
+// 2024.7+); config_entry_attr raises for a missing entry id, hence the guards.
 function discoveryTemplate(integration: string): string {
   return `[{%- for entity_id in integration_entities(${JSON.stringify(integration)}) -%}
-{{ {'entity_id': entity_id, 'device_id': device_id(entity_id), 'device_name': device_attr(entity_id, 'name_by_user') or device_attr(entity_id, 'name'), 'area': area_name(entity_id)} | tojson }}{{ ',' if not loop.last else '' }}
+{%- set entry_id = config_entry_id(entity_id) if config_entry_attr is defined else none -%}
+{{ {'entity_id': entity_id, 'device_id': device_id(entity_id), 'device_name': device_attr(entity_id, 'name_by_user') or device_attr(entity_id, 'name'), 'area': area_name(entity_id), 'platform': config_entry_attr(entry_id, 'domain') if entry_id else none} | tojson }}{{ ',' if not loop.last else '' }}
 {%- endfor -%}]`;
 }
 
@@ -196,6 +204,7 @@ function parseDiscovery(raw: string): DiscoveredEntity[] {
       deviceId: toStringOrNull(record.device_id),
       deviceName: toStringOrNull(record.device_name)?.trim() ?? null,
       area: toStringOrNull(record.area)?.trim() ?? null,
+      platform: toStringOrNull(record.platform),
     });
   });
   return entities;
@@ -422,10 +431,13 @@ export default class IndoorClimate {
   // Cancels the active hold (or every hold with resumeAll) so the Ecobee
   // schedule takes over again.
   public async resumeProgram(resumeAll = false): Promise<IndoorClimateStatus> {
-    if (this.integration !== 'ecobee') {
+    const entity = await this.thermostatEntity();
+    // The selector may be a config-entry title, so check the thermostat's own
+    // integration. If HA didn't report it, the selector must be the domain.
+    if ((entity.platform ?? this.integration) !== 'ecobee') {
       throw new ThermostatControlError(400, 'Resume program is not supported by this integration');
     }
-    const thermostat = await this.controllableThermostat();
+    const thermostat = await this.freshThermostat(entity);
     return this.callControl('ecobee', 'resume_program', {
       entity_id: thermostat.entityId,
       resume_all: resumeAll,
@@ -433,11 +445,40 @@ export default class IndoorClimate {
   }
 
   private async controllableThermostat(): Promise<ThermostatStatus> {
+    return this.freshThermostat(await this.thermostatEntity());
+  }
+
+  // The discovered climate entity behind the reported thermostat.
+  private async thermostatEntity(): Promise<DiscoveredEntity> {
+    if (this.inFlight) await this.inFlight;
     // Before the first successful poll (e.g. right after startup) try once
     // rather than rejecting a thermostat we simply haven't seen yet.
     if (!this.cachedStatus.thermostat) await this.refresh();
-    const { thermostat } = this.cachedStatus;
-    if (!thermostat) throw new ThermostatControlError(409, 'No thermostat discovered');
+    const entityId = this.cachedStatus.thermostat?.entityId;
+    const entity = this.discovered.find((candidate) => candidate.entityId === entityId);
+    if (!entity) throw new ThermostatControlError(409, 'No thermostat discovered');
+    return entity;
+  }
+
+  // Reads the thermostat right before a control so validation uses its current
+  // mode and limits, not a snapshot up to a poll interval old.
+  private async freshThermostat(entity: DiscoveredEntity): Promise<ThermostatStatus> {
+    let state: HaState | null;
+    try {
+      state = await withTimeout(
+        (signal) => this.client.getState(entity.entityId, { signal }),
+        this.requestTimeout,
+        entity.entityId,
+      );
+    } catch (err) {
+      indoorClimateLogger.warn({ err, entityId: entity.entityId }, 'Could not read the thermostat before a control');
+      throw new ThermostatControlError(503, 'Could not read the thermostat state; no change was sent');
+    }
+    const cached = this.cachedStatus.thermostat;
+    const thermostat = toThermostat(entity, state, {
+      temperature: cached?.currentTemperature ?? null,
+      humidity: cached?.currentHumidity ?? null,
+    });
     if (!thermostat.available) throw new ThermostatControlError(409, 'Thermostat unavailable');
     return thermostat;
   }
@@ -458,6 +499,12 @@ export default class IndoorClimate {
     // let it finish and then poll again for the updated thermostat.
     if (this.inFlight) await this.inFlight;
     await this.refresh();
+    // refresh() never rejects: a failed or timed-out thermostat read shows up
+    // as an unavailable thermostat, which must not be reported as a success.
+    if (!this.cachedStatus.thermostat?.available) {
+      indoorClimateLogger.error({ domain, service }, 'Thermostat state could not be read after a control');
+      throw new ThermostatControlError(502, 'Thermostat change was sent but its new state could not be read');
+    }
     return this.cachedStatus;
   }
 

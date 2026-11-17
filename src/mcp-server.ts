@@ -8,6 +8,7 @@ import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
+import type { IndoorClimateStatus } from './indoor-climate';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
@@ -917,7 +918,8 @@ export default function createMcpServer(
     + 'hvac_mode, preset_mode, fan_mode, then the set point(s). Use temperature in heat/cool mode, or '
     + 'target_temp_low + target_temp_high in heat_cool mode. Supported modes, presets, fan modes and the '
     + 'min/max temperature are in get_home_summary (indoorClimate.thermostat). Returns the updated indoor '
-    + 'climate status.',
+    + 'climate status. If a later option fails, the error lists the options already applied and the '
+    + 'current thermostat status.',
     {
       temperature: z.number().optional()
         .describe('Target temperature in the thermostat unit (not in heat_cool mode)'),
@@ -929,7 +931,7 @@ export default function createMcpServer(
       preset_mode: z.string().optional().describe('Preset / comfort setting, e.g. home, away, sleep'),
       fan_mode: z.string().optional().describe('Fan mode, e.g. auto, on'),
       resume_program: z.boolean().optional()
-        .describe('Cancel the current hold and resume the thermostat schedule'),
+        .describe('Cancel all holds (Ecobee resume_program with resume_all) and return to the schedule'),
     },
     IDEMPOTENT_WRITE_CLOSED,
     async (args) => {
@@ -940,8 +942,29 @@ export default function createMcpServer(
       const setsTemperature = args.temperature !== undefined
         || args.target_temp_low !== undefined
         || args.target_temp_high !== undefined;
-      if (!setsTemperature && !args.resume_program && args.hvac_mode === undefined
-        && args.preset_mode === undefined && args.fan_mode === undefined) {
+      const steps: Array<[string, () => Promise<IndoorClimateStatus>]> = [];
+      if (args.resume_program) steps.push(['resume_program', () => indoorClimate.resumeProgram(true)]);
+      if (args.hvac_mode !== undefined) {
+        const mode = args.hvac_mode;
+        steps.push([`hvac_mode=${mode}`, () => indoorClimate.setHvacMode(mode)]);
+      }
+      if (args.preset_mode !== undefined) {
+        const preset = args.preset_mode;
+        steps.push([`preset_mode=${preset}`, () => indoorClimate.setPresetMode(preset)]);
+      }
+      if (args.fan_mode !== undefined) {
+        const mode = args.fan_mode;
+        steps.push([`fan_mode=${mode}`, () => indoorClimate.setFanMode(mode)]);
+      }
+      if (setsTemperature) {
+        // Always last, so its label never appears in the "already applied" list.
+        steps.push(['temperature', () => indoorClimate.setTemperature({
+          temperature: args.temperature,
+          targetTempLow: args.target_temp_low,
+          targetTempHigh: args.target_temp_high,
+        })]);
+      }
+      if (steps.length === 0) {
         return {
           isError: true,
           content: [{
@@ -952,16 +975,27 @@ export default function createMcpServer(
         };
       }
       let status = indoorClimate.cachedStatus;
-      if (args.resume_program) status = await indoorClimate.resumeProgram();
-      if (args.hvac_mode !== undefined) status = await indoorClimate.setHvacMode(args.hvac_mode);
-      if (args.preset_mode !== undefined) status = await indoorClimate.setPresetMode(args.preset_mode);
-      if (args.fan_mode !== undefined) status = await indoorClimate.setFanMode(args.fan_mode);
-      if (setsTemperature) {
-        status = await indoorClimate.setTemperature({
-          temperature: args.temperature,
-          targetTempLow: args.target_temp_low,
-          targetTempHigh: args.target_temp_high,
-        });
+      const applied: string[] = [];
+      for (const [label, step] of steps) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          status = await step();
+        } catch (err) {
+          // Nothing was applied before this step: let the tool wrapper report it as usual.
+          if (applied.length === 0) throw err;
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[MCP] set_thermostat failed after applying ${applied.join('; ')}: ${message}`);
+          const { timestamp, thermostat } = indoorClimate.cachedStatus;
+          const lines = [
+            `Error in set_thermostat: ${message}`,
+            `Already applied before the error: ${applied.join('; ')}.`,
+          ];
+          if (thermostat) {
+            lines.push(`Current thermostat status: ${JSON.stringify({ timestamp, thermostat }, null, 2)}`);
+          }
+          return { isError: true, content: [{ type: 'text' as const, text: lines.join('\n') }] };
+        }
+        applied.push(label);
       }
       return jsonResult(status);
     },

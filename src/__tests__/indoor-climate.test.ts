@@ -415,9 +415,15 @@ describe('IndoorClimate', () => {
       return { ...CONTROLLABLE, attributes: { ...CONTROLLABLE.attributes, temperature } };
     }
 
-    async function start(climateState: unknown = CONTROLLABLE, integration?: string): Promise<IndoorClimate> {
+    async function start(
+      climateState: unknown = CONTROLLABLE,
+      integration?: string,
+      options: { requestTimeout?: number } = {},
+    ): Promise<IndoorClimate> {
       mockStates({ ...STATES, 'climate.home': climateState });
-      const climate = new IndoorClimate({ client: mockClient, integration, controlTimeout: 50 });
+      const climate = new IndoorClimate({
+        client: mockClient, integration, controlTimeout: 50, ...options,
+      });
       indoorClimate = climate;
       await climate.refresh();
       return climate;
@@ -519,6 +525,118 @@ describe('IndoorClimate', () => {
       expect(mockClient.callService).not.toHaveBeenCalled();
     });
 
+    it.each<[string, string, string | null, boolean]>([
+      ['an Ecobee thermostat behind a config-entry title', 'Ecobee Upstairs', 'ecobee', true],
+      ['the ecobee domain when HA does not report the platform', 'ecobee', null, true],
+      ['a non-Ecobee thermostat even if the selector is ecobee', 'ecobee', 'honeywell_tcc', false],
+      ['a config-entry title when HA does not report the platform', 'Ecobee Upstairs', null, false],
+    ])('decides resume support from the thermostat integration: %s', async (
+      _label,
+      integration,
+      platform,
+      supported,
+    ) => {
+      mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify(DISCOVERY.map((entity) => (
+        entity.entity_id === 'climate.home' ? { ...entity, platform } : entity
+      ))));
+      const climate = await start(CONTROLLABLE, integration);
+      expect(mockClient.renderTemplate).toHaveBeenCalledWith(
+        expect.stringContaining("'platform': config_entry_attr(entry_id, 'domain') if entry_id else none"),
+        expect.anything(),
+      );
+      const result = climate.resumeProgram(true);
+      if (supported) {
+        await result;
+        expect(mockClient.callService).toHaveBeenCalledWith('ecobee', 'resume_program', {
+          entity_id: 'climate.home', resume_all: true,
+        }, { signal: expect.any(AbortSignal) });
+      } else {
+        await expect(result).rejects.toMatchObject({ status: 400 });
+        expect(mockClient.callService).not.toHaveBeenCalled();
+      }
+    });
+
+    it('validates against a fresh read of the thermostat, not the cached snapshot', async () => {
+      const climate = await start();
+      // The thermostat switched to heat_cool after the last poll.
+      mockStates({ ...STATES, 'climate.home': HEAT_COOL });
+      await expect(climate.setTemperature({ temperature: 21 })).rejects.toMatchObject({
+        status: 400, message: 'Thermostat is in heat_cool mode; set targetTempLow and targetTempHigh instead',
+      });
+      expect(mockClient.getState).toHaveBeenCalledTimes(1);
+      expect(mockClient.getState).toHaveBeenCalledWith('climate.home', { signal: expect.any(AbortSignal) });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+
+      await climate.setTemperature({ targetTempLow: 19, targetTempHigh: 25 });
+      expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_temperature', {
+        entity_id: 'climate.home', target_temp_low: 19, target_temp_high: 25,
+      }, { signal: expect.any(AbortSignal) });
+
+      // It went offline after the last poll, which still shows it available.
+      vi.mocked(mockClient.callService).mockClear();
+      mockStates({ ...STATES, 'climate.home': { state: 'unavailable', attributes: {} } });
+      expect(climate.cachedStatus.thermostat?.available).toBe(true);
+      await expect(climate.setFanMode('on')).rejects.toMatchObject({ status: 409, message: 'Thermostat unavailable' });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+    });
+
+    it('waits for an in-flight poll before the fresh read', async () => {
+      const climate = await start();
+      const respond = mockClient.getState.getMockImplementation()!;
+      let releasePoll!: () => void;
+      const gate = new Promise<void>((resolve) => { releasePoll = resolve; });
+      mockClient.getState = vi.fn().mockImplementation((entityId: string) => gate.then(() => respond(entityId)));
+      const poll = climate.refresh();
+      const pending = climate.setFanMode('on');
+      await new Promise((resolve) => { setTimeout(resolve, 10); });
+      const pollReads = DISCOVERY.filter((entity) => !entity.entity_id.startsWith('weather.')).length;
+      expect(mockClient.getState).toHaveBeenCalledTimes(pollReads);
+      expect(mockClient.callService).not.toHaveBeenCalled();
+
+      releasePoll();
+      await poll;
+      await pending;
+      expect(vi.mocked(mockClient.getState).mock.calls[pollReads][0]).toBe('climate.home');
+      expect(mockClient.callService).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends nothing when the thermostat cannot be read first', async () => {
+      const climate = await start(CONTROLLABLE, undefined, { requestTimeout: 20 });
+      let signal: AbortSignal | undefined;
+      mockClient.getState = vi.fn().mockImplementation((_entityId: string, options: { signal: AbortSignal }) => {
+        signal = options.signal;
+        return new Promise(() => {});
+      });
+      await expect(climate.setFanMode('on')).rejects.toMatchObject({
+        status: 503, message: 'Could not read the thermostat state; no change was sent',
+      });
+      expect(signal?.aborted).toBe(true);
+
+      mockClient.getState = vi.fn().mockRejectedValue(new Error('Home Assistant request failed: 500'));
+      await expect(climate.resumeProgram()).rejects.toMatchObject({ status: 503 });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['fails', () => Promise.reject(new Error('Home Assistant request failed: 500'))],
+      ['times out', () => new Promise(() => {})],
+    ])('rejects with 502 when the thermostat read after a sent change %s', async (_label, read) => {
+      const climate = await start(CONTROLLABLE, undefined, { requestTimeout: 20 });
+      const respond = mockClient.getState.getMockImplementation()!;
+      mockClient.callService = vi.fn().mockImplementation(async () => {
+        mockClient.getState = vi.fn().mockImplementation((entityId: string) => (
+          entityId === 'climate.home' ? read() : respond(entityId)
+        ));
+        return [];
+      });
+      const error = await climate.setFanMode('on').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(ThermostatControlError);
+      expect(error).toMatchObject({
+        status: 502, message: 'Thermostat change was sent but its new state could not be read',
+      });
+      expect(mockClient.callService).toHaveBeenCalledTimes(1);
+    });
+
     it('rejects with 409 when no thermostat is discovered or it is unavailable', async () => {
       mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify(
         DISCOVERY.filter((entity) => entity.entity_id !== 'climate.home'),
@@ -563,24 +681,28 @@ describe('IndoorClimate', () => {
     it('polls again when a poll was already in flight during the service call', async () => {
       const climate = await start();
       let current: Record<string, unknown> = { ...STATES, 'climate.home': CONTROLLABLE };
+      let gate: Promise<void> | null = null;
       let releasePoll!: () => void;
-      const gate = new Promise<void>((resolve) => { releasePoll = resolve; });
-      // Each read captures the state at request time, so the stale poll sees the old set point.
+      // Each read captures the state at request time; reads made while the gate
+      // is set wait for it, so the poll started during the call sees the old set point.
       mockClient.getState = vi.fn().mockImplementation((entityId: string) => {
         const snapshot = current[entityId];
-        return gate.then(() => snapshot ?? Promise.reject(new Error('Not found')));
+        const read = () => snapshot ?? Promise.reject(new Error('Not found'));
+        return gate ? gate.then(read) : Promise.resolve().then(read);
       });
-      const stalePoll = climate.refresh();
+      let stalePoll!: Promise<void>;
       mockClient.callService = vi.fn().mockImplementation(async () => {
+        gate = new Promise<void>((resolve) => { releasePoll = resolve; });
+        stalePoll = climate.refresh();
+        await new Promise((resolve) => { setTimeout(resolve, 0); }); // let the poll issue its reads
+        gate = null;
         current = { ...current, 'climate.home': withTarget(23) };
+        setTimeout(releasePoll, 10); // the stale poll only finishes after the call returns
         return [];
       });
 
-      const pending = climate.setTemperature({ temperature: 23 });
-      await vi.waitFor(() => expect(mockClient.callService).toHaveBeenCalled());
-      releasePoll();
+      const status = await climate.setTemperature({ temperature: 23 });
       await stalePoll;
-      const status = await pending;
       expect(status.thermostat?.targetTemperature).toBe(23);
     });
   });
