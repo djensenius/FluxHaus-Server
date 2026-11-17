@@ -270,14 +270,15 @@ INDOOR_CLIMATE_INTEGRATION=ecobee
 ```
 
 The value is passed to HA's `integration_entities()`, which matches a
-config-entry title first and then an integration domain. Choose it carefully:
+config-entry title first (e.g. `Ecobee Upstairs`; up to 100 characters, no
+control characters) and then an integration domain. Choose it carefully:
 e.g. `homekit_controller` pulls in every HomeKit temperature sensor.
 
 Discovery uses Home Assistant's `/api/template` endpoint, so `HOMEASSISTANT_TOKEN`
 must be allowed to render templates — the same requirement as the MCP
 `render_template` tool. If discovery fails, the last discovered entities are kept.
-Each Home Assistant request made by this poller times out after 15 seconds, so a
-hung request can't stall polling.
+Each Home Assistant request made by this poller times out (and is aborted) after
+15 seconds, so a hung request can't stall polling.
 
 ## Car analytics
 
