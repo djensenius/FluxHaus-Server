@@ -980,6 +980,7 @@ describe('IndoorClimate', () => {
     });
 
     const ATTIC = { entity_id: 'climate.attic', device_id: 'dev_attic', device_name: 'Attic' };
+    const HOME = { entity_id: 'climate.home' };
 
     it('stops a withControls operation if another thermostat is selected partway', async () => {
       const climate = await start(CONTROLLABLE, undefined, { discoveryInterval: 0 });
@@ -1017,8 +1018,8 @@ describe('IndoorClimate', () => {
       let release!: () => void;
       const gate = new Promise<void>((resolve) => { release = resolve; });
       const batch = climate.withControls(async () => { await gate; order.push('batch'); });
-      const raw = climate.runServiceCall('climate', 'turn_off', async () => { order.push('climate'); });
-      await climate.runServiceCall('light', 'turn_on', async () => { order.push('light'); });
+      const raw = climate.runServiceCall('climate', 'turn_off', HOME, async () => { order.push('climate'); });
+      await climate.runServiceCall('light', 'turn_on', { entity_id: 'light.hall' }, async () => { order.push('light'); });
       release();
       await Promise.all([batch, raw]);
       expect(order).toEqual(['light', 'batch', 'climate']);
@@ -1027,7 +1028,7 @@ describe('IndoorClimate', () => {
     it('aborts a stalled raw thermostat call so it cannot hold up the controls', async () => {
       const climate = await start();
       let aborted = false;
-      const stalled = climate.runServiceCall('ecobee', 'resume_program', (signal) => new Promise((_resolve, reject) => {
+      const stalled = climate.runServiceCall('ecobee', 'resume_program', HOME, (signal) => new Promise((_resolve, reject) => {
         signal?.addEventListener('abort', () => { aborted = true; reject(signal.reason); });
       }));
       const control = climate.setFanMode('on');
@@ -1038,6 +1039,51 @@ describe('IndoorClimate', () => {
       });
       expect(aborted).toBe(true);
       await expect(control).resolves.toMatchObject({ confirmed: false });
+    });
+
+    it('holds a raw thermostat call back while a change of another kind is pending', async () => {
+      const climate = await start();
+      // The thermostat never reports heat_cool.
+      await expect(climate.setHvacMode('heat_cool')).resolves.toMatchObject({ confirmed: false });
+      const call = vi.fn().mockResolvedValue([]);
+      await expect(climate.runServiceCall('climate', 'set_temperature', { ...HOME, temperature: 22 }, call))
+        .rejects.toMatchObject({ status: 409 });
+      expect(call).not.toHaveBeenCalled();
+      // A call to another thermostat isn't held back.
+      await climate.runServiceCall('climate', 'set_temperature', { entity_id: 'climate.attic', temperature: 22 }, call);
+      expect(call).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds controls of another kind back until a raw thermostat change is reported', async () => {
+      const climate = await start();
+      await climate.runServiceCall('climate', 'set_hvac_mode', { ...HOME, hvac_mode: 'cool' }, async () => []);
+      await expect(climate.setTemperature({ temperature: 22 })).rejects.toMatchObject({ status: 409 });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+      mockStates({ ...STATES, 'climate.home': { ...CONTROLLABLE, state: 'cool' } });
+      await expect(climate.setTemperature({ temperature: 22 })).resolves.toMatchObject({ confirmed: false });
+      expect(mockClient.callService).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not hold controls back after a raw call Home Assistant refused', async () => {
+      const climate = await start();
+      const refused = new HomeAssistantRequestError(400, 'Home Assistant request failed: 400 Bad Request');
+      await expect(climate.runServiceCall('climate', 'set_hvac_mode', { ...HOME, hvac_mode: 'cool' }, async () => {
+        throw refused;
+      })).rejects.toBe(refused);
+      await expect(climate.setTemperature({ temperature: 22 })).resolves.toMatchObject({ confirmed: false });
+    });
+
+    it('does not give one thermostat the readings of another', async () => {
+      const upstairs = { entity_id: 'climate.upstairs', device_id: 'dev_upstairs', device_name: 'Upstairs' };
+      mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([...DISCOVERY, upstairs]));
+      const climate = await start();
+      mockStates({ ...STATES, 'climate.home': CONTROLLABLE, 'climate.upstairs': { state: 'cool', attributes: {} } });
+      await expect(climate.currentThermostat()).resolves.toMatchObject({
+        entityId: 'climate.home', currentTemperature: 21.5, currentHumidity: 40,
+      });
+      await expect(climate.currentThermostat('climate.upstairs')).resolves.toMatchObject({
+        entityId: 'climate.upstairs', currentTemperature: null, currentHumidity: null,
+      });
     });
 
     it('starts the hold-back window once an unconfirmed change is recorded', async () => {

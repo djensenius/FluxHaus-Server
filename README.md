@@ -365,7 +365,13 @@ the guarantees above hold between them. Raw `climate.*` and `ecobee.*` calls
 through the `call_ha_service` tool (MCP and AI commands) also take their turn
 with the controls, so one can't land between the steps of `set_thermostat`.
 Like the controls, they time out (and are aborted) after 30 seconds with a
-`504` saying the change may still be applied.
+`504` saying the change may still be applied. One that may target the reported
+thermostat (it names it, `all`, or no entity, or targets an area, device, floor
+or label) also follows the hold-back rule above: it waits for (or is refused
+with `409` by) a pending change of another kind, and a mode, preset, fan or set
+point change it makes holds back other kinds of control until the thermostat
+reports it. Ecobee services wait the same way, but what they change isn't held
+back, as it can't be read from the thermostat's state.
 The local stdio MCP server
 (`node dist/mcp.js`) runs in its own process with its own controller and isn't
 coordinated with a running web server.

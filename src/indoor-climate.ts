@@ -240,6 +240,62 @@ function toStringOrNull(value: unknown): string | null {
   return typeof value === 'string' && value.trim() !== '' ? value : null;
 }
 
+// The control a raw thermostat service call amounts to, so it settles like that
+// control (see IndoorClimate.settle).
+function rawServiceKind(domain: string, service: string): string {
+  return domain === 'climate' && ['turn_on', 'turn_off', 'toggle'].includes(service) ? 'set_hvac_mode' : service;
+}
+
+const TARGET_SELECTORS = ['area_id', 'device_id', 'floor_id', 'label_id'];
+
+// Whether a raw service call may act on `entityId`: it names it or "all",
+// names no entity, or targets an area, device, floor or label that may hold it.
+function mayTarget(serviceData: Record<string, unknown>, entityId: string): boolean {
+  if (TARGET_SELECTORS.some((key) => serviceData[key] !== undefined && serviceData[key] !== null)) return true;
+  const ids = serviceData.entity_id;
+  if (ids === undefined || ids === null) return true;
+  return (Array.isArray(ids) ? ids : String(ids).split(','))
+    .some((id) => ['all', entityId].includes(String(id).trim()));
+}
+
+// How the thermostat reports that a raw climate service call took effect, or
+// null if its state can't tell (e.g. Ecobee services, or unknown parameters).
+function rawServiceApplied(
+  domain: string,
+  service: string,
+  data: Record<string, unknown>,
+  before: ThermostatStatus | null,
+): ((thermostat: ThermostatStatus) => boolean) | null {
+  if (domain !== 'climate') return null;
+  const isOn = (thermostat: ThermostatStatus) => thermostat.hvacMode !== null && thermostat.hvacMode !== 'off';
+  const isOff = (thermostat: ThermostatStatus) => thermostat.hvacMode === 'off';
+  const equals = (key: string, read: (thermostat: ThermostatStatus) => string | null) => {
+    const expected = toStringOrNull(data[key]);
+    return expected === null ? null : (thermostat: ThermostatStatus) => read(thermostat) === expected;
+  };
+  if (service === 'turn_on') return isOn;
+  if (service === 'turn_off') return isOff;
+  if (service === 'toggle') {
+    if (!before?.hvacMode) return null;
+    return before.hvacMode === 'off' ? isOn : isOff;
+  }
+  if (service === 'set_hvac_mode') return equals('hvac_mode', (thermostat) => thermostat.hvacMode);
+  if (service === 'set_preset_mode') return equals('preset_mode', (thermostat) => thermostat.presetMode);
+  if (service === 'set_fan_mode') return equals('fan_mode', (thermostat) => thermostat.fanMode);
+  if (service !== 'set_temperature') return null;
+  const checks: ((thermostat: ThermostatStatus) => boolean)[] = [];
+  const setpoint = (key: string, read: (thermostat: ThermostatStatus) => number | null) => {
+    const expected = toNumber(data[key]);
+    if (expected !== null) checks.push((thermostat) => reports(read(thermostat), expected, before && read(before)));
+  };
+  setpoint('temperature', (thermostat) => thermostat.targetTemperature);
+  setpoint('target_temp_low', (thermostat) => thermostat.targetTemperatureLow);
+  setpoint('target_temp_high', (thermostat) => thermostat.targetTemperatureHigh);
+  const mode = equals('hvac_mode', (thermostat) => thermostat.hvacMode);
+  if (mode) checks.push(mode);
+  return checks.length > 0 ? (thermostat) => checks.every((check) => check(thermostat)) : null;
+}
+
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 }
@@ -557,17 +613,33 @@ export default class IndoorClimate {
   // One that can change a thermostat takes its turn with the thermostat
   // controls, so it can't land between the steps of a withControls operation,
   // and is bounded (then aborted) like a control so a stalled call can't hold
-  // them up. Other calls run immediately with no signal or deadline.
+  // them up. If it may target the reported thermostat it also settles like a
+  // control: it waits for a pending change of another kind (see settle), and a
+  // change it may have made holds back other kinds until the thermostat reports
+  // it. Other calls run immediately with no signal or deadline.
   public runServiceCall<T>(
     domain: string,
     service: string,
+    serviceData: Record<string, unknown>,
     call: (signal?: AbortSignal) => Promise<T>,
   ): Promise<T> {
     if (!THERMOSTAT_SERVICE_DOMAINS.has(domain)) return call();
     return this.exclusive(async () => {
+      const change = await this.rawServiceChange(domain, service, serviceData);
+      // As in callControl, the window starts once the outcome is known.
+      const hold = () => {
+        if (!change) return;
+        change.since = Date.now();
+        this.unsettled = change;
+      };
       try {
-        return await withTimeout(call, this.controlTimeout, `${domain}.${service}`);
+        const result = await withTimeout(call, this.controlTimeout, `${domain}.${service}`);
+        hold();
+        return result;
       } catch (err) {
+        // Home Assistant answered and refused the call, so nothing changed.
+        if (err instanceof HomeAssistantRequestError && err.status < 500) throw err;
+        hold();
         if (!(err instanceof TimeoutError)) throw err;
         indoorClimateLogger.warn({ domain, service }, 'Thermostat service call timed out');
         throw new ThermostatControlError(
@@ -577,6 +649,32 @@ export default class IndoorClimate {
         );
       }
     });
+  }
+
+  // Settles a raw service call that may target the reported thermostat, and
+  // returns the change it would make, or null if it can't be told from the
+  // thermostat's state (e.g. Ecobee services) or the call targets another entity.
+  private async rawServiceChange(
+    domain: string,
+    service: string,
+    serviceData: Record<string, unknown>,
+  ): Promise<UnsettledControl | null> {
+    const entityId = this.cachedStatus.thermostat?.entityId;
+    if (!entityId || !mayTarget(serviceData, entityId)) return null;
+    const entity = this.discovered.find((candidate) => candidate.entityId === entityId);
+    if (!entity) return null;
+    const kind = rawServiceKind(domain, service);
+    const pending = this.unsettled;
+    let before: ThermostatStatus | null = null;
+    if (pending && pending.service !== kind && pending.entityId === entityId) {
+      before = await this.settle(entity, kind, await this.freshThermostat(entity));
+    } else if (domain === 'climate') {
+      before = await this.readThermostat(entity);
+    }
+    const applied = rawServiceApplied(domain, service, serviceData, before);
+    return applied && {
+      entityId, service: kind, applied, since: 0,
+    };
   }
 
   // A fresh read of a thermostat (by default the reported one) for reporting,
@@ -775,7 +873,8 @@ export default class IndoorClimate {
       indoorClimateLogger.warn({ err, entityId: entity.entityId }, 'Could not read the thermostat');
       return null;
     }
-    const cached = this.cachedStatus.thermostat;
+    // Fall back to the last readings only if they are from this thermostat.
+    const cached = this.cachedStatus.thermostat?.entityId === entity.entityId ? this.cachedStatus.thermostat : null;
     return toThermostat(entity, state, {
       temperature: cached?.currentTemperature ?? null,
       humidity: cached?.currentHumidity ?? null,

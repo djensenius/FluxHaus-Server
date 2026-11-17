@@ -391,16 +391,21 @@ describe('MCP Server', () => {
 
       // With indoor climate configured, the call takes its turn with the thermostat controls.
       const signal = new AbortController().signal;
-      const runServiceCall = vi.fn((_domain: string, _service: string, call: (s?: AbortSignal) => Promise<unknown>) => (
-        call(signal)
-      ));
+      const runServiceCall = vi.fn((
+        _domain: string,
+        _service: string,
+        _data: unknown,
+        call: (s?: AbortSignal) => Promise<unknown>,
+      ) => call(signal));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockServices.indoorClimate = { runServiceCall } as any;
       await getTools(createMcpServer(mockServices)).call_ha_service.handler(
         { domain: 'climate', service: 'turn_off', entity_id: 'climate.home' },
         {},
       );
-      expect(runServiceCall).toHaveBeenCalledWith('climate', 'turn_off', expect.any(Function));
+      expect(runServiceCall).toHaveBeenCalledWith(
+        'climate', 'turn_off', { entity_id: 'climate.home' }, expect.any(Function),
+      );
       expect(mockHaClient.callService).toHaveBeenLastCalledWith(
         'climate',
         'turn_off',
