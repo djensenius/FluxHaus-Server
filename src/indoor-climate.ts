@@ -1,4 +1,4 @@
-import { HomeAssistantClient } from './homeassistant-client';
+import { HomeAssistantClient, HomeAssistantRequestError } from './homeassistant-client';
 import logger from './logger';
 
 const indoorClimateLogger = logger.child({ subsystem: 'indoor-climate' });
@@ -17,13 +17,17 @@ const DEFAULT_HVAC_MODES = ['off', 'heat', 'cool', 'heat_cool', 'auto', 'dry', '
 // Ecobee stores set points in tenths of a °F, so a °C set point can come back
 // slightly off; anything closer than this counts as the requested value.
 const SETPOINT_TOLERANCE = 0.25;
+// The Ecobee preset reported while a temperature (not comfort setting) hold is active.
+const TEMPERATURE_HOLD_PRESET = 'temp';
 
 // A control request that failed in a known way, with the HTTP status and a
-// plain-text reason: 400 for invalid input, 409 when there is no usable
-// thermostat, 503 when its state couldn't be read so nothing was sent, 502
-// when a change was sent but its result couldn't be read, and 504 when the
-// service call timed out and may still have been applied. Anything else thrown
-// by a control method is a Home Assistant failure of the service call.
+// plain-text reason: 400 for invalid input; 409 when there is no usable
+// thermostat, or an earlier change that may still be on its way hasn't taken
+// effect yet; 503 when its state couldn't be read so nothing was sent; 502 when
+// a change was sent but its result couldn't be read, or the call failed in a
+// way that may still have applied it; and 504 when the service call timed out
+// and may still have been applied. Anything else thrown by a control method is
+// Home Assistant refusing the service call, so nothing was changed.
 export type ThermostatControlStatus = 400 | 409 | 502 | 503 | 504;
 
 export class ThermostatControlError extends Error {
@@ -95,6 +99,15 @@ export interface ThermostatControlResult extends IndoorClimateStatus {
   confirmed: boolean;
 }
 
+// The thermostat controls, as run by IndoorClimate.withControls().
+export interface ThermostatControls {
+  setTemperature(request: ThermostatTemperatureRequest): Promise<ThermostatControlResult>;
+  setHvacMode(mode: string): Promise<ThermostatControlResult>;
+  setPresetMode(preset: string): Promise<ThermostatControlResult>;
+  setFanMode(mode: string): Promise<ThermostatControlResult>;
+  resumeProgram(resumeAll?: boolean): Promise<ThermostatControlResult>;
+}
+
 export interface IndoorClimateConfig {
   client: HomeAssistantClient;
   integration?: string;
@@ -108,6 +121,9 @@ export interface IndoorClimateConfig {
   // waiting for it to report the change.
   confirmAttempts?: number;
   confirmDelay?: number;
+  // How long a change whose outcome is uncertain holds back other kinds of
+  // control while the thermostat hasn't reported it.
+  settleTimeout?: number;
 }
 
 interface DiscoveredEntity {
@@ -118,6 +134,22 @@ interface DiscoveredEntity {
   // Integration domain of the entity's config entry (e.g. "ecobee"); null when
   // Home Assistant can't say (no config entry, or HA older than 2024.7).
   platform: string | null;
+}
+
+// A control that may still take effect: it timed out, its outcome was lost, or
+// the thermostat hadn't reported it by the last read.
+interface UnsettledControl {
+  entityId: string;
+  service: string;
+  applied: (thermostat: ThermostatStatus) => boolean;
+  since: number;
+}
+
+// A thermostat read, numbered in the order reads were started so a newer poll
+// result is never replaced by an older control read.
+interface ThermostatRead {
+  thermostat: ThermostatStatus;
+  readSeq: number;
 }
 
 interface HaState {
@@ -144,8 +176,24 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
-function near(actual: number | null, expected: number): boolean {
-  return actual !== null && Math.abs(actual - expected) < SETPOINT_TOLERANCE;
+// Whether the thermostat reports the requested set point. The tolerance absorbs
+// Ecobee's rounding, but shrinks for a small change so the previous value can
+// never pass for the new one (e.g. 21.0 still reported after asking for 21.2).
+function reports(actual: number | null, expected: number, previous: number | null): boolean {
+  if (actual === null) return false;
+  const tolerance = previous === null || previous === expected
+    ? SETPOINT_TOLERANCE
+    : Math.min(SETPOINT_TOLERANCE, Math.abs(expected - previous) / 2);
+  return Math.abs(actual - expected) < tolerance;
+}
+
+// Converts between °C and °F (to 0.1°). Returns the value unchanged when
+// either unit is unknown, and null when it can't be converted (e.g. K).
+function convertTemperature(value: number | null, from: string | null, to: string | null): number | null {
+  if (value === null || !from || !to || from === to) return value;
+  if (from === '°F' && to === '°C') return Math.round(((value - 32) * 50) / 9) / 10;
+  if (from === '°C' && to === '°F') return Math.round(((value * 9) / 5 + 32) * 10) / 10;
+  return null;
 }
 
 // Bounds a single Home Assistant request so one hung call cannot stall polling
@@ -345,6 +393,15 @@ export default class IndoorClimate {
 
   private confirmDelay: number;
 
+  private settleTimeout: number;
+
+  private unsettled: UnsettledControl | null = null;
+
+  private readSequence = 0;
+
+  // readSeq of the read behind cachedStatus.thermostat.
+  private thermostatReadSeq = 0;
+
   // From Home Assistant's config; refreshed with discovery.
   private temperatureUnit: string | null = null;
 
@@ -372,6 +429,7 @@ export default class IndoorClimate {
     this.controlTimeout = config.controlTimeout ?? 30_000;
     this.confirmAttempts = Math.max(1, config.confirmAttempts ?? 4);
     this.confirmDelay = config.confirmDelay ?? 1_500;
+    this.settleTimeout = config.settleTimeout ?? 60_000;
     this.integrationValid = isValidIntegration(this.integration);
     if (!this.integrationValid) {
       indoorClimateLogger.error(
@@ -418,113 +476,50 @@ export default class IndoorClimate {
   }
 
   public setTemperature(request: ThermostatTemperatureRequest): Promise<ThermostatControlResult> {
-    return this.exclusive(async () => {
-      const { entity, thermostat } = await this.controllable();
-      const { temperature, targetTempLow, targetTempHigh } = request;
-      if (temperature !== undefined) {
-        if (targetTempLow !== undefined || targetTempHigh !== undefined) {
-          throw new ThermostatControlError(400, 'Provide either temperature or targetTempLow and targetTempHigh');
-        }
-        if (!Number.isFinite(temperature)) {
-          throw new ThermostatControlError(400, 'temperature must be a finite number');
-        }
-        if (thermostat.hvacMode === 'heat_cool') {
-          throw new ThermostatControlError(
-            400,
-            'Thermostat is in heat_cool mode; set targetTempLow and targetTempHigh instead',
-          );
-        }
-        checkRange(temperature, thermostat, 'temperature');
-        return this.callControl(
-          entity,
-          ['climate', 'set_temperature', { entity_id: thermostat.entityId, temperature }],
-          (updated) => near(updated.targetTemperature, temperature),
-        );
-      }
-      if (targetTempLow === undefined || targetTempHigh === undefined) {
-        throw new ThermostatControlError(400, 'temperature, or targetTempLow and targetTempHigh, are required');
-      }
-      if (!Number.isFinite(targetTempLow) || !Number.isFinite(targetTempHigh)) {
-        throw new ThermostatControlError(400, 'targetTempLow and targetTempHigh must be finite numbers');
-      }
-      if (thermostat.hvacMode !== 'heat_cool') {
-        throw new ThermostatControlError(400, 'targetTempLow and targetTempHigh require heat_cool mode');
-      }
-      if (targetTempLow >= targetTempHigh) {
-        throw new ThermostatControlError(400, 'targetTempLow must be lower than targetTempHigh');
-      }
-      checkRange(targetTempLow, thermostat, 'targetTempLow');
-      checkRange(targetTempHigh, thermostat, 'targetTempHigh');
-      return this.callControl(
-        entity,
-        ['climate', 'set_temperature', {
-          entity_id: thermostat.entityId,
-          target_temp_low: targetTempLow,
-          target_temp_high: targetTempHigh,
-        }],
-        (updated) => near(updated.targetTemperatureLow, targetTempLow)
-          && near(updated.targetTemperatureHigh, targetTempHigh),
-      );
-    });
+    return this.exclusive(() => this.applyTemperature(request));
   }
 
   public setHvacMode(mode: string): Promise<ThermostatControlResult> {
-    return this.exclusive(async () => {
-      const { entity, thermostat } = await this.controllable();
-      requireSupported(
-        mode,
-        thermostat.hvacModes.length > 0 ? thermostat.hvacModes : DEFAULT_HVAC_MODES,
-        'HVAC mode',
-      );
-      return this.callControl(
-        entity,
-        ['climate', 'set_hvac_mode', { entity_id: thermostat.entityId, hvac_mode: mode }],
-        (updated) => updated.hvacMode === mode,
-      );
-    });
+    return this.exclusive(() => this.applyHvacMode(mode));
   }
 
   public setPresetMode(preset: string): Promise<ThermostatControlResult> {
-    return this.exclusive(async () => {
-      const { entity, thermostat } = await this.controllable();
-      requireSupported(preset, thermostat.presetModes, 'preset mode');
-      return this.callControl(
-        entity,
-        ['climate', 'set_preset_mode', { entity_id: thermostat.entityId, preset_mode: preset }],
-        (updated) => updated.presetMode === preset,
-      );
-    });
+    return this.exclusive(() => this.applyPresetMode(preset));
   }
 
   public setFanMode(mode: string): Promise<ThermostatControlResult> {
-    return this.exclusive(async () => {
-      const { entity, thermostat } = await this.controllable();
-      requireSupported(mode, thermostat.fanModes, 'fan mode');
-      return this.callControl(
-        entity,
-        ['climate', 'set_fan_mode', { entity_id: thermostat.entityId, fan_mode: mode }],
-        (updated) => updated.fanMode === mode,
-      );
-    });
+    return this.exclusive(() => this.applyFanMode(mode));
   }
 
   // Cancels the active hold (or every hold with resumeAll) so the Ecobee
-  // schedule takes over again. The resulting comfort setting depends on the
-  // schedule, so any successful read afterwards counts as confirmed.
+  // schedule takes over again.
   public resumeProgram(resumeAll = false): Promise<ThermostatControlResult> {
+    return this.exclusive(() => this.applyResume(resumeAll));
+  }
+
+  // Runs several controls as one operation, so no other control (app or MCP)
+  // can change the thermostat between them. Use only the `controls` passed in:
+  // this instance's own control methods would wait for `run` to finish, and
+  // the passed controls stop working once it has.
+  public withControls<T>(run: (controls: ThermostatControls) => Promise<T>): Promise<T> {
     return this.exclusive(async () => {
-      const entity = await this.thermostatEntity();
-      // The selector may be a config-entry title, so check the thermostat's own
-      // integration. If HA didn't report it, the selector must be the domain.
-      if ((entity.platform ?? this.integration) !== 'ecobee') {
-        throw new ThermostatControlError(400, 'Resume program is not supported by this integration');
-      }
-      const thermostat = await this.freshThermostat(entity);
-      return this.callControl(
-        entity,
-        ['ecobee', 'resume_program', { entity_id: thermostat.entityId, resume_all: resumeAll }],
-        () => true,
+      let open = true;
+      const guarded = <A extends unknown[]>(
+        control: (...args: A) => Promise<ThermostatControlResult>,
+      ) => (...args: A): Promise<ThermostatControlResult> => (
+        open ? control(...args) : Promise.reject(new Error('Thermostat controls used after withControls finished'))
       );
+      try {
+        return await run({
+          setTemperature: guarded((request: ThermostatTemperatureRequest) => this.applyTemperature(request)),
+          setHvacMode: guarded((mode: string) => this.applyHvacMode(mode)),
+          setPresetMode: guarded((preset: string) => this.applyPresetMode(preset)),
+          setFanMode: guarded((mode: string) => this.applyFanMode(mode)),
+          resumeProgram: guarded((resumeAll?: boolean) => this.applyResume(resumeAll ?? false)),
+        });
+      } finally {
+        open = false;
+      }
     });
   }
 
@@ -537,15 +532,148 @@ export default class IndoorClimate {
     return thermostat?.available ? thermostat : null;
   }
 
+  private async applyTemperature(request: ThermostatTemperatureRequest): Promise<ThermostatControlResult> {
+    const { entity, thermostat } = await this.controllable('set_temperature');
+    const { temperature, targetTempLow, targetTempHigh } = request;
+    if (temperature !== undefined) {
+      if (targetTempLow !== undefined || targetTempHigh !== undefined) {
+        throw new ThermostatControlError(400, 'Provide either temperature or targetTempLow and targetTempHigh');
+      }
+      if (!Number.isFinite(temperature)) {
+        throw new ThermostatControlError(400, 'temperature must be a finite number');
+      }
+      if (thermostat.hvacMode === 'heat_cool') {
+        throw new ThermostatControlError(
+          400,
+          'Thermostat is in heat_cool mode; set targetTempLow and targetTempHigh instead',
+        );
+      }
+      checkRange(temperature, thermostat, 'temperature');
+      return this.callControl(
+        entity,
+        ['climate', 'set_temperature', { entity_id: thermostat.entityId, temperature }],
+        (updated) => reports(updated.targetTemperature, temperature, thermostat.targetTemperature),
+      );
+    }
+    if (targetTempLow === undefined || targetTempHigh === undefined) {
+      throw new ThermostatControlError(400, 'temperature, or targetTempLow and targetTempHigh, are required');
+    }
+    if (!Number.isFinite(targetTempLow) || !Number.isFinite(targetTempHigh)) {
+      throw new ThermostatControlError(400, 'targetTempLow and targetTempHigh must be finite numbers');
+    }
+    if (thermostat.hvacMode !== 'heat_cool') {
+      throw new ThermostatControlError(400, 'targetTempLow and targetTempHigh require heat_cool mode');
+    }
+    if (targetTempLow >= targetTempHigh) {
+      throw new ThermostatControlError(400, 'targetTempLow must be lower than targetTempHigh');
+    }
+    checkRange(targetTempLow, thermostat, 'targetTempLow');
+    checkRange(targetTempHigh, thermostat, 'targetTempHigh');
+    return this.callControl(
+      entity,
+      ['climate', 'set_temperature', {
+        entity_id: thermostat.entityId,
+        target_temp_low: targetTempLow,
+        target_temp_high: targetTempHigh,
+      }],
+      (updated) => reports(updated.targetTemperatureLow, targetTempLow, thermostat.targetTemperatureLow)
+        && reports(updated.targetTemperatureHigh, targetTempHigh, thermostat.targetTemperatureHigh),
+    );
+  }
+
+  private async applyHvacMode(mode: string): Promise<ThermostatControlResult> {
+    const { entity, thermostat } = await this.controllable('set_hvac_mode');
+    requireSupported(
+      mode,
+      thermostat.hvacModes.length > 0 ? thermostat.hvacModes : DEFAULT_HVAC_MODES,
+      'HVAC mode',
+    );
+    return this.callControl(
+      entity,
+      ['climate', 'set_hvac_mode', { entity_id: thermostat.entityId, hvac_mode: mode }],
+      (updated) => updated.hvacMode === mode,
+    );
+  }
+
+  private async applyPresetMode(preset: string): Promise<ThermostatControlResult> {
+    const { entity, thermostat } = await this.controllable('set_preset_mode');
+    requireSupported(preset, thermostat.presetModes, 'preset mode');
+    return this.callControl(
+      entity,
+      ['climate', 'set_preset_mode', { entity_id: thermostat.entityId, preset_mode: preset }],
+      (updated) => updated.presetMode === preset,
+    );
+  }
+
+  private async applyFanMode(mode: string): Promise<ThermostatControlResult> {
+    const { entity, thermostat } = await this.controllable('set_fan_mode');
+    requireSupported(mode, thermostat.fanModes, 'fan mode');
+    return this.callControl(
+      entity,
+      ['climate', 'set_fan_mode', { entity_id: thermostat.entityId, fan_mode: mode }],
+      (updated) => updated.fanMode === mode,
+    );
+  }
+
+  private async applyResume(resumeAll: boolean): Promise<ThermostatControlResult> {
+    const entity = await this.thermostatEntity();
+    // The selector may be a config-entry title, so check the thermostat's own
+    // integration. If HA didn't report it, the selector must be the domain.
+    if ((entity.platform ?? this.integration) !== 'ecobee') {
+      throw new ThermostatControlError(400, 'Resume program is not supported by this integration');
+    }
+    const thermostat = await this.settle(entity, 'resume_program', await this.freshThermostat(entity));
+    // Ecobee reports "temp" during a temperature hold, the held comfort setting
+    // during a comfort hold, and the scheduled one otherwise. Only a different,
+    // non-hold preset proves a hold ended; resuming when the schedule matches
+    // the hold (or there was none) changes nothing visible, so it is reported
+    // unconfirmed but doesn't hold back later controls.
+    return this.callControl(
+      entity,
+      ['ecobee', 'resume_program', { entity_id: thermostat.entityId, resume_all: resumeAll }],
+      (updated) => updated.presetMode !== null
+        && updated.presetMode !== TEMPERATURE_HOLD_PRESET
+        && updated.presetMode !== thermostat.presetMode,
+      { holdUnconfirmed: false },
+    );
+  }
+
   private exclusive<T>(control: () => Promise<T>): Promise<T> {
     const result = this.controlQueue.then(control);
     this.controlQueue = result.catch(() => {});
     return result;
   }
 
-  private async controllable(): Promise<{ entity: DiscoveredEntity; thermostat: ThermostatStatus }> {
+  private async controllable(service: string): Promise<{ entity: DiscoveredEntity; thermostat: ThermostatStatus }> {
     const entity = await this.thermostatEntity();
-    return { entity, thermostat: await this.freshThermostat(entity) };
+    return { entity, thermostat: await this.settle(entity, service, await this.freshThermostat(entity)) };
+  }
+
+  // A change that may still be on its way could land after the next control
+  // and undo or invalidate it, e.g. a mode change arriving after a set point
+  // chosen for the new mode. Until the thermostat reports it (or it expires),
+  // only a control of the same kind, which replaces it, may run. Returns the
+  // latest read of the thermostat to validate against.
+  private async settle(
+    entity: DiscoveredEntity,
+    service: string,
+    thermostat: ThermostatStatus,
+  ): Promise<ThermostatStatus> {
+    const pending = this.unsettled;
+    if (!pending) return thermostat;
+    if (pending.entityId !== entity.entityId
+      || pending.service === service
+      || Date.now() - pending.since >= this.settleTimeout
+      || pending.applied(thermostat)) {
+      this.unsettled = null;
+      return thermostat;
+    }
+    const read = await this.readUntil(entity, pending.applied, true);
+    if (read && pending.applied(read.thermostat)) {
+      this.unsettled = null;
+      return read.thermostat;
+    }
+    throw new ThermostatControlError(409, 'The previous thermostat change has not taken effect yet; try again shortly');
   }
 
   // The discovered climate entity behind the reported thermostat.
@@ -580,6 +708,28 @@ export default class IndoorClimate {
     }, this.temperatureUnit);
   }
 
+  // HA can acknowledge a service call before the thermostat reports the
+  // change, so read it (only the thermostat) until it does or we give up.
+  // Returns the last available read, or null if none succeeded.
+  private async readUntil(
+    entity: DiscoveredEntity,
+    applied: (thermostat: ThermostatStatus) => boolean,
+    delayFirst = false,
+  ): Promise<ThermostatRead | null> {
+    let latest: ThermostatRead | null = null;
+    for (let attempt = 0; attempt < this.confirmAttempts; attempt += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      if (attempt > 0 || delayFirst) await sleep(this.confirmDelay);
+      this.readSequence += 1;
+      const readSeq = this.readSequence;
+      // eslint-disable-next-line no-await-in-loop
+      const thermostat = await this.readThermostat(entity);
+      if (thermostat?.available) latest = { thermostat, readSeq };
+      if (latest && applied(latest.thermostat)) break;
+    }
+    return latest;
+  }
+
   // Reads the thermostat right before a control so validation uses its current
   // mode and limits, not a snapshot up to a poll interval old.
   private async freshThermostat(entity: DiscoveredEntity): Promise<ThermostatStatus> {
@@ -595,7 +745,13 @@ export default class IndoorClimate {
     entity: DiscoveredEntity,
     [domain, service, serviceData]: [string, string, Record<string, unknown>],
     applied: (thermostat: ThermostatStatus) => boolean,
+    { holdUnconfirmed = true }: { holdUnconfirmed?: boolean } = {},
   ): Promise<ThermostatControlResult> {
+    const hold = () => {
+      this.unsettled = {
+        entityId: entity.entityId, service, applied, since: Date.now(),
+      };
+    };
     try {
       await withTimeout(
         (signal) => this.client.callService(domain, service, serviceData, { signal }),
@@ -603,39 +759,52 @@ export default class IndoorClimate {
         `${domain}.${service}`,
       );
     } catch (err) {
-      if (!(err instanceof TimeoutError)) throw err;
-      // Aborting frees the connection, but HA may already have accepted the change.
-      indoorClimateLogger.warn({ domain, service }, 'Thermostat control timed out');
+      // Home Assistant answered and refused the call, so nothing changed.
+      if (err instanceof HomeAssistantRequestError && err.status < 500) throw err;
+      // Otherwise (a timeout, a dropped connection, an unreadable response or a
+      // gateway error) HA may already have accepted the change.
+      hold();
+      if (err instanceof TimeoutError) {
+        // Aborting frees the connection, but HA may already have accepted the change.
+        indoorClimateLogger.warn({ domain, service }, 'Thermostat control timed out');
+        throw new ThermostatControlError(
+          504,
+          'Thermostat did not respond in time; the change may still be applied, so check its state before retrying',
+        );
+      }
+      indoorClimateLogger.warn({ err, domain, service }, 'Thermostat control outcome unknown');
       throw new ThermostatControlError(
-        504,
-        'Thermostat did not respond in time; the change may still be applied, so check its state before retrying',
+        502,
+        'Could not tell whether the thermostat received the change; it may still be applied, '
+        + 'so check its state before retrying',
       );
     }
 
-    // HA can acknowledge a service call before the thermostat reports the
-    // change, so read it (only the thermostat) until it does or we give up.
-    let thermostat: ThermostatStatus | null = null;
-    for (let attempt = 0; attempt < this.confirmAttempts; attempt += 1) {
-      // eslint-disable-next-line no-await-in-loop
-      if (attempt > 0) await sleep(this.confirmDelay);
-      // eslint-disable-next-line no-await-in-loop
-      const read = await this.readThermostat(entity);
-      if (read?.available) thermostat = read;
-      if (thermostat && applied(thermostat)) break;
-    }
-    if (!thermostat) {
+    const read = await this.readUntil(entity, applied);
+    if (!read) {
+      hold();
       indoorClimateLogger.error({ domain, service }, 'Thermostat state could not be read after a control');
       throw new ThermostatControlError(502, 'Thermostat change was sent but its new state could not be read');
+    }
+    // A poll already in flight may have read the thermostat before this change;
+    // let it finish, then keep whichever read is newer. A poll that picked a
+    // different thermostat is kept too, so later controls follow it.
+    if (this.inFlight) await this.inFlight;
+    let { thermostat } = read;
+    const latest = this.cachedStatus.thermostat;
+    const sameEntity = latest?.entityId === entity.entityId;
+    if (this.thermostatReadSeq > read.readSeq || (latest && !sameEntity)) {
+      if (latest && sameEntity) thermostat = latest;
+    } else {
+      this.thermostatReadSeq = read.readSeq;
+      this.cachedStatus = { ...this.cachedStatus, timestamp: new Date(), thermostat };
+      this.onStatusChange?.(this.cachedStatus);
     }
     const confirmed = applied(thermostat);
     if (!confirmed) {
       indoorClimateLogger.warn({ domain, service }, 'Thermostat has not reported a control yet');
+      if (holdUnconfirmed) hold();
     }
-    // A poll already in flight may have read the thermostat before this
-    // change; let it finish so it can't overwrite the newer read below.
-    if (this.inFlight) await this.inFlight;
-    this.cachedStatus = { ...this.cachedStatus, timestamp: new Date(), thermostat };
-    this.onStatusChange?.(this.cachedStatus);
     return { ...this.cachedStatus, confirmed };
   }
 
@@ -699,6 +868,8 @@ export default class IndoorClimate {
       const entities = this.discovered;
       if (entities.length === 0) return;
 
+      this.readSequence += 1;
+      const readSeq = this.readSequence;
       const states: (HaState | null)[] = await Promise.all(
         entities.map((entity) => withTimeout(
           (signal) => this.client.getState(entity.entityId, { signal }),
@@ -747,7 +918,7 @@ export default class IndoorClimate {
       // Readings from sensors on the primary thermostat's own device, used when
       // the climate entity omits current_temperature / current_humidity.
       const primaryDeviceId = climate?.entity.deviceId ?? null;
-      const primaryReading = (deviceClass: string): number | null => {
+      const primaryState = (deviceClass: string): HaState | null => {
         if (!primaryDeviceId) return null;
         const match = entries.find(({ entity, state }) => (
           entity.deviceId === primaryDeviceId
@@ -755,18 +926,33 @@ export default class IndoorClimate {
           && state?.attributes?.device_class === deviceClass
           && numericState(state) !== null
         ));
-        return numericState(match?.state);
+        return match?.state ?? null;
       };
+      // The sensor's own unit can differ from the one HA uses for the climate
+      // entity, so convert it (or drop it if it can't be converted).
+      const temperatureState = primaryState('temperature');
+      const fallbackTemperature = convertTemperature(
+        numericState(temperatureState),
+        toStringOrNull(temperatureState?.attributes?.unit_of_measurement),
+        this.temperatureUnit,
+      );
+
+      const thermostat = climate
+        ? toThermostat(climate.entity, climate.state, {
+          temperature: fallbackTemperature,
+          humidity: numericState(primaryState('humidity')),
+        }, this.temperatureUnit)
+        : null;
+      if (thermostat?.available && this.unsettled?.entityId === thermostat.entityId
+        && this.unsettled.applied(thermostat)) {
+        this.unsettled = null;
+      }
 
       this.knownTemperatureIds = new Set(sensors.map((sensor) => sensor.entityId));
+      this.thermostatReadSeq = readSeq;
       this.cachedStatus = {
         timestamp: new Date(),
-        thermostat: climate
-          ? toThermostat(climate.entity, climate.state, {
-            temperature: primaryReading('temperature'),
-            humidity: primaryReading('humidity'),
-          }, this.temperatureUnit)
-          : null,
+        thermostat,
         sensors,
         unit: sensors.find((sensor) => sensor.unit !== null)?.unit ?? this.temperatureUnit,
       };

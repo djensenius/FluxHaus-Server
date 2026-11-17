@@ -312,26 +312,52 @@ mode and limits. After the service call it re-reads only the thermostat (up to
 4 times, 1.5 seconds apart) until it reports the change. Success returns `200`
 with the `indoorClimate` snapshot plus `confirmed`, which is `false` if the
 thermostat still hadn't reported the change (the snapshot may then show the
-previous values). Invalid requests return `400`, and a missing or unavailable
-thermostat returns `409`, each with a plain-text reason. If the thermostat
-can't be read first, the route returns `503`
-`Could not read the thermostat state; no change was sent`. If the change was
-sent but every read afterwards fails, it returns `502`
+previous values). A set point counts as reported when it is within Ecobee's
+rounding of the request, but never when it is still the previous value. Resume
+is confirmed only when the preset moves off the hold (to a different preset
+that isn't `temp`); resuming with no hold, or when the schedule matches the
+held comfort setting, changes nothing visible and so returns `confirmed: false`.
+If a poll that finished during the confirmation read the thermostat more
+recently, its result is kept.
+
+A change that may still take effect (unconfirmed, timed out, or with an
+unknown outcome) holds back the next control of a different kind until the
+thermostat reports it, for up to 60 seconds, so a late mode change can't
+invalidate a set point chosen for the new mode. That control re-reads the
+thermostat and, if the change still hasn't shown up, returns `409`
+`The previous thermostat change has not taken effect yet; try again shortly`.
+A control of the same kind replaces the pending one and runs immediately. An
+unconfirmed resume doesn't hold anything back.
+
+Invalid requests return `400`, and a missing or unavailable thermostat returns
+`409`, each with a plain-text reason. If the thermostat can't be read first,
+the route returns `503` `Could not read the thermostat state; no change was
+sent`. If the change was sent but every read afterwards fails, it returns `502`
 `Thermostat change was sent but its new state could not be read`. Control calls
 time out after 30 seconds because Ecobee cloud calls can be slow; a timeout
 returns `504` with a reason saying the change may still be applied, so check
-the thermostat before retrying. Other Home Assistant errors return `502`
-`Thermostat control failed`.
+the thermostat before retrying. A dropped connection, unreadable response or
+5xx (e.g. a proxy error) may also have applied the change, so it returns `502`
+`Could not tell whether the thermostat received the change; it may still be
+applied, so check its state before retrying`. Home Assistant refusing the call
+(a 4xx) changed nothing and returns `502` `Thermostat control failed`.
 
 The MCP `set_thermostat` tool takes `temperature`, `target_temp_low`,
 `target_temp_high`, `hvac_mode`, `preset_mode`, `fan_mode` and
 `resume_program` (at least one is required). `resume_program` cancels all
 holds (`resume_all: true`) and returns to the schedule. It applies them in the
-order resume → HVAC mode → preset → fan → temperature and returns the resulting
-snapshot, noting any step the thermostat hasn't reported yet. A failing step
-stops the sequence, but earlier steps stay applied. The error lists them and
-includes a fresh thermostat status, or the last known one (labelled as such) if
-the thermostat can't be read.
+order resume → HVAC mode → preset → fan → temperature as one operation, so no
+other control can run between them, and returns the resulting snapshot with
+`confirmed` (true only if every step was reported) and `unconfirmedSteps`. A
+failing step stops the sequence (including a `409` because an earlier step
+hasn't taken effect yet), but earlier steps stay applied. The error lists them
+and includes a fresh thermostat status, or the last known one (labelled as
+such) if the thermostat can't be read.
+
+The web server and its HTTP MCP endpoint (`/mcp`) share one controller, so
+the guarantees above hold between them. The local stdio MCP server
+(`node dist/mcp.js`) runs in its own process with its own controller and isn't
+coordinated with a running web server.
 
 ## Car analytics
 

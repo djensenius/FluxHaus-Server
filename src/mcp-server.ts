@@ -8,7 +8,7 @@ import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
-import type { ThermostatControlResult } from './indoor-climate';
+import type { ThermostatControlResult, ThermostatControls } from './indoor-climate';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
@@ -918,8 +918,10 @@ export default function createMcpServer(
     + 'hvac_mode, preset_mode, fan_mode, then the set point(s). Use temperature in heat/cool mode, or '
     + 'target_temp_low + target_temp_high in heat_cool mode. Supported modes, presets, fan modes and the '
     + 'min/max temperature (in thermostat.temperatureUnit) are in get_home_summary (indoorClimate.thermostat). '
-    + 'Returns the updated indoor climate status, noting any option the thermostat has not reported yet. '
-    + 'If a later option fails, the error lists the options already applied and the thermostat status.',
+    + 'All options run as one operation, so no other thermostat change can come between them. Returns the '
+    + 'updated indoor climate status; `confirmed` is false (with the options in `unconfirmedSteps`) when the '
+    + 'thermostat has not reported every option yet. If a later option fails (including when an earlier one '
+    + 'has not taken effect yet), the error lists the options already applied and the thermostat status.',
     {
       temperature: z.number().optional()
         .describe('Target temperature in the thermostat unit (not in heat_cool mode)'),
@@ -942,23 +944,24 @@ export default function createMcpServer(
       const setsTemperature = args.temperature !== undefined
         || args.target_temp_low !== undefined
         || args.target_temp_high !== undefined;
-      const steps: Array<[string, () => Promise<ThermostatControlResult>]> = [];
-      if (args.resume_program) steps.push(['resume_program', () => indoorClimate.resumeProgram(true)]);
+      type Step = [string, (controls: ThermostatControls) => Promise<ThermostatControlResult>];
+      const steps: Step[] = [];
+      if (args.resume_program) steps.push(['resume_program', (controls) => controls.resumeProgram(true)]);
       if (args.hvac_mode !== undefined) {
         const mode = args.hvac_mode;
-        steps.push([`hvac_mode=${mode}`, () => indoorClimate.setHvacMode(mode)]);
+        steps.push([`hvac_mode=${mode}`, (controls) => controls.setHvacMode(mode)]);
       }
       if (args.preset_mode !== undefined) {
         const preset = args.preset_mode;
-        steps.push([`preset_mode=${preset}`, () => indoorClimate.setPresetMode(preset)]);
+        steps.push([`preset_mode=${preset}`, (controls) => controls.setPresetMode(preset)]);
       }
       if (args.fan_mode !== undefined) {
         const mode = args.fan_mode;
-        steps.push([`fan_mode=${mode}`, () => indoorClimate.setFanMode(mode)]);
+        steps.push([`fan_mode=${mode}`, (controls) => controls.setFanMode(mode)]);
       }
       if (setsTemperature) {
         // Always last, so its label never appears in the "already applied" list.
-        steps.push(['temperature', () => indoorClimate.setTemperature({
+        steps.push(['temperature', (controls) => controls.setTemperature({
           temperature: args.temperature,
           targetTempLow: args.target_temp_low,
           targetTempHigh: args.target_temp_high,
@@ -974,46 +977,50 @@ export default function createMcpServer(
           }],
         };
       }
-      let status: ThermostatControlResult | null = null;
       const applied: string[] = [];
       const unconfirmed: string[] = [];
       const unconfirmedNote = () => (
         `Home Assistant accepted ${unconfirmed.join('; ')}, but the thermostat has not reported `
         + 'it yet, so the status may not reflect it.'
       );
-      for (const [label, step] of steps) {
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          status = await step();
-        } catch (err) {
-          // Nothing was applied before this step: let the tool wrapper report it as usual.
-          if (applied.length === 0) throw err;
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[MCP] set_thermostat failed after applying ${applied.join('; ')}: ${message}`);
-          const lines = [
-            `Error in set_thermostat: ${message}`,
-            `Already applied before the error: ${applied.join('; ')}.`,
-          ];
-          if (unconfirmed.length > 0) lines.push(unconfirmedNote());
-          // eslint-disable-next-line no-await-in-loop
-          const current = await indoorClimate.currentThermostat();
-          const { timestamp, thermostat } = indoorClimate.cachedStatus;
-          if (current) {
-            lines.push(`Current thermostat status: ${JSON.stringify(current, null, 2)}`);
-          } else if (thermostat) {
-            lines.push(
-              'The thermostat could not be read; last known status (may predate the failed option): '
-              + `${JSON.stringify({ timestamp, thermostat }, null, 2)}`,
-            );
+      // One lock for the whole sequence, so e.g. a mode change from the app
+      // can't land between this mode change and the set point meant for it.
+      return indoorClimate.withControls(async (controls) => {
+        let status: ThermostatControlResult | null = null;
+        for (const [label, step] of steps) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            status = await step(controls);
+          } catch (err) {
+            // Nothing was applied before this step: let the tool wrapper report it as usual.
+            if (applied.length === 0) throw err;
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[MCP] set_thermostat failed after applying ${applied.join('; ')}: ${message}`);
+            const lines = [
+              `Error in set_thermostat: ${message}`,
+              `Already applied before the error: ${applied.join('; ')}.`,
+            ];
+            if (unconfirmed.length > 0) lines.push(unconfirmedNote());
+            // eslint-disable-next-line no-await-in-loop
+            const current = await indoorClimate.currentThermostat();
+            const { timestamp, thermostat } = indoorClimate.cachedStatus;
+            if (current) {
+              lines.push(`Current thermostat status: ${JSON.stringify(current, null, 2)}`);
+            } else if (thermostat) {
+              lines.push(
+                'The thermostat could not be read; last known status (may predate the failed option): '
+                + `${JSON.stringify({ timestamp, thermostat }, null, 2)}`,
+              );
+            }
+            return { isError: true, content: [{ type: 'text' as const, text: lines.join('\n') }] };
           }
-          return { isError: true, content: [{ type: 'text' as const, text: lines.join('\n') }] };
+          applied.push(label);
+          if (!status.confirmed) unconfirmed.push(label);
         }
-        applied.push(label);
-        if (!status.confirmed) unconfirmed.push(label);
-      }
-      const result = jsonResult(status);
-      if (unconfirmed.length === 0) return result;
-      return { ...result, content: [{ type: 'text' as const, text: unconfirmedNote() }, ...result.content] };
+        const result = jsonResult({ ...status, confirmed: unconfirmed.length === 0, unconfirmedSteps: unconfirmed });
+        if (unconfirmed.length === 0) return result;
+        return { ...result, content: [{ type: 'text' as const, text: unconfirmedNote() }, ...result.content] };
+      });
     },
   );
 

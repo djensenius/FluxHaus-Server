@@ -1,7 +1,11 @@
-import IndoorClimate, { ThermostatControlError } from '../indoor-climate';
-import { HomeAssistantClient } from '../homeassistant-client';
+import IndoorClimate, { ThermostatControlError, ThermostatControls } from '../indoor-climate';
+import { HomeAssistantClient, HomeAssistantRequestError } from '../homeassistant-client';
 
-vi.mock('../homeassistant-client');
+vi.mock('../homeassistant-client', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../homeassistant-client')>();
+  // Mock the client, but keep the real error class so instanceof checks work.
+  return { HomeAssistantClient: vi.fn(), HomeAssistantRequestError: actual.HomeAssistantRequestError };
+});
 
 const log = vi.hoisted(() => ({
   debug: vi.fn(),
@@ -232,6 +236,21 @@ describe('IndoorClimate', () => {
     });
   });
 
+  it('converts the thermostat sensor fallback to the thermostat unit, or drops it', async () => {
+    const sensor = (unit: string) => ({
+      state: '70', attributes: { device_class: 'temperature', unit_of_measurement: unit },
+    });
+    const noCurrentTemperature = { state: 'heat', attributes: {} };
+    mockStates({ ...STATES, 'climate.home': noCurrentTemperature, 'sensor.home_current_temperature': sensor('°F') });
+    indoorClimate = new IndoorClimate({ client: mockClient });
+    await indoorClimate.refresh();
+    expect(indoorClimate.cachedStatus.thermostat).toMatchObject({ currentTemperature: 21.1, temperatureUnit: '°C' });
+
+    mockStates({ ...STATES, 'climate.home': noCurrentTemperature, 'sensor.home_current_temperature': sensor('K') });
+    await indoorClimate.refresh();
+    expect(indoorClimate.cachedStatus.thermostat?.currentTemperature).toBeNull();
+  });
+
   it('flags sensors on any climate device and ignores climate entities without a device', async () => {
     mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([
       ...DISCOVERY.filter((e) => e.entity_id !== 'climate.home' && e.entity_id !== 'sensor.kitchen_temperature'),
@@ -445,7 +464,7 @@ describe('IndoorClimate', () => {
     async function start(
       climateState: unknown = CONTROLLABLE,
       integration?: string,
-      options: { requestTimeout?: number; confirmAttempts?: number } = {},
+      options: { requestTimeout?: number; confirmAttempts?: number; settleTimeout?: number } = {},
     ): Promise<IndoorClimate> {
       mockStates({ ...STATES, 'climate.home': climateState });
       const climate = new IndoorClimate({
@@ -761,23 +780,103 @@ describe('IndoorClimate', () => {
       }, { signal: expect.any(AbortSignal) });
     });
 
-    it('surfaces Home Assistant failures as plain errors and timeouts as possibly applied', async () => {
+    it('rethrows a refusal from Home Assistant, which changed nothing', async () => {
       const climate = await start();
-      mockClient.callService = vi.fn().mockRejectedValue(new Error('Home Assistant request failed: 500'));
-      const failure = await climate.setFanMode('on').catch((err: unknown) => err);
-      expect(failure).toBeInstanceOf(Error);
-      expect(failure).not.toBeInstanceOf(ThermostatControlError);
+      const refusal = new HomeAssistantRequestError(400, 'Home Assistant request failed: 400 Bad Request');
+      mockClient.callService = vi.fn().mockRejectedValue(refusal);
+      await expect(climate.setFanMode('on')).rejects.toBe(refusal);
+      // Nothing is left pending, so another kind of control runs straight away.
+      mockClient.callService = vi.fn().mockResolvedValue([]);
+      await climate.setHvacMode('cool');
+      expect(mockClient.callService).toHaveBeenCalledTimes(1);
+    });
 
-      mockClient.callService = vi.fn().mockReturnValue(new Promise(() => {}));
-      const timeout = await climate.setFanMode('on').catch((err: unknown) => err);
-      expect(timeout).toBeInstanceOf(ThermostatControlError);
-      expect(timeout).toMatchObject({
-        status: 504,
-        message: 'Thermostat did not respond in time; the change may still be applied, '
-          + 'so check its state before retrying',
-      });
+    const UNCERTAIN = 'Could not tell whether the thermostat received the change; it may still be applied, '
+      + 'so check its state before retrying';
+    it.each<[string, () => Promise<unknown>, number, string]>([
+      ['a dropped connection', () => Promise.reject(new TypeError('fetch failed')), 502, UNCERTAIN],
+      ['a gateway error', () => Promise.reject(new HomeAssistantRequestError(502, 'Home Assistant request failed: 502')),
+        502, UNCERTAIN],
+      ['a timeout', () => new Promise(() => {}), 504,
+        'Thermostat did not respond in time; the change may still be applied, so check its state before retrying'],
+    ])('reports %s as possibly applied and holds back other controls', async (_label, call, status, message) => {
+      const climate = await start();
+      mockClient.callService = vi.fn().mockImplementation(call);
+      const error = await climate.setFanMode('on').catch((err: unknown) => err);
+      expect(error).toBeInstanceOf(ThermostatControlError);
+      expect(error).toMatchObject({ status, message });
       const { signal } = vi.mocked(mockClient.callService).mock.calls[0][3] as { signal: AbortSignal };
-      expect(signal.aborted).toBe(true);
+      expect(signal.aborted).toBe(status === 504);
+
+      mockClient.callService = vi.fn().mockResolvedValue([]);
+      await expect(climate.setHvacMode('cool')).rejects.toMatchObject({ status: 409 });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+    });
+
+    it('holds back other controls until an unconfirmed change is reported', async () => {
+      const climate = await start(CONTROLLABLE, undefined, { confirmAttempts: 2 });
+      // The mode change is accepted, but the thermostat keeps reporting heat.
+      await expect(climate.setHvacMode('cool')).resolves.toMatchObject({ confirmed: false });
+      vi.mocked(mockClient.callService).mockClear();
+      vi.mocked(mockClient.getState).mockClear();
+      await expect(climate.setTemperature({ temperature: 22 })).rejects.toMatchObject({
+        status: 409, message: 'The previous thermostat change has not taken effect yet; try again shortly',
+      });
+      expect(mockClient.callService).not.toHaveBeenCalled();
+      // The fresh read, then one per confirmation attempt.
+      expect(mockClient.getState).toHaveBeenCalledTimes(3);
+
+      // Once the thermostat reports cool, the set point is validated against it and sent.
+      mockStates({ ...STATES, 'climate.home': { ...CONTROLLABLE, state: 'cool' } });
+      await climate.setTemperature({ temperature: 22 });
+      expect(mockClient.callService).toHaveBeenCalledTimes(1);
+    });
+
+    it('lets a control of the same kind replace an unconfirmed one, which also expires', async () => {
+      const climate = await start();
+      await expect(climate.setHvacMode('cool')).resolves.toMatchObject({ confirmed: false });
+      await expect(climate.setHvacMode('off')).resolves.toMatchObject({ confirmed: false });
+      expect(mockClient.callService).toHaveBeenCalledTimes(2);
+      climate.stop();
+
+      const expiring = await start(CONTROLLABLE, undefined, { settleTimeout: 0 });
+      await expiring.setHvacMode('cool');
+      await expiring.setFanMode('on');
+      expect(mockClient.callService).toHaveBeenCalledTimes(4);
+    });
+
+    it('does not mistake the previous set point for a small change', async () => {
+      const climate = await start(withTarget(21), undefined, { confirmAttempts: 2 });
+      await expect(climate.setTemperature({ temperature: 21.2 })).resolves.toMatchObject({
+        confirmed: false, thermostat: { targetTemperature: 21 },
+      });
+      // Ecobee's rounding of the new value still counts.
+      mockClient.callService = vi.fn().mockImplementation(async () => {
+        mockStates({ ...STATES, 'climate.home': withTarget(21.22) });
+        return [];
+      });
+      await expect(climate.setTemperature({ temperature: 21.2 })).resolves.toMatchObject({ confirmed: true });
+    });
+
+    it.each<[string, string, string, boolean]>([
+      ['a temperature hold ends', 'temp', 'home', true],
+      ['a comfort hold ends', 'away', 'home', true],
+      ['the preset is unchanged', 'home', 'home', false],
+      ['a temperature hold remains', 'temp', 'temp', false],
+    ])('confirms resume_program only when %s', async (_label, before, after, confirmed) => {
+      const withPreset = (preset: string) => ({
+        ...CONTROLLABLE, attributes: { ...CONTROLLABLE.attributes, preset_mode: preset },
+      });
+      const climate = await start(withPreset(before), undefined, { confirmAttempts: 2 });
+      mockClient.callService = vi.fn().mockImplementation(async () => {
+        mockStates({ ...STATES, 'climate.home': withPreset(after) });
+        return [];
+      });
+      await expect(climate.resumeProgram()).resolves.toMatchObject({ confirmed, thermostat: { presetMode: after } });
+      // An unconfirmed resume may simply have had nothing to cancel, so it doesn't block the next control.
+      mockClient.callService = vi.fn().mockResolvedValue([]);
+      await climate.setFanMode('on');
+      expect(mockClient.callService).toHaveBeenCalledTimes(1);
     });
 
     it('reads the thermostat fresh for reporting, or returns null', async () => {
@@ -814,6 +913,65 @@ describe('IndoorClimate', () => {
       const status = await climate.setTemperature({ temperature: 23 });
       await stalePoll;
       expect(status.thermostat?.targetTemperature).toBe(23);
+    });
+
+    it('runs withControls as one operation and disables its controls afterwards', async () => {
+      const climate = await start();
+      let thermostat = CONTROLLABLE;
+      mockClient.callService = vi.fn().mockImplementation(async (
+        _domain: string,
+        service: string,
+        data: Record<string, string>,
+      ) => {
+        if (service === 'set_hvac_mode') thermostat = { ...thermostat, state: data.hvac_mode };
+        if (service === 'set_fan_mode') {
+          thermostat = { ...thermostat, attributes: { ...thermostat.attributes, fan_mode: data.fan_mode } };
+        }
+        mockStates({ ...STATES, 'climate.home': thermostat });
+        return [];
+      });
+      let passed: ThermostatControls | undefined;
+      let other: Promise<unknown> | undefined;
+      await climate.withControls(async (controls) => {
+        passed = controls;
+        other = climate.setFanMode('auto');
+        await controls.setHvacMode('cool');
+        await controls.setFanMode('on');
+      });
+      await other;
+      expect(vi.mocked(mockClient.callService).mock.calls.map(([, , data]) => data)).toEqual([
+        { entity_id: 'climate.home', hvac_mode: 'cool' },
+        { entity_id: 'climate.home', fan_mode: 'on' },
+        { entity_id: 'climate.home', fan_mode: 'auto' },
+      ]);
+      await expect(passed!.setHvacMode('heat')).rejects.toThrow('Thermostat controls used after withControls finished');
+    });
+
+    it('keeps a newer poll result over the control read it waited for', async () => {
+      const climate = await start();
+      let mode = 'heat';
+      let target = 21;
+      let afterCall = false;
+      let poll: Promise<void> | undefined;
+      mockClient.getState = vi.fn().mockImplementation(async (entityId: string) => {
+        if (entityId !== 'climate.home') return STATES[entityId];
+        const snapshot = { ...CONTROLLABLE, state: mode, attributes: { ...CONTROLLABLE.attributes, temperature: target } };
+        if (afterCall && !poll) {
+          // A poll starts during the confirmation read and sees a later mode change.
+          poll = climate.refresh();
+          mode = 'cool';
+        }
+        return snapshot;
+      });
+      mockClient.callService = vi.fn().mockImplementation(async () => {
+        target = 22;
+        afterCall = true;
+        return [];
+      });
+      const status = await climate.setTemperature({ temperature: 22 });
+      await poll;
+      expect(status).toMatchObject({ confirmed: true, thermostat: { hvacMode: 'cool', targetTemperature: 22 } });
+      expect(climate.cachedStatus.thermostat?.hvacMode).toBe('cool');
     });
   });
 });

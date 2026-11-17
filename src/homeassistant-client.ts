@@ -14,6 +14,18 @@ function signalInit(options: HomeAssistantRequestOptions): RequestInit {
   return options.signal ? { signal: options.signal } : {};
 }
 
+// Home Assistant answered with an error status, so the request was handled
+// (and, for a service call, refused) rather than lost in transit.
+export class HomeAssistantRequestError extends Error {
+  public readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'HomeAssistantRequestError';
+    this.status = status;
+  }
+}
+
 export class HomeAssistantClient {
   private config: HomeAssistantConfig;
 
@@ -35,7 +47,8 @@ export class HomeAssistantClient {
     });
 
     if (!response.ok) {
-      throw new Error(
+      throw new HomeAssistantRequestError(
+        response.status,
         `Home Assistant request failed: ${response.status} ${response.statusText} for URL: ${this.config.url}${path}`,
       );
     }
