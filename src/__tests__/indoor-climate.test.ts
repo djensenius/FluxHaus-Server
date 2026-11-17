@@ -1073,6 +1073,16 @@ describe('IndoorClimate', () => {
       await expect(climate.setTemperature({ temperature: 22 })).resolves.toMatchObject({ confirmed: false });
     });
 
+    it('refuses a raw toggle when the thermostat mode it starts from cannot be read', async () => {
+      const climate = await start();
+      mockClient.getState = vi.fn().mockRejectedValue(new Error('offline'));
+      const call = vi.fn().mockResolvedValue([]);
+      await expect(climate.runServiceCall('climate', 'toggle', HOME, call)).rejects.toMatchObject({
+        status: 503, message: 'Could not read the thermostat state; no change was sent',
+      });
+      expect(call).not.toHaveBeenCalled();
+    });
+
     it('does not give one thermostat the readings of another', async () => {
       const upstairs = { entity_id: 'climate.upstairs', device_id: 'dev_upstairs', device_name: 'Upstairs' };
       mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([...DISCOVERY, upstairs]));

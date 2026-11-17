@@ -669,7 +669,9 @@ export default class IndoorClimate {
     if (pending && pending.service !== kind && pending.entityId === entityId) {
       before = await this.settle(entity, kind, await this.freshThermostat(entity));
     } else if (domain === 'climate') {
-      before = await this.readThermostat(entity);
+      // A toggle's effect depends on the mode it starts from, so it isn't sent
+      // unless that can be read.
+      before = service === 'toggle' ? await this.freshThermostat(entity) : await this.readThermostat(entity);
     }
     const applied = rawServiceApplied(domain, service, serviceData, before);
     return applied && {
