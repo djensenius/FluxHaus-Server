@@ -3,15 +3,17 @@ import { HomeAssistantClient } from '../homeassistant-client';
 
 vi.mock('../homeassistant-client');
 
+const log = vi.hoisted(() => ({
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+}));
+
 vi.mock('../logger', () => ({
   __esModule: true,
   default: {
-    child: () => ({
-      debug: vi.fn(),
-      info: vi.fn(),
-      warn: vi.fn(),
-      error: vi.fn(),
-    }),
+    child: () => log,
   },
 }));
 
@@ -89,8 +91,12 @@ describe('IndoorClimate', () => {
     indoorClimate = new IndoorClimate({ client: mockClient });
     await indoorClimate.refresh();
 
-    expect(mockClient.renderTemplate).toHaveBeenCalledWith(expect.stringContaining("integration_entities('ecobee')"));
-    expect(mockClient.getState).not.toHaveBeenCalledWith('weather.home');
+    expect(mockClient.renderTemplate).toHaveBeenCalledWith(
+      expect.stringContaining('integration_entities("ecobee")'),
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(mockClient.getState).toHaveBeenCalledWith('climate.home', { signal: expect.any(AbortSignal) });
+    expect(mockClient.getState).not.toHaveBeenCalledWith('weather.home', expect.anything());
     expect(indoorClimate.cachedStatus.timestamp.getTime()).toBeGreaterThan(0);
     expect(indoorClimate.cachedStatus.sensors).toEqual([
       {
@@ -255,18 +261,44 @@ describe('IndoorClimate', () => {
     expect(thermostat).toMatchObject({ available: false, hvacMode: null, currentTemperature: 21.5 });
   });
 
-  it('treats a getState that never resolves as a failed fetch', async () => {
+  it('treats a getState that never resolves as a failed fetch and aborts it', async () => {
     indoorClimate = new IndoorClimate({ client: mockClient, requestTimeout: 20 });
     await indoorClimate.refresh();
     const respond = mockClient.getState.getMockImplementation()!;
-    mockClient.getState = vi.fn().mockImplementation((entityId: string) => (
-      entityId === 'sensor.bedroom_temperature' ? new Promise(() => {}) : respond(entityId)
-    ));
+    const signals = new Map<string, AbortSignal>();
+    mockClient.getState = vi.fn().mockImplementation((entityId: string, options: { signal: AbortSignal }) => {
+      signals.set(entityId, options.signal);
+      return entityId === 'sensor.bedroom_temperature' ? new Promise(() => {}) : respond(entityId);
+    });
     await indoorClimate.refresh();
     expect(indoorClimate.cachedStatus.sensors.find((s) => s.entityId === 'sensor.bedroom_temperature'))
       .toMatchObject({ available: false, temperature: null, unit: '°C' });
     expect(indoorClimate.cachedStatus.sensors.find((s) => s.entityId === 'sensor.kitchen_temperature'))
       .toMatchObject({ available: true, temperature: 20.1 });
+
+    const hung = signals.get('sensor.bedroom_temperature')!;
+    expect(hung.aborted).toBe(true);
+    expect(hung.reason).toEqual(new Error('sensor.bedroom_temperature timed out after 20ms'));
+    // Requests that finished in time have their deadline cleared, not aborted later.
+    await new Promise((resolve) => { setTimeout(resolve, 40); });
+    expect(signals.get('sensor.kitchen_temperature')!.aborted).toBe(false);
+  });
+
+  it('aborts a discovery template that outlives the deadline and reports the timeout', async () => {
+    let signal: AbortSignal | undefined;
+    mockClient.renderTemplate = vi.fn().mockImplementation((_template: string, options: { signal: AbortSignal }) => {
+      signal = options.signal;
+      return new Promise(() => {});
+    });
+    indoorClimate = new IndoorClimate({ client: mockClient, requestTimeout: 20 });
+    await indoorClimate.refresh();
+
+    expect(signal?.aborted).toBe(true);
+    expect(mockClient.getState).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ err: new Error('Discovery template timed out after 20ms') }),
+      'Indoor climate discovery failed; keeping previously discovered entities',
+    );
   });
 
   it('retries discovery until it succeeds and keeps the last good entities on failure', async () => {
@@ -307,11 +339,48 @@ describe('IndoorClimate', () => {
     ]);
   });
 
-  it('never calls Home Assistant for an invalid integration name', async () => {
-    indoorClimate = new IndoorClimate({ client: mockClient, integration: "ecobee') }}{{ states" });
+  it('accepts a config-entry title as the integration', async () => {
+    indoorClimate = new IndoorClimate({ client: mockClient, integration: 'Ecobee Upstairs' });
+    await indoorClimate.refresh();
+    expect(mockClient.renderTemplate).toHaveBeenCalledWith(
+      expect.stringContaining('integration_entities("Ecobee Upstairs")'),
+      expect.anything(),
+    );
+    expect(indoorClimate.cachedStatus.sensors).toHaveLength(3);
+  });
+
+  it('embeds quotes and Jinja delimiters as an escaped string literal', async () => {
+    const plain = new IndoorClimate({ client: mockClient, integration: 'plain' });
+    await plain.refresh();
+    plain.stop();
+    const plainTemplate: string = mockClient.renderTemplate.mock.calls[0][0];
+
+    const hostile = 'Ecobee "Main" \\ x\') }}{{ states }}{% raw %}{# c #}-%}';
+    indoorClimate = new IndoorClimate({ client: mockClient, integration: hostile });
+    await indoorClimate.refresh();
+    const template: string = mockClient.renderTemplate.mock.calls[1][0];
+
+    // The value appears only as one JSON (= Jinja) string literal, and the rest
+    // of the template is identical to the one for an ordinary name.
+    const literal = template.match(/integration_entities\(("(?:[^"\\]|\\.)*")\)/)![1];
+    expect(JSON.parse(literal)).toBe(hostile);
+    expect(template.replace(literal, JSON.stringify('plain'))).toBe(plainTemplate);
+  });
+
+  it.each([
+    ['an empty value', '  '],
+    ['a newline', 'ecobee\n{{ states }}'],
+    ['a control character', 'ecobee\u0000'],
+    ['more than 100 characters', 'a'.repeat(101)],
+  ])('never calls Home Assistant for an integration with %s', async (_label, integration) => {
+    indoorClimate = new IndoorClimate({ client: mockClient, integration });
     await indoorClimate.refresh();
     expect(mockClient.renderTemplate).not.toHaveBeenCalled();
     expect(mockClient.getState).not.toHaveBeenCalled();
+    expect(log.error).toHaveBeenCalledWith(
+      { integration },
+      'Invalid indoor climate integration name; indoor climate disabled',
+    );
     expect(indoorClimate.cachedStatus).toEqual({
       timestamp: new Date(0), thermostat: null, sensors: [], unit: null,
     });
@@ -367,7 +436,7 @@ describe('IndoorClimate', () => {
       const status = await climate.setTemperature({ temperature: 22.5 });
       expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_temperature', {
         entity_id: 'climate.home', temperature: 22.5,
-      });
+      }, { signal: expect.any(AbortSignal) });
       expect(status).toBe(climate.cachedStatus);
       expect(status.thermostat?.targetTemperature).toBe(22.5);
     });
@@ -377,7 +446,7 @@ describe('IndoorClimate', () => {
       await climate.setTemperature({ targetTempLow: 19.5, targetTempHigh: 25 });
       expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_temperature', {
         entity_id: 'climate.home', target_temp_low: 19.5, target_temp_high: 25,
-      });
+      }, { signal: expect.any(AbortSignal) });
     });
 
     it.each<[string, Control, string, string, Record<string, unknown>]>([
@@ -389,7 +458,12 @@ describe('IndoorClimate', () => {
     ])('sends the %s service call', async (_label, control, domain, service, data) => {
       const climate = await start();
       await control(climate);
-      expect(mockClient.callService).toHaveBeenCalledWith(domain, service, { entity_id: 'climate.home', ...data });
+      expect(mockClient.callService).toHaveBeenCalledWith(
+        domain,
+        service,
+        { entity_id: 'climate.home', ...data },
+        { signal: expect.any(AbortSignal) },
+      );
     });
 
     it('validates HVAC modes against the HA defaults when the thermostat lists none', async () => {
@@ -397,7 +471,7 @@ describe('IndoorClimate', () => {
       await climate.setHvacMode('fan_only');
       expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_hvac_mode', {
         entity_id: 'climate.home', hvac_mode: 'fan_only',
-      });
+      }, { signal: expect.any(AbortSignal) });
       await expect(climate.setHvacMode('eco')).rejects.toMatchObject({ status: 400 });
     });
 
@@ -470,7 +544,7 @@ describe('IndoorClimate', () => {
       await indoorClimate.setFanMode('on');
       expect(mockClient.callService).toHaveBeenCalledWith('climate', 'set_fan_mode', {
         entity_id: 'climate.home', fan_mode: 'on',
-      });
+      }, { signal: expect.any(AbortSignal) });
     });
 
     it('surfaces Home Assistant failures and timeouts as plain errors', async () => {
@@ -482,6 +556,8 @@ describe('IndoorClimate', () => {
 
       mockClient.callService = vi.fn().mockReturnValue(new Promise(() => {}));
       await expect(climate.setFanMode('on')).rejects.toThrow('climate.set_fan_mode timed out after 50ms');
+      const { signal } = vi.mocked(mockClient.callService).mock.calls[0][3] as { signal: AbortSignal };
+      expect(signal.aborted).toBe(true);
     });
 
     it('polls again when a poll was already in flight during the service call', async () => {

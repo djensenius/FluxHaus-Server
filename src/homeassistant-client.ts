@@ -3,6 +3,17 @@ export interface HomeAssistantConfig {
   token: string;
 }
 
+export interface HomeAssistantRequestOptions {
+  // Aborts the underlying fetch, e.g. when the caller's deadline passes.
+  signal?: AbortSignal;
+}
+
+// Only adds `signal` when one is given, so callers without options send
+// exactly the same request as before.
+function signalInit(options: HomeAssistantRequestOptions): RequestInit {
+  return options.signal ? { signal: options.signal } : {};
+}
+
 export class HomeAssistantClient {
   private config: HomeAssistantConfig;
 
@@ -33,16 +44,17 @@ export class HomeAssistantClient {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public async getState(entityId: string): Promise<any> {
+  public async getState(entityId: string, options: HomeAssistantRequestOptions = {}): Promise<any> {
     const path = entityId ? `/api/states/${entityId}` : '/api/states';
-    return this.request(path);
+    return this.request(path, signalInit(options));
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public async callService(domain: string, service: string, serviceData: any = {}): Promise<any> {
+  public async callService(domain: string, service: string, serviceData: any = {}, options: HomeAssistantRequestOptions = {}): Promise<any> {
     return this.request(`/api/services/${domain}/${service}`, {
       method: 'POST',
       body: JSON.stringify(serviceData),
+      ...signalInit(options),
     });
   }
 
@@ -73,7 +85,7 @@ export class HomeAssistantClient {
     return this.request(`/api/calendars/${calendarId}?${params}`);
   }
 
-  public async renderTemplate(template: string): Promise<string> {
+  public async renderTemplate(template: string, options: HomeAssistantRequestOptions = {}): Promise<string> {
     const response = await fetch(`${this.config.url}/api/template`, {
       method: 'POST',
       headers: {
@@ -81,6 +93,7 @@ export class HomeAssistantClient {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ template }),
+      ...signalInit(options),
     });
     if (!response.ok) {
       throw new Error(

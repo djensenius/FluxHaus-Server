@@ -47,4 +47,27 @@ describe('HomeAssistantClient', () => {
 
     await expect(client.getState('vacuum.robot')).rejects.toThrow('Home Assistant request failed: 401 Unauthorized for URL: http://homeassistant.local:8123/api/states/vacuum.robot');
   });
+
+  it('forwards an abort signal to fetch only when one is given', async () => {
+    const client = new HomeAssistantClient(mockConfig);
+    const { signal } = new AbortController();
+    (global.fetch as vi.Mock)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'on' }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ([]) })
+      .mockResolvedValueOnce({ ok: true, text: async () => '[]' })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ state: 'on' }) });
+
+    await client.getState('climate.home', { signal });
+    await client.callService('climate', 'set_hvac_mode', { hvac_mode: 'heat' }, { signal });
+    await client.renderTemplate('{{ 1 }}', { signal });
+    await client.getState('climate.home');
+
+    const inits = (global.fetch as vi.Mock).mock.calls.map(([, init]) => init);
+    expect(inits[0].signal).toBe(signal);
+    expect(inits[1]).toMatchObject({ method: 'POST', body: JSON.stringify({ hvac_mode: 'heat' }) });
+    expect(inits[1].signal).toBe(signal);
+    expect(inits[2]).toMatchObject({ method: 'POST', body: JSON.stringify({ template: '{{ 1 }}' }) });
+    expect(inits[2].signal).toBe(signal);
+    expect(inits[3]).not.toHaveProperty('signal');
+  });
 });

@@ -4,6 +4,11 @@ import logger from './logger';
 const indoorClimateLogger = logger.child({ subsystem: 'indoor-climate' });
 
 const SAFE_NAME = /^[a-z0-9_]+$/;
+// The integration setting may be a config-entry title (e.g. "Ecobee Upstairs"),
+// so it is not limited to entity-id characters; discoveryTemplate() embeds it
+// as an escaped string literal instead.
+const MAX_INTEGRATION_LENGTH = 100;
+const CONTROL_CHARACTER = /\p{Cc}/u;
 const SUPPORTED_ENTITY = /^(sensor|binary_sensor|climate)\.[a-z0-9_]+$/;
 const UNAVAILABLE_STATES = new Set(['unavailable', 'unknown']);
 // Used to validate set_hvac_mode when the thermostat doesn't report hvac_modes.
@@ -103,15 +108,26 @@ function emptyStatus(): IndoorClimateStatus {
 }
 
 // Bounds a single Home Assistant request so one hung call cannot stall polling
-// or a thermostat control request. Deliberately local to this module: other HA
-// calls (e.g. car commands) can legitimately take much longer.
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+// or a thermostat control request. At the deadline the request is also aborted,
+// so a stuck call does not keep a connection open. Deliberately local to this
+// module: other HA calls (e.g. car commands) can legitimately take much longer.
+function withTimeout<T>(
+  request: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  label: string,
+): Promise<T> {
+  const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+    timer = setTimeout(() => {
+      const error = new Error(`${label} timed out after ${ms}ms`);
+      // Reject first so the timeout error, not the abort, settles the race.
+      reject(error);
+      controller.abort(error);
+    }, ms);
     timer.unref?.();
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([request(controller.signal), timeout]).finally(() => clearTimeout(timer));
 }
 
 function toNumber(value: unknown): number | null {
@@ -150,8 +166,17 @@ function stripTemperatureSuffix(name: string): string {
   return stripped || name;
 }
 
+function isValidIntegration(integration: string): boolean {
+  return integration.trim() !== ''
+    && integration.length <= MAX_INTEGRATION_LENGTH
+    && !CONTROL_CHARACTER.test(integration);
+}
+
+// JSON.stringify yields a double-quoted literal with every `"` and `\` escaped,
+// which Jinja reads as one string token, so Jinja delimiters in the value stay
+// inert text. Control characters are rejected earlier by isValidIntegration().
 function discoveryTemplate(integration: string): string {
-  return `[{%- for entity_id in integration_entities('${integration}') -%}
+  return `[{%- for entity_id in integration_entities(${JSON.stringify(integration)}) -%}
 {{ {'entity_id': entity_id, 'device_id': device_id(entity_id), 'device_name': device_attr(entity_id, 'name_by_user') or device_attr(entity_id, 'name'), 'area': area_name(entity_id)} | tojson }}{{ ',' if not loop.last else '' }}
 {%- endfor -%}]`;
 }
@@ -287,7 +312,7 @@ export default class IndoorClimate {
     this.discoveryInterval = config.discoveryInterval ?? 10 * 60_000;
     this.requestTimeout = config.requestTimeout ?? 15_000;
     this.controlTimeout = config.controlTimeout ?? 30_000;
-    this.integrationValid = SAFE_NAME.test(this.integration);
+    this.integrationValid = isValidIntegration(this.integration);
     if (!this.integrationValid) {
       indoorClimateLogger.error(
         { integration: this.integration },
@@ -422,8 +447,10 @@ export default class IndoorClimate {
     service: string,
     serviceData: Record<string, unknown>,
   ): Promise<IndoorClimateStatus> {
+    // Aborting frees the connection; HA may still apply a change that was
+    // already accepted, so a timeout here is reported as a failed control.
     await withTimeout(
-      this.client.callService(domain, service, serviceData),
+      (signal) => this.client.callService(domain, service, serviceData, { signal }),
       this.controlTimeout,
       `${domain}.${service}`,
     );
@@ -441,7 +468,7 @@ export default class IndoorClimate {
     this.lastDiscoveryAttempt = Date.now();
     try {
       const raw = await withTimeout(
-        this.client.renderTemplate(discoveryTemplate(this.integration)),
+        (signal) => this.client.renderTemplate(discoveryTemplate(this.integration), { signal }),
         this.requestTimeout,
         'Discovery template',
       );
@@ -476,7 +503,7 @@ export default class IndoorClimate {
 
       const states: (HaState | null)[] = await Promise.all(
         entities.map((entity) => withTimeout(
-          this.client.getState(entity.entityId),
+          (signal) => this.client.getState(entity.entityId, { signal }),
           this.requestTimeout,
           entity.entityId,
         ).catch(() => null)),
