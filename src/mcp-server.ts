@@ -8,6 +8,7 @@ import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
+import type { ThermostatControlResult, ThermostatControls } from './indoor-climate';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
@@ -627,7 +628,9 @@ export default function createMcpServer(
       Object.entries(extraData).forEach(([key, value]) => {
         if (value !== undefined) { serviceData[key] = value; }
       });
-      await homeAssistantClient.callService(domain, service, serviceData);
+      const call = (signal?: AbortSignal) => homeAssistantClient.callService(domain, service, serviceData, { signal });
+      const { indoorClimate } = services;
+      await (indoorClimate ? indoorClimate.runServiceCall(domain, service, serviceData, call) : call());
       return { content: [{ type: 'text' as const, text: `Called ${domain}.${service} on ${entityId}` }] };
     },
   );
@@ -912,8 +915,134 @@ export default function createMcpServer(
   );
 
   server.tool(
+    'set_thermostat',
+    'Control the Ecobee thermostat. Provide at least one option; they are applied in order: resume_program, '
+    + 'hvac_mode, preset_mode, fan_mode, then the set point(s). Use temperature in heat/cool mode, or '
+    + 'target_temp_low + target_temp_high in heat_cool mode. Supported modes, presets, fan modes and the '
+    + 'min/max temperature (in thermostat.temperatureUnit) are in get_home_summary (indoorClimate.thermostat). '
+    + 'All options run as one operation, so no other thermostat change can come between them. Returns the '
+    + 'updated indoor climate status; `confirmed` is false (with the options in `unconfirmedSteps`) when the '
+    + 'thermostat has not reported every option yet. If a later option fails (including when an earlier one '
+    + 'has not taken effect yet), the error lists the options already applied and the thermostat status.',
+    {
+      temperature: z.number().optional()
+        .describe('Target temperature in the thermostat unit (not in heat_cool mode)'),
+      target_temp_low: z.number().optional()
+        .describe('Heating set point for heat_cool mode (requires target_temp_high)'),
+      target_temp_high: z.number().optional()
+        .describe('Cooling set point for heat_cool mode (requires target_temp_low)'),
+      hvac_mode: z.string().optional().describe('HVAC mode, e.g. off, heat, cool, heat_cool'),
+      preset_mode: z.string().optional().describe('Preset / comfort setting, e.g. home, away, sleep'),
+      fan_mode: z.string().optional().describe('Fan mode, e.g. auto, on'),
+      resume_program: z.boolean().optional()
+        .describe('Cancel all holds (Ecobee resume_program with resume_all) and return to the schedule'),
+    },
+    IDEMPOTENT_WRITE_CLOSED,
+    async (args) => {
+      const { indoorClimate } = services;
+      if (!indoorClimate) {
+        return { isError: true, content: [{ type: 'text' as const, text: 'Indoor climate is not configured' }] };
+      }
+      const setsTemperature = args.temperature !== undefined
+        || args.target_temp_low !== undefined
+        || args.target_temp_high !== undefined;
+      type Step = [string, (controls: ThermostatControls) => Promise<ThermostatControlResult>];
+      const steps: Step[] = [];
+      if (args.resume_program) steps.push(['resume_program', (controls) => controls.resumeProgram(true)]);
+      if (args.hvac_mode !== undefined) {
+        const mode = args.hvac_mode;
+        steps.push([`hvac_mode=${mode}`, (controls) => controls.setHvacMode(mode)]);
+      }
+      if (args.preset_mode !== undefined) {
+        const preset = args.preset_mode;
+        steps.push([`preset_mode=${preset}`, (controls) => controls.setPresetMode(preset)]);
+      }
+      if (args.fan_mode !== undefined) {
+        const mode = args.fan_mode;
+        steps.push([`fan_mode=${mode}`, (controls) => controls.setFanMode(mode)]);
+      }
+      if (setsTemperature) {
+        // Always last, so its label never appears in the "already applied" list.
+        steps.push(['temperature', (controls) => controls.setTemperature({
+          temperature: args.temperature,
+          targetTempLow: args.target_temp_low,
+          targetTempHigh: args.target_temp_high,
+        })]);
+      }
+      if (steps.length === 0) {
+        return {
+          isError: true,
+          content: [{
+            type: 'text' as const,
+            text: 'Provide at least one of temperature, target_temp_low/target_temp_high, hvac_mode, '
+              + 'preset_mode, fan_mode or resume_program',
+          }],
+        };
+      }
+      const applied: string[] = [];
+      const unconfirmedNote = (steps: string[]) => (
+        `Home Assistant accepted ${steps.join('; ')}, but the thermostat has not reported `
+        + 'it yet, so the status may not reflect it.'
+      );
+      // One lock for the whole sequence, so e.g. a mode change from the app
+      // can't land between this mode change and the set point meant for it.
+      return indoorClimate.withControls(async (controls) => {
+        const unconfirmedResults: [string, ThermostatControlResult][] = [];
+        // A step can be reported later, e.g. while the next step waits for it.
+        const unconfirmedSteps = () => unconfirmedResults
+          .filter(([, result]) => !controls.wasReported(result))
+          .map(([label]) => label);
+        let status: ThermostatControlResult | null = null;
+        for (const [label, step] of steps) {
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            status = await step(controls);
+          } catch (err) {
+            // Nothing was applied before this step: let the tool wrapper report it as usual.
+            if (applied.length === 0) throw err;
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[MCP] set_thermostat failed after applying ${applied.join('; ')}: ${message}`);
+            const lines = [
+              `Error in set_thermostat: ${message}`,
+              `Already applied before the error: ${applied.join('; ')}.`,
+            ];
+            const unconfirmed = unconfirmedSteps();
+            if (unconfirmed.length > 0) lines.push(unconfirmedNote(unconfirmed));
+            // Report the thermostat the earlier steps changed, even if discovery
+            // has since picked another one.
+            const changedId = controls.thermostatId() ?? undefined;
+            // eslint-disable-next-line no-await-in-loop
+            const current = await indoorClimate.currentThermostat(changedId);
+            const lastKnown = [indoorClimate.cachedStatus, status]
+              .find((snapshot) => snapshot?.thermostat && snapshot.thermostat.entityId === changedId);
+            if (current) {
+              lines.push(`Current thermostat status: ${JSON.stringify(current, null, 2)}`);
+            } else if (lastKnown) {
+              const { timestamp, thermostat } = lastKnown;
+              lines.push(
+                'The thermostat could not be read; last known status (may predate the failed option): '
+                + `${JSON.stringify({ timestamp, thermostat }, null, 2)}`,
+              );
+            } else if (changedId) {
+              lines.push(`The thermostat changed (${changedId}) could not be read.`);
+            }
+            return { isError: true, content: [{ type: 'text' as const, text: lines.join('\n') }] };
+          }
+          applied.push(label);
+          if (!status.confirmed) unconfirmedResults.push([label, status]);
+        }
+        const unconfirmed = unconfirmedSteps();
+        const result = jsonResult({ ...status, confirmed: unconfirmed.length === 0, unconfirmedSteps: unconfirmed });
+        if (unconfirmed.length === 0) return result;
+        return { ...result, content: [{ type: 'text' as const, text: unconfirmedNote(unconfirmed) }, ...result.content] };
+      });
+    },
+  );
+
+  server.tool(
     'get_home_summary',
-    'Get a full summary of the home: car, robots, appliances, and active HA entities — useful for a quick overview',
+    'Get a full summary of the home: car, robots, appliances, indoor temperatures (per-room sensors, '
+    + 'occupancy and thermostat), and active HA entities — useful for a quick overview',
     READ_ONLY_CLOSED,
     async () => {
       const { mieleClient, dishwasher } = services;
@@ -935,6 +1064,7 @@ export default function createMcpServer(
         },
         miele,
         homeconnect,
+        indoorClimate: services.indoorClimate?.cachedStatus ?? null,
       });
     },
   );

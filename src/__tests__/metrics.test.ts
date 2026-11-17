@@ -92,6 +92,60 @@ describe('metrics router', () => {
     expect(flux).toContain('bedroom_temperature');
   });
 
+  it('merges, dedupes and sanitizes dynamic entity ids into the Flux filter', async () => {
+    const query = vi.fn().mockResolvedValue([]);
+    const app = buildApp({
+      influxdb: { configured: true, query } as never,
+      bucket: 'fluxhaus',
+      dynamicEntityIds: {
+        temperature: () => ['office_temperature', 'bedroom_temperature', 'x"]) |> drop(columns: ["y', 'Upper'],
+      },
+    });
+    await request(app).get('/metrics/series?metric=temperature').expect(200);
+    const flux = query.mock.calls[0][0] as string;
+    expect(flux).toContain(
+      'set: ["bedroom_temperature", "kitchen_temperature", "living_room_temperature", '
+      + '"home_current_temperature", "patio_environment_canada_temperature", "office_temperature"]',
+    );
+    expect(flux).not.toContain('drop(');
+    expect(flux).not.toContain('Upper');
+  });
+
+  it('falls back to the static entity ids when the dynamic provider throws', async () => {
+    const query = vi.fn().mockResolvedValue([]);
+    const app = buildApp({
+      influxdb: { configured: true, query } as never,
+      bucket: 'fluxhaus',
+      dynamicEntityIds: {
+        temperature: () => { throw new Error('not ready'); },
+      },
+    });
+    await request(app).get('/metrics/series?metric=temperature').expect(200);
+    expect(query.mock.calls[0][0]).toContain(
+      'set: ["bedroom_temperature", "kitchen_temperature", "living_room_temperature", '
+      + '"home_current_temperature", "patio_environment_canada_temperature"]',
+    );
+  });
+
+  it('ORs together multiple measurements for a metric', async () => {
+    const query = vi.fn().mockResolvedValue([]);
+    const app = buildApp({ influxdb: { configured: true, query } as never, bucket: 'fluxhaus' });
+    await request(app).get('/metrics/series?metric=temperature').expect(200);
+    await request(app).get('/metrics/series?metric=humidity').expect(200);
+    const multi = query.mock.calls[0][0] as string;
+    const single = query.mock.calls[1][0] as string;
+    expect(multi).toContain(
+      'filter(fn: (r) => (r._measurement == "climate" or r._measurement == "°C") and r._field == "value")',
+    );
+    expect(multi).toMatch(
+      /contains\(value: r\.entity_id[^\n]*\n {2}\|> group\(columns: \["entity_id", "friendly_name"\]\)\n {2}\|> aggregateWindow\(/,
+    );
+    expect(single).toContain(
+      'filter(fn: (r) => r._measurement == "climate" and r._field == "value")',
+    );
+    expect(single).not.toContain('group(');
+  });
+
   it('returns 502 when the upstream influx query fails', async () => {
     const influxdb = {
       configured: true,

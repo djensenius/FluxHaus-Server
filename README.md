@@ -228,7 +228,11 @@ Catalog groups:
 - **Environment** — indoor + outdoor temperature/humidity (Environment Canada),
   indoor air quality (Blue Pure PM2.5), and outdoor air quality (AQHI). Outdoor
   readings are relabelled **"Outside"** via each metric's `seriesRename` map so the
-  app can colour them consistently across charts.
+  app can colour them consistently across charts. The temperature chart
+  automatically includes every indoor sensor discovered by
+  [Indoor climate](#indoor-climate) that Home Assistant logs to InfluxDB under
+  the `climate` or `°C` measurement, on top of its static entity list
+  (Fahrenheit installs log under `°F` and aren't charted).
 - **Energy** — live power draw (W) and cumulative energy (kWh) for the computer
   station, media centre, and server hardware.
 - **Outdoor** — the full weather-tab detail set: outdoor temperature/humidity,
@@ -239,6 +243,138 @@ Catalog groups:
 Outdoor/environment series read Home Assistant data already flowing into InfluxDB
 (measurements keyed by unit, e.g. `climate`, `°C`, `μg/m³`, `UV index`, and
 `state` for index-style sensors) — no extra collector or env vars required.
+
+## Indoor climate
+
+The server auto-discovers the entities of one Home Assistant integration
+(`INDOOR_CLIMATE_INTEGRATION`, default `ecobee`) and polls them every minute
+(re-discovering every 10 minutes, so new sensors appear without a restart):
+
+- every `sensor.*` with `device_class: temperature` becomes a room, named after
+  its HA device (e.g. an Ecobee SmartSensor called "Bedroom"), with its HA
+  `area` (entity area, else device area; `null` if unassigned) and `unit`
+  (`unit_of_measurement`, `null` if unknown);
+- an `occupancy` `binary_sensor` on the same device supplies `occupied`;
+- the first `climate.*` entity (by entity id) is reported as the thermostat
+  (mode, action, set points, preset, current temperature/humidity — from the
+  thermostat device's own sensors if the climate entity omits them, dropping a
+  temperature whose unit is unknown — area, plus
+  the control capabilities `hvacModes`, `presetModes`, `fanMode`, `fanModes`,
+  `minTemp`, `maxTemp` and `targetTempStep` — lists are `[]` and values `null`
+  when HA doesn't report them — and `temperatureUnit`, Home Assistant's unit
+  for every thermostat temperature, read from `/api/config`);
+  temperature sensors on the device of *any* discovered `climate.*` entity are
+  flagged `isThermostat` and listed first.
+
+The snapshot is returned as `indoorClimate`
+(`{ timestamp, thermostat, sensors, unit }`, where `unit` is the first known
+sensor unit, else Home Assistant's unit) in `GET /` for admin and demo users, and in the MCP
+`get_home_summary` tool.
+
+```
+INDOOR_CLIMATE_INTEGRATION=ecobee
+```
+
+The value is passed to HA's `integration_entities()`, which matches a
+config-entry title first (e.g. `Ecobee Upstairs`; up to 100 characters, no
+control characters) and then an integration domain. Choose it carefully:
+e.g. `homekit_controller` pulls in every HomeKit temperature sensor.
+
+Discovery uses Home Assistant's `/api/template` endpoint, so `HOMEASSISTANT_TOKEN`
+must be allowed to render templates — the same requirement as the MCP
+`render_template` tool. If discovery fails, the last discovered entities are kept.
+Each Home Assistant request made by this poller times out (and is aborted) after
+15 seconds, so a hung request can't stall polling.
+
+### Thermostat controls
+
+Admin-only (`403` otherwise; cookie sessions need the CSRF token) routes that
+control the reported thermostat:
+
+| Route | Body | Home Assistant service |
+|-------|------|------------------------|
+| `POST /thermostat/temperature` | `{ temperature }` or `{ targetTempLow, targetTempHigh }` | `climate.set_temperature` |
+| `POST /thermostat/mode` | `{ mode }` (one of `hvacModes`) | `climate.set_hvac_mode` |
+| `POST /thermostat/preset` | `{ preset }` (one of `presetModes`) | `climate.set_preset_mode` |
+| `POST /thermostat/fan` | `{ mode }` (one of `fanModes`) | `climate.set_fan_mode` |
+| `POST /thermostat/resume` | `{ resumeAll? }` (default `false`) | `ecobee.resume_program` |
+
+Temperatures accept numbers or numeric strings and must be within
+`minTemp`..`maxTemp` when known. Use `temperature` outside `heat_cool` mode and
+`targetTempLow` < `targetTempHigh` in `heat_cool` mode. If the thermostat
+doesn't report `hvacModes`, `mode` must be one of `off`, `heat`, `cool`,
+`heat_cool`, `auto`, `dry` or `fan_only`. Resume is only available when the
+thermostat's own integration (its config entry domain) is `ecobee`. On Home
+Assistant older than 2024.7, which can't report it, Resume requires
+`INDOOR_CLIMATE_INTEGRATION=ecobee`.
+
+Controls run one at a time (app and MCP alike). Each first waits for any
+in-flight poll and reads the thermostat fresh, so validation uses its current
+mode and limits. After the service call it re-reads only the thermostat (up to
+4 times, 1.5 seconds apart) until it reports the change. Success returns `200`
+with the `indoorClimate` snapshot plus `confirmed`, which is `false` if the
+thermostat still hadn't reported the change (the snapshot may then show the
+previous values). A set point counts as reported when it is within Ecobee's
+rounding of the request, but never when it is still the previous value. Resume
+is confirmed only when the preset moves off the hold (to a different preset
+that isn't `temp`); resuming with no hold, or when the schedule matches the
+held comfort setting, changes nothing visible and so returns `confirmed: false`.
+If a poll that finished during the confirmation read the thermostat more
+recently, its result is kept.
+
+A change that may still take effect (unconfirmed, timed out, or with an
+unknown outcome) holds back the next control of a different kind until the
+thermostat reports it, for up to 60 seconds from when that outcome was known, so a late mode change can't
+invalidate a set point chosen for the new mode. That control re-reads the
+thermostat and, if the change still hasn't shown up, returns `409`
+`The previous thermostat change has not taken effect yet; try again shortly`.
+A control of the same kind runs immediately and replaces the pending one once
+Home Assistant accepts it; if it is invalid or refused, the pending change
+keeps holding. An unconfirmed resume doesn't hold anything back.
+
+Invalid requests return `400`, and a missing or unavailable thermostat returns
+`409`, each with a plain-text reason. If the thermostat can't be read first,
+the route returns `503` `Could not read the thermostat state; no change was
+sent`. If the change was sent but every read afterwards fails, it returns `502`
+`Thermostat change was sent but its new state could not be read`. Control calls
+time out after 30 seconds because Ecobee cloud calls can be slow; a timeout
+returns `504` with a reason saying the change may still be applied, so check
+the thermostat before retrying. A dropped connection, unreadable response or
+5xx (e.g. a proxy error) may also have applied the change, so it returns `502`
+`Could not tell whether the thermostat received the change; it may still be
+applied, so check its state before retrying`. Home Assistant refusing the call
+(a 4xx) changed nothing and returns `502` `Thermostat control failed`.
+
+The MCP `set_thermostat` tool takes `temperature`, `target_temp_low`,
+`target_temp_high`, `hvac_mode`, `preset_mode`, `fan_mode` and
+`resume_program` (at least one is required). `resume_program` cancels all
+holds (`resume_all: true`) and returns to the schedule. It applies them in the
+order resume → HVAC mode → preset → fan → temperature as one operation, so no
+other control can run between them, and returns the resulting snapshot with
+`confirmed` (true only if every step was reported) and `unconfirmedSteps`. A
+step the thermostat reports later (e.g. while the next step waits for it)
+counts as reported. Every step acts on the same thermostat: if discovery
+selects a different one partway, the remaining steps stop with `409`. A
+failing step stops the sequence (including a `409` because an earlier step
+hasn't taken effect yet), but earlier steps stay applied. The error lists them
+and includes a fresh status of the thermostat they changed, or its last known
+one (labelled as such) if it can't be read.
+
+The web server and its HTTP MCP endpoint (`/mcp`) share one controller, so
+the guarantees above hold between them. Raw `climate.*` and `ecobee.*` calls
+through the `call_ha_service` tool (MCP and AI commands) also take their turn
+with the controls, so one can't land between the steps of `set_thermostat`.
+Like the controls, they time out (and are aborted) after 30 seconds with a
+`504` saying the change may still be applied. One that may target the reported
+thermostat (it names it, `all`, or no entity, or targets an area, device, floor
+or label) also follows the hold-back rule above: it waits for (or is refused
+with `409` by) a pending change of another kind, and a mode, preset, fan or set
+point change it makes holds back other kinds of control until the thermostat
+reports it. Ecobee services wait the same way, but what they change isn't held
+back, as it can't be read from the thermostat's state.
+The local stdio MCP server
+(`node dist/mcp.js`) runs in its own process with its own controller and isn't
+coordinated with a running web server.
 
 ## Car analytics
 
@@ -460,6 +596,7 @@ GET /audit?limit=50&offset=0&username=admin&since=2024-01-01T00:00:00Z
 | `CLEANBOT_ENTITY_ID` | Entity ID for Cleanbot | `vacuum.v70_ultra_complete` |
 | `CLEANBOT_BATTERY_ENTITY_ID` | Battery sensor entity for Cleanbot | `sensor.v70_ultra_complete_battery_level` |
 | `CAR_ENTITY_PREFIX` | HA entity prefix for the car | `kia` |
+| `INDOOR_CLIMATE_INTEGRATION` | HA integration whose temperature/occupancy sensors and thermostat are discovered | `ecobee` |
 | **AI** | | |
 | `AI_PROVIDER` | AI provider: `anthropic`, `copilot`, `github-copilot`, `zai`, `z.ai`, or `openai` | `anthropic` |
 | `AI_MODEL` | Model name override | *(provider default)* |

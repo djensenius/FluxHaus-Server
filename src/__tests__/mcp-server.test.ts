@@ -385,8 +385,33 @@ describe('MCP Server', () => {
         'light',
         'turn_on',
         { entity_id: 'light.bedroom' },
+        { signal: undefined },
       );
       expect(result.content[0].text).toBe('Called light.turn_on on light.bedroom');
+
+      // With indoor climate configured, the call takes its turn with the thermostat controls.
+      const signal = new AbortController().signal;
+      const runServiceCall = vi.fn((
+        _domain: string,
+        _service: string,
+        _data: unknown,
+        call: (s?: AbortSignal) => Promise<unknown>,
+      ) => call(signal));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = { runServiceCall } as any;
+      await getTools(createMcpServer(mockServices)).call_ha_service.handler(
+        { domain: 'climate', service: 'turn_off', entity_id: 'climate.home' },
+        {},
+      );
+      expect(runServiceCall).toHaveBeenCalledWith(
+        'climate', 'turn_off', { entity_id: 'climate.home' }, expect.any(Function),
+      );
+      expect(mockHaClient.callService).toHaveBeenLastCalledWith(
+        'climate',
+        'turn_off',
+        { entity_id: 'climate.home' },
+        { signal },
+      );
     });
 
     it('list_entities tool returns filtered entity list', async () => {
@@ -443,6 +468,168 @@ describe('MCP Server', () => {
       expect(parsed).toHaveProperty('washer');
       expect(parsed).toHaveProperty('dryer');
       expect(parsed).toHaveProperty('dishwasher');
+    });
+
+    it('get_home_summary includes indoor climate, or null when unavailable', async () => {
+      const withoutClimate = await getTools(createMcpServer(mockServices)).get_home_summary.handler({}, {});
+      expect(JSON.parse(withoutClimate.content[0].text as string).indoorClimate).toBeNull();
+
+      const status = {
+        timestamp: '2026-01-01T00:00:00.000Z', thermostat: null, sensors: [], unit: '°C',
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = { cachedStatus: status } as any;
+      const withClimate = await getTools(createMcpServer(mockServices)).get_home_summary.handler({}, {});
+      expect(JSON.parse(withClimate.content[0].text as string).indoorClimate).toEqual(status);
+    });
+
+    it('set_thermostat applies options in order and returns the final status', async () => {
+      const statusAfter = (step: string, confirmed = true) => ({
+        timestamp: '2026-01-01T00:00:00.000Z', thermostat: { step }, sensors: [], unit: '°C', confirmed,
+      });
+      const controls = {
+        resumeProgram: vi.fn().mockResolvedValue(statusAfter('resume')),
+        setHvacMode: vi.fn().mockResolvedValue(statusAfter('mode')),
+        setPresetMode: vi.fn().mockResolvedValue(statusAfter('preset')),
+        setFanMode: vi.fn().mockResolvedValue(statusAfter('fan')),
+        setTemperature: vi.fn().mockResolvedValue(statusAfter('temperature')),
+        wasReported: vi.fn().mockReturnValue(false),
+      };
+      // Only the controls handed to withControls exist, so every option must run under its one lock.
+      const indoorClimate = {
+        cachedStatus: statusAfter('initial'),
+        withControls: vi.fn((run: (c: typeof controls) => Promise<unknown>) => run(controls)),
+      };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = indoorClimate as any;
+      const result = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        target_temp_low: 20,
+        target_temp_high: 24,
+        hvac_mode: 'heat_cool',
+        preset_mode: 'home',
+        fan_mode: 'auto',
+        resume_program: true,
+      }, {});
+
+      expect(result.isError).toBeUndefined();
+      expect(indoorClimate.withControls).toHaveBeenCalledTimes(1);
+      expect(controls.resumeProgram).toHaveBeenCalledWith(true);
+      expect(controls.setHvacMode).toHaveBeenCalledWith('heat_cool');
+      expect(controls.setPresetMode).toHaveBeenCalledWith('home');
+      expect(controls.setFanMode).toHaveBeenCalledWith('auto');
+      expect(controls.setTemperature).toHaveBeenCalledWith({
+        temperature: undefined, targetTempLow: 20, targetTempHigh: 24,
+      });
+      const order = [
+        controls.resumeProgram, controls.setHvacMode, controls.setPresetMode,
+        controls.setFanMode, controls.setTemperature,
+      ].map((fn) => fn.mock.invocationCallOrder[0]);
+      expect(order).toEqual([...order].sort((a, b) => a - b));
+      const confirmedStatus = { ...statusAfter('temperature'), unconfirmedSteps: [] };
+      expect(JSON.parse(result.content[0].text as string)).toEqual(confirmedStatus);
+      expect(result.structuredContent).toEqual(confirmedStatus);
+
+      // An earlier unconfirmed option makes the whole result unconfirmed, even if the last one was confirmed.
+      controls.setHvacMode.mockResolvedValueOnce(statusAfter('mode', false));
+      const unconfirmed = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        hvac_mode: 'heat_cool', fan_mode: 'auto',
+      }, {});
+      expect(unconfirmed.isError).toBeUndefined();
+      expect(unconfirmed.content[0].text).toBe(
+        'Home Assistant accepted hvac_mode=heat_cool, but the thermostat has not reported it yet, '
+        + 'so the status may not reflect it.',
+      );
+      const unconfirmedStatus = { ...statusAfter('fan', false), unconfirmedSteps: ['hvac_mode=heat_cool'] };
+      expect(JSON.parse(unconfirmed.content[1].text as string)).toEqual(unconfirmedStatus);
+      expect(unconfirmed.structuredContent).toEqual(unconfirmedStatus);
+
+      // Unless the thermostat reported it later, e.g. while the next option waited for it.
+      const reportedLater = statusAfter('mode', false);
+      controls.setHvacMode.mockResolvedValueOnce(reportedLater);
+      controls.wasReported.mockImplementation((result) => result === reportedLater);
+      const reported = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        hvac_mode: 'heat_cool', fan_mode: 'auto',
+      }, {});
+      expect(reported.structuredContent).toEqual({ ...statusAfter('fan'), unconfirmedSteps: [] });
+    });
+
+    it('set_thermostat requires at least one option and a configured indoor climate', async () => {
+      const unconfigured = await getTools(createMcpServer(mockServices)).set_thermostat.handler({ fan_mode: 'on' }, {});
+      expect(unconfigured.isError).toBe(true);
+      expect(unconfigured.content[0].text).toBe('Indoor climate is not configured');
+
+      const indoorClimate = { cachedStatus: {}, resumeProgram: vi.fn() };
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = indoorClimate as any;
+      const result = await getTools(createMcpServer(mockServices)).set_thermostat.handler(
+        { resume_program: false },
+        {},
+      );
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Provide at least one of');
+      expect(indoorClimate.resumeProgram).not.toHaveBeenCalled();
+    });
+
+    it('set_thermostat reports options already applied when a later one fails', async () => {
+      const thermostat = { entityId: 'climate.home', hvacMode: 'heat', fanMode: 'auto' };
+      const indoorClimate = {
+        cachedStatus: {
+          timestamp: '2026-01-01T00:00:00.000Z', thermostat, sensors: [], unit: '°C',
+        },
+        resumeProgram: vi.fn().mockResolvedValue({ confirmed: true }),
+        setHvacMode: vi.fn().mockResolvedValue({ confirmed: false }),
+        setFanMode: vi.fn().mockRejectedValue(new Error('Unsupported fan mode (supported: auto, on)')),
+        setTemperature: vi.fn(),
+        currentThermostat: vi.fn().mockResolvedValue({ ...thermostat, fanMode: 'on' }),
+        wasReported: vi.fn().mockReturnValue(false),
+        thermostatId: vi.fn().mockReturnValue('climate.home'),
+        withControls: vi.fn(),
+      };
+      indoorClimate.withControls.mockImplementation((run: (c: typeof indoorClimate) => Promise<unknown>) => (
+        run(indoorClimate)
+      ));
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      mockServices.indoorClimate = indoorClimate as any;
+      const result = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, hvac_mode: 'heat', fan_mode: 'circulate', temperature: 21,
+      }, {});
+
+      expect(result.isError).toBe(true);
+      const text = result.content[0].text as string;
+      expect(text).toContain('Error in set_thermostat: Unsupported fan mode (supported: auto, on)');
+      expect(text).toContain('Already applied before the error: resume_program; hvac_mode=heat.');
+      expect(text).toContain('Home Assistant accepted hvac_mode=heat, but the thermostat has not reported it yet');
+      expect(text).toContain('Current thermostat status:');
+      expect(text).toContain('"fanMode": "on"');
+      expect(indoorClimate.setTemperature).not.toHaveBeenCalled();
+
+      // When a fresh read fails, the cached snapshot is labelled as such.
+      indoorClimate.currentThermostat.mockResolvedValueOnce(null);
+      const stale = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, fan_mode: 'circulate',
+      }, {});
+      const staleText = stale.content[0].text as string;
+      expect(staleText).not.toContain('Current thermostat status:');
+      expect(staleText).toContain('The thermostat could not be read; last known status (may predate the failed option):');
+      expect(staleText).toContain('"fanMode": "auto"');
+
+      // After discovery picks another thermostat, the one the earlier options changed is reported.
+      expect(indoorClimate.currentThermostat).toHaveBeenLastCalledWith('climate.home');
+      indoorClimate.cachedStatus = { ...indoorClimate.cachedStatus, thermostat: { ...thermostat, entityId: 'climate.attic' } };
+      indoorClimate.currentThermostat.mockResolvedValueOnce(null);
+      const switched = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, fan_mode: 'circulate',
+      }, {});
+      const switchedText = switched.content[0].text as string;
+      expect(switchedText).toContain('The thermostat changed (climate.home) could not be read.');
+      expect(switchedText).not.toContain('climate.attic');
+
+      indoorClimate.resumeProgram.mockRejectedValueOnce(new Error('Thermostat unavailable'));
+      const first = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, hvac_mode: 'heat',
+      }, {});
+      expect(first.isError).toBe(true);
+      expect(first.content[0].text).toBe('Error in set_thermostat: Thermostat unavailable');
     });
 
     it('calendar mutation tools report when calendar service is unavailable', async () => {
