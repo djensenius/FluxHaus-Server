@@ -28,7 +28,7 @@ import HomeAssistantMiele from './homeassistant-miele';
 import HomeAssistantDishwasher from './homeassistant-dishwasher';
 import { createMetricsRouter } from './metrics';
 import Blueair from './blueair';
-import IndoorClimate, { IndoorClimateStatus, ThermostatControlError } from './indoor-climate';
+import IndoorClimate, { ThermostatControlError, ThermostatControlResult } from './indoor-climate';
 import AirQuality from './air-quality';
 import adminRouter from './routes/admin.routes';
 import pushRouter from './routes/push.routes';
@@ -826,13 +826,15 @@ export async function createServer(): Promise<Express> {
     }
   });
 
-  // Ecobee thermostat controls. Each responds with the refreshed indoor climate
-  // status; ThermostatControlError carries its own status and plain-text reason
-  // (400 invalid, 409 no usable thermostat, 503 nothing sent, 502 sent but unread).
+  // Ecobee thermostat controls. Each responds with the indoor climate status and
+  // `confirmed` (false when the thermostat hasn't reported the change yet);
+  // ThermostatControlError carries its own status and plain-text reason (400
+  // invalid, 409 no usable thermostat, 503 nothing sent, 502 sent but unread,
+  // 504 timed out and may still apply).
   const sendThermostatControl = async (
     res: express.Response,
     label: string,
-    control: (climate: IndoorClimate) => Promise<IndoorClimateStatus>,
+    control: (climate: IndoorClimate) => Promise<ThermostatControlResult>,
   ) => {
     if (!indoorClimate) {
       res.status(503).send('Indoor climate unavailable');

@@ -50,6 +50,11 @@ export class HomeAssistantClient {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  public async getConfig(options: HomeAssistantRequestOptions = {}): Promise<any> {
+    return this.request('/api/config', signalInit(options));
+  }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public async callService(domain: string, service: string, serviceData: any = {}, options: HomeAssistantRequestOptions = {}): Promise<any> {
     return this.request(`/api/services/${domain}/${service}`, {
       method: 'POST',

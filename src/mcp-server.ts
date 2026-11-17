@@ -8,7 +8,7 @@ import { Readability } from '@mozilla/readability';
 import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
-import type { IndoorClimateStatus } from './indoor-climate';
+import type { ThermostatControlResult } from './indoor-climate';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
@@ -917,9 +917,9 @@ export default function createMcpServer(
     'Control the Ecobee thermostat. Provide at least one option; they are applied in order: resume_program, '
     + 'hvac_mode, preset_mode, fan_mode, then the set point(s). Use temperature in heat/cool mode, or '
     + 'target_temp_low + target_temp_high in heat_cool mode. Supported modes, presets, fan modes and the '
-    + 'min/max temperature are in get_home_summary (indoorClimate.thermostat). Returns the updated indoor '
-    + 'climate status. If a later option fails, the error lists the options already applied and the '
-    + 'current thermostat status.',
+    + 'min/max temperature (in thermostat.temperatureUnit) are in get_home_summary (indoorClimate.thermostat). '
+    + 'Returns the updated indoor climate status, noting any option the thermostat has not reported yet. '
+    + 'If a later option fails, the error lists the options already applied and the thermostat status.',
     {
       temperature: z.number().optional()
         .describe('Target temperature in the thermostat unit (not in heat_cool mode)'),
@@ -942,7 +942,7 @@ export default function createMcpServer(
       const setsTemperature = args.temperature !== undefined
         || args.target_temp_low !== undefined
         || args.target_temp_high !== undefined;
-      const steps: Array<[string, () => Promise<IndoorClimateStatus>]> = [];
+      const steps: Array<[string, () => Promise<ThermostatControlResult>]> = [];
       if (args.resume_program) steps.push(['resume_program', () => indoorClimate.resumeProgram(true)]);
       if (args.hvac_mode !== undefined) {
         const mode = args.hvac_mode;
@@ -974,8 +974,13 @@ export default function createMcpServer(
           }],
         };
       }
-      let status = indoorClimate.cachedStatus;
+      let status: ThermostatControlResult | null = null;
       const applied: string[] = [];
+      const unconfirmed: string[] = [];
+      const unconfirmedNote = () => (
+        `Home Assistant accepted ${unconfirmed.join('; ')}, but the thermostat has not reported `
+        + 'it yet, so the status may not reflect it.'
+      );
       for (const [label, step] of steps) {
         try {
           // eslint-disable-next-line no-await-in-loop
@@ -985,19 +990,30 @@ export default function createMcpServer(
           if (applied.length === 0) throw err;
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[MCP] set_thermostat failed after applying ${applied.join('; ')}: ${message}`);
-          const { timestamp, thermostat } = indoorClimate.cachedStatus;
           const lines = [
             `Error in set_thermostat: ${message}`,
             `Already applied before the error: ${applied.join('; ')}.`,
           ];
-          if (thermostat) {
-            lines.push(`Current thermostat status: ${JSON.stringify({ timestamp, thermostat }, null, 2)}`);
+          if (unconfirmed.length > 0) lines.push(unconfirmedNote());
+          // eslint-disable-next-line no-await-in-loop
+          const current = await indoorClimate.currentThermostat();
+          const { timestamp, thermostat } = indoorClimate.cachedStatus;
+          if (current) {
+            lines.push(`Current thermostat status: ${JSON.stringify(current, null, 2)}`);
+          } else if (thermostat) {
+            lines.push(
+              'The thermostat could not be read; last known status (may predate the failed option): '
+              + `${JSON.stringify({ timestamp, thermostat }, null, 2)}`,
+            );
           }
           return { isError: true, content: [{ type: 'text' as const, text: lines.join('\n') }] };
         }
         applied.push(label);
+        if (!status.confirmed) unconfirmed.push(label);
       }
-      return jsonResult(status);
+      const result = jsonResult(status);
+      if (unconfirmed.length === 0) return result;
+      return { ...result, content: [{ type: 'text' as const, text: unconfirmedNote() }, ...result.content] };
     },
   );
 

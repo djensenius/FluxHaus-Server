@@ -259,13 +259,14 @@ The server auto-discovers the entities of one Home Assistant integration
   (mode, action, set points, preset, current temperature/humidity, area, plus
   the control capabilities `hvacModes`, `presetModes`, `fanMode`, `fanModes`,
   `minTemp`, `maxTemp` and `targetTempStep` — lists are `[]` and values `null`
-  when HA doesn't report them);
+  when HA doesn't report them — and `temperatureUnit`, Home Assistant's unit
+  for every thermostat temperature, read from `/api/config`);
   temperature sensors on the device of *any* discovered `climate.*` entity are
   flagged `isThermostat` and listed first.
 
 The snapshot is returned as `indoorClimate`
 (`{ timestamp, thermostat, sensors, unit }`, where `unit` is the first known
-sensor unit) in `GET /` for admin and demo users, and in the MCP
+sensor unit, else Home Assistant's unit) in `GET /` for admin and demo users, and in the MCP
 `get_home_summary` tool.
 
 ```
@@ -305,25 +306,32 @@ thermostat's own integration (its config entry domain) is `ecobee`. On Home
 Assistant older than 2024.7, which can't report it, Resume requires
 `INDOOR_CLIMATE_INTEGRATION=ecobee`.
 
-Each control first waits for any in-flight poll and reads the thermostat
-fresh, so validation uses its current mode and limits. Success returns `200`
-with the refreshed `indoorClimate` snapshot. Invalid requests return `400`, and
-a missing or unavailable thermostat returns `409`, each with a plain-text
-reason. If the thermostat can't be read first, the route returns `503`
+Controls run one at a time (app and MCP alike). Each first waits for any
+in-flight poll and reads the thermostat fresh, so validation uses its current
+mode and limits. After the service call it re-reads only the thermostat (up to
+4 times, 1.5 seconds apart) until it reports the change. Success returns `200`
+with the `indoorClimate` snapshot plus `confirmed`, which is `false` if the
+thermostat still hadn't reported the change (the snapshot may then show the
+previous values). Invalid requests return `400`, and a missing or unavailable
+thermostat returns `409`, each with a plain-text reason. If the thermostat
+can't be read first, the route returns `503`
 `Could not read the thermostat state; no change was sent`. If the change was
-sent but the state read afterwards fails, it returns `502`
-`Thermostat change was sent but its new state could not be read`. Other Home
-Assistant errors return `502` `Thermostat control failed`. Control calls time
-out after 30 seconds because Ecobee cloud calls can be slow. A timed-out change
-may still be applied.
+sent but every read afterwards fails, it returns `502`
+`Thermostat change was sent but its new state could not be read`. Control calls
+time out after 30 seconds because Ecobee cloud calls can be slow; a timeout
+returns `504` with a reason saying the change may still be applied, so check
+the thermostat before retrying. Other Home Assistant errors return `502`
+`Thermostat control failed`.
 
 The MCP `set_thermostat` tool takes `temperature`, `target_temp_low`,
 `target_temp_high`, `hvac_mode`, `preset_mode`, `fan_mode` and
 `resume_program` (at least one is required). `resume_program` cancels all
 holds (`resume_all: true`) and returns to the schedule. It applies them in the
 order resume → HVAC mode → preset → fan → temperature and returns the resulting
-snapshot. A failing step stops the sequence, but earlier steps stay applied. The
-error lists them and includes the current thermostat status.
+snapshot, noting any step the thermostat hasn't reported yet. A failing step
+stops the sequence, but earlier steps stay applied. The error lists them and
+includes a fresh thermostat status, or the last known one (labelled as such) if
+the thermostat can't be read.
 
 ## Car analytics
 

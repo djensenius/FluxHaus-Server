@@ -459,8 +459,8 @@ describe('MCP Server', () => {
     });
 
     it('set_thermostat applies options in order and returns the final status', async () => {
-      const statusAfter = (step: string) => ({
-        timestamp: '2026-01-01T00:00:00.000Z', thermostat: { step }, sensors: [], unit: '°C',
+      const statusAfter = (step: string, confirmed = true) => ({
+        timestamp: '2026-01-01T00:00:00.000Z', thermostat: { step }, sensors: [], unit: '°C', confirmed,
       });
       const indoorClimate = {
         cachedStatus: statusAfter('initial'),
@@ -495,6 +495,17 @@ describe('MCP Server', () => {
       ].map((fn) => fn.mock.invocationCallOrder[0]);
       expect(order).toEqual([...order].sort((a, b) => a - b));
       expect(JSON.parse(result.content[0].text as string)).toEqual(statusAfter('temperature'));
+
+      indoorClimate.setHvacMode.mockResolvedValueOnce(statusAfter('mode', false));
+      const unconfirmed = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        hvac_mode: 'heat_cool', fan_mode: 'auto',
+      }, {});
+      expect(unconfirmed.isError).toBeUndefined();
+      expect(unconfirmed.content[0].text).toBe(
+        'Home Assistant accepted hvac_mode=heat_cool, but the thermostat has not reported it yet, '
+        + 'so the status may not reflect it.',
+      );
+      expect(JSON.parse(unconfirmed.content[1].text as string)).toEqual(statusAfter('fan'));
     });
 
     it('set_thermostat requires at least one option and a configured indoor climate', async () => {
@@ -520,10 +531,11 @@ describe('MCP Server', () => {
         cachedStatus: {
           timestamp: '2026-01-01T00:00:00.000Z', thermostat, sensors: [], unit: '°C',
         },
-        resumeProgram: vi.fn().mockResolvedValue({}),
-        setHvacMode: vi.fn().mockResolvedValue({}),
+        resumeProgram: vi.fn().mockResolvedValue({ confirmed: true }),
+        setHvacMode: vi.fn().mockResolvedValue({ confirmed: false }),
         setFanMode: vi.fn().mockRejectedValue(new Error('Unsupported fan mode (supported: auto, on)')),
         setTemperature: vi.fn(),
+        currentThermostat: vi.fn().mockResolvedValue({ ...thermostat, fanMode: 'on' }),
       };
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       mockServices.indoorClimate = indoorClimate as any;
@@ -535,9 +547,20 @@ describe('MCP Server', () => {
       const text = result.content[0].text as string;
       expect(text).toContain('Error in set_thermostat: Unsupported fan mode (supported: auto, on)');
       expect(text).toContain('Already applied before the error: resume_program; hvac_mode=heat.');
+      expect(text).toContain('Home Assistant accepted hvac_mode=heat, but the thermostat has not reported it yet');
       expect(text).toContain('Current thermostat status:');
-      expect(text).toContain('"fanMode": "auto"');
+      expect(text).toContain('"fanMode": "on"');
       expect(indoorClimate.setTemperature).not.toHaveBeenCalled();
+
+      // When a fresh read fails, the cached snapshot is labelled as such.
+      indoorClimate.currentThermostat.mockResolvedValueOnce(null);
+      const stale = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
+        resume_program: true, fan_mode: 'circulate',
+      }, {});
+      const staleText = stale.content[0].text as string;
+      expect(staleText).not.toContain('Current thermostat status:');
+      expect(staleText).toContain('The thermostat could not be read; last known status (may predate the failed option):');
+      expect(staleText).toContain('"fanMode": "auto"');
 
       indoorClimate.resumeProgram.mockRejectedValueOnce(new Error('Thermostat unavailable'));
       const first = await getTools(createMcpServer(mockServices)).set_thermostat.handler({
