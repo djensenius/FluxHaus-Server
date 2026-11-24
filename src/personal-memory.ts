@@ -9,9 +9,13 @@ import type { FluxHausServices } from './services';
 import type { AuthenticatedUser } from './types/auth';
 import { getUserPreferences } from './user-preferences';
 import { DEV_SESSION_SECRET } from './mcp-auth';
-
-const PUBLIC_SESSION_SECRETS = new Set([DEV_SESSION_SECRET, 'change-me-to-a-random-string']);
 import logger from './logger';
+
+const PUBLIC_SESSION_SECRETS = new Set([
+  DEV_SESSION_SECRET,
+  'change-me-to-a-random-string',
+  'generate-with-openssl-rand-base64-32',
+]);
 
 const pmLogger = logger.child({ subsystem: 'personal-memory' });
 
