@@ -20,6 +20,13 @@ import logger from '../logger';
 
 const oidcLogger = logger.child({ subsystem: 'oidc' });
 
+/** Linear-time trailing-slash trim (avoids regex backtracking on untrusted input). */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+}
+
 let oidcClient: Configuration | null = null;
 let oidcIssuer: { metadata: ServerMetadata } | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -227,9 +234,8 @@ export async function validateBearerToken(
       // JWT claiming that issuer; otherwise leave the issuer unknown (fail closed).
       const primaryIssuer = oidcClient.serverMetadata().issuer;
       const claimedIss = typeof tokenClaims?.iss === 'string' ? tokenClaims.iss : undefined;
-      const stripSlash = (v: string) => v.replace(/\/+$/, '');
       const issuer = claimedIss && primaryIssuer
-        && stripSlash(claimedIss) === stripSlash(primaryIssuer)
+        && stripTrailingSlashes(claimedIss) === stripTrailingSlashes(primaryIssuer)
         ? primaryIssuer
         : undefined;
       return {

@@ -228,6 +228,16 @@ describe('looksSensitive', () => {
     'api key: abc',
     'alarm code = 1234',
     'Garage pin is 0042',
+    'My password is swordfish',
+    'My password is let-me-in',
+    'My passphrase is correct horse battery staple',
+    'My API key is abcdefghijklmnopqrstuvwxyz',
+    'The access token is abcdef',
+    'Our wifi code is bananas',
+    'My PIN is 1234',
+    'the pin: 0042',
+    'Bank pin 4821',
+    'secret key = whatever',
     'ghp_abcdefghijklmnopqrstuvwxyz',
     '-----BEGIN RSA PRIVATE KEY-----',
   ])(
@@ -240,8 +250,25 @@ describe('looksSensitive', () => {
     'The secret is to brine the turkey overnight',
     'Favourite enamel pin is the cat one',
     'Organises the secret santa exchange every December',
+    'Password reset is annoying',
+    'Prefers a password manager over sticky notes',
+    'Collects enamel pins from national parks',
   ])(
     'allows %s',
     (text) => { expect(looksSensitive(text)).toBe(false); },
   );
+});
+
+describe('looksSensitive performance', () => {
+  it('stays fast on long adversarial input', () => {
+    const inputs = [
+      `password${' '.repeat(5000)}x`,
+      `pin${' '.repeat(5000)}`,
+      `door${' '.repeat(5000)}code`,
+      `my${' pin'.repeat(2000)}`,
+    ];
+    const start = Date.now();
+    inputs.forEach((text) => looksSensitive(text));
+    expect(Date.now() - start).toBeLessThan(500);
+  });
 });

@@ -70,11 +70,24 @@ export async function isPersonalMemoryEligible(
 }
 
 // Obvious credential/security-code shapes. Defence in depth — the model is
-// also instructed never to save these. Keywords only trigger when followed by
-// a value-like token so ordinary prose ("the secret is to brine…") passes.
+// also instructed never to save these. The broad keywords below only trigger
+// when followed by an assignment or a value-like token, so ordinary prose
+// ("the secret is to brine…", "password reset is annoying") passes.
 const SECRET_KEYWORD = String.raw`(?:passwords?|passwd|passcodes?|passphrases?|secrets?|pins?|`
   + String.raw`api[ _-]?keys?|tokens?|otp|(?:door|alarm|wi-?fi|gate|garage|access|lock|safe)\s+(?:code|pin))`;
+// Keywords that only ever name a credential. A declaration of one ("my
+// password is swordfish", "API key: abc") is refused whatever the value looks
+// like. "secret"/"token"/"pin" are excluded: they're common in ordinary prose.
+const CREDENTIAL_KEYWORD = String.raw`(?:passwords?|passwd|passcodes?|passphrases?|`
+  + String.raw`api[ _-]?keys?|access[ _-]?tokens?|secret[ _-]?keys?|private[ _-]?keys?|`
+  + String.raw`(?:door|alarm|wi-?fi|gate|garage|lock|safe)\s+(?:codes?|pins?|passwords?))`;
 const SENSITIVE_PATTERNS: RegExp[] = [
+  // Credential declaration: "my password is swordfish", "API key = abc".
+  new RegExp(String.raw`\b${CREDENTIAL_KEYWORD}\s*(?:\b(?:is|was)\b|[:=])\s*\S`, 'i'),
+  // PIN with a possessive/credential context or a numeric value:
+  // "my PIN is 1234", "the pin: 0042", "bank pin 4821" — not "enamel pin is the cat one".
+  /\b(?:my|our|the|your|his|her|their|bank|card|phone|sim)\s+pins?\s+(?:is|was)\s+\S/i,
+  /\bpins?\s*(?:(?:is|was)\s+)?\d{3,}/i,
   // Explicit assignment: "password: anything", "api key = abc".
   new RegExp(String.raw`\b${SECRET_KEYWORD}\s*[:=]\s*\S+`, 'i'),
   // Keyword (optionally "is"/"was") followed by a value containing a digit or symbol,

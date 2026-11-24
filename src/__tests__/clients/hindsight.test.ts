@@ -59,7 +59,9 @@ describe('HindsightClient', () => {
     const client = makeClient();
     expect(client.isIssuerAllowed(ISSUER)).toBe(true);
     expect(client.isIssuerAllowed(ISSUER.replace(/\/$/, ''))).toBe(true);
+    expect(client.isIssuerAllowed(`${ISSUER}//`)).toBe(true);
     expect(client.isIssuerAllowed('https://evil.example.com/')).toBe(false);
+    expect(client.isIssuerAllowed('/'.repeat(50_000))).toBe(false);
     expect(client.isIssuerAllowed(undefined)).toBe(false);
   });
 

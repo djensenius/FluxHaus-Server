@@ -118,6 +118,37 @@ describe('user-preferences', () => {
       expect(writes[0][1]).toEqual(['user-1', false]);
     });
 
+    it('treats memoryEnabled: null as omitted and returns the stored value', async () => {
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ memory_enabled: false, personal_memory_enabled: true, default_calendar_id: 'icloud:primary' }],
+      });
+      const result = await setUserPreferences('user-1', { memoryEnabled: null } as never);
+      expect(result).toEqual({ memoryEnabled: false, personalMemoryEnabled: true, defaultCalendarId: 'icloud:primary' });
+      expect(mockPool.query).toHaveBeenCalledTimes(1);
+      const [sql] = mockPool.query.mock.calls[0];
+      expect(sql).toMatch(/^SELECT/);
+      expect(sql).not.toContain('INSERT');
+    });
+
+    it('ignores null booleans alongside other updates', async () => {
+      mockPool.query.mockResolvedValueOnce(returned(false, true, 'm365:default'));
+      const result = await setUserPreferences('user-1', {
+        memoryEnabled: null, personalMemoryEnabled: null, defaultCalendarId: 'm365:default',
+      } as never);
+      expect(result.memoryEnabled).toBe(false);
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).not.toContain('memory_enabled = EXCLUDED');
+      expect(params).toEqual(['user-1', 'm365:default']);
+    });
+
+    it('still clears the default calendar with defaultCalendarId: null', async () => {
+      mockPool.query.mockResolvedValueOnce(returned(true, true, null));
+      await setUserPreferences('user-1', { defaultCalendarId: null });
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('default_calendar_id = EXCLUDED.default_calendar_id');
+      expect(params).toEqual(['user-1', null]);
+    });
+
     it('updates multiple supplied columns together', async () => {
       mockPool.query.mockResolvedValueOnce(returned(false, false, 'm365:default'));
       await setUserPreferences('user-1', {

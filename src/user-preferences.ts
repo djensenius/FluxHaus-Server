@@ -52,9 +52,11 @@ export async function setUserPreferences(
   // Partial upsert: only the supplied columns are written, so a failed or
   // fail-closed read can never clobber unrelated stored preferences.
   // Column names come from this fixed list, never from user input.
+  // Boolean fields treat null like undefined (keep the stored value), as the
+  // previous merge did. defaultCalendarId: null still clears the calendar.
   const updates: Array<[string, unknown]> = [];
-  if (prefs.memoryEnabled !== undefined) updates.push(['memory_enabled', prefs.memoryEnabled]);
-  if (prefs.personalMemoryEnabled !== undefined) {
+  if (prefs.memoryEnabled != null) updates.push(['memory_enabled', prefs.memoryEnabled]);
+  if (prefs.personalMemoryEnabled != null) {
     updates.push(['personal_memory_enabled', prefs.personalMemoryEnabled]);
   }
   if (prefs.defaultCalendarId !== undefined) updates.push(['default_calendar_id', prefs.defaultCalendarId]);

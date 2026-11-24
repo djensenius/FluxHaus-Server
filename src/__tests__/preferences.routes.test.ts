@@ -42,6 +42,15 @@ describe('PATCH /preferences personalMemoryEnabled', () => {
     }));
   });
 
+  it('still accepts memoryEnabled: null (stored value is kept by setUserPreferences)', async () => {
+    (setUserPreferences as vi.Mock).mockResolvedValueOnce({
+      memoryEnabled: false, personalMemoryEnabled: true, defaultCalendarId: null,
+    });
+    const res = await request(makeApp()).patch('/preferences').send({ memoryEnabled: null });
+    expect(res.status).toBe(200);
+    expect(res.body.memoryEnabled).toBe(false);
+  });
+
   it('rejects non-boolean personalMemoryEnabled', async () => {
     const res = await request(makeApp()).patch('/preferences').send({ personalMemoryEnabled: 'no' });
     expect(res.status).toBe(400);

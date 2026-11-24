@@ -35,7 +35,14 @@ export class HindsightError extends Error {
   }
 }
 
-const normalizeIssuer = (issuer: string): string => issuer.trim().replace(/\/+$/, '');
+/** Linear-time trailing-slash trim (avoids regex backtracking on untrusted input). */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+}
+
+const normalizeIssuer = (issuer: string): string => stripTrailingSlashes(issuer.trim());
 
 /** Release a response body we don't read, so the connection can be reused. */
 async function discardBody(res: Response): Promise<void> {
@@ -60,7 +67,7 @@ export class HindsightClient {
   private readonly ensuredSubjects = new Set<string>();
 
   constructor(config: HindsightConfig) {
-    this.baseUrl = (config.url || '').trim().replace(/\/+$/, '');
+    this.baseUrl = stripTrailingSlashes((config.url || '').trim());
     this.appKey = (config.appKey || '').trim();
     this.bank = (config.bank || '').trim() || DEFAULT_HINDSIGHT_BANK;
     this.timeoutMs = config.timeoutMs && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0
