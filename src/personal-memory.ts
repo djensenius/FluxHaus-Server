@@ -97,7 +97,7 @@ const SENSITIVE_PATTERNS: RegExp[] = [
     'i',
   ),
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /\b(sk|ghp|gho|ghs|xox[abp])[-_][A-Za-z0-9_-]{16,}/,
+  /\b(sk|ghp|gho|ghs|ghu|ghr|github_pat|xox[abp])[-_][A-Za-z0-9_-]{16,}/,
 ];
 
 export function looksSensitive(content: string): boolean {

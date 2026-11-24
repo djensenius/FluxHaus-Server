@@ -239,6 +239,7 @@ describe('looksSensitive', () => {
     'Bank pin 4821',
     'secret key = whatever',
     'ghp_abcdefghijklmnopqrstuvwxyz',
+    'Uses github_pat_11ABCDEFG0abcdefghijkl_mnopqrstuvwxyz0123456789 for deployments',
     '-----BEGIN RSA PRIVATE KEY-----',
   ])(
     'flags %s',
