@@ -11,6 +11,7 @@ import transcribeAudio from '../stt';
 import synthesizeSpeech from '../tts';
 import { executeAICommand } from '../ai-command';
 import { getPool } from '../db';
+import { validateBearerToken } from '../middleware/oidc.middleware';
 
 // Mock dependencies
 vi.mock('fs');
@@ -72,6 +73,7 @@ vi.mock('../mcp-auth', () => ({
   verifyMcpToken: vi.fn().mockResolvedValue(null),
   serverOrigin: vi.fn().mockReturnValue('http://localhost:8888'),
   getMcpSigningKey: vi.fn().mockReturnValue(new Uint8Array(32)),
+  DEV_SESSION_SECRET: 'fluxhaus-dev-secret',
 }));
 
 // Mock global fetch
@@ -722,6 +724,82 @@ describe('Server', () => {
         .expect(500);
 
       expect(response.body.error).toBe('TTS failed');
+    });
+  });
+
+  describe('personal memory gating', () => {
+    const ALLOWED = 'https://idp.example.test/application/o/fluxhaus/';
+    const mockedExecuteAICommand = vi.mocked(executeAICommand);
+    const mockedValidate = vi.mocked(validateBearerToken);
+    const envKeys = ['HINDSIGHT_URL', 'HINDSIGHT_APP_KEY', 'HINDSIGHT_ALLOWED_ISSUERS', 'SESSION_SECRET'];
+
+    beforeEach(async () => {
+      process.env.HINDSIGHT_URL = 'http://hindsight.example.test';
+      process.env.HINDSIGHT_APP_KEY = 'test-app-key';
+      process.env.HINDSIGHT_ALLOWED_ISSUERS = ALLOWED;
+      process.env.SESSION_SECRET = 'test-session-secret';
+      mockedExecuteAICommand.mockResolvedValue('Lights are on.');
+      // Earlier /voice tests leave STT/TTS rejecting; restore happy paths.
+      vi.mocked(transcribeAudio).mockResolvedValue('Turn on the lights');
+      vi.mocked(synthesizeSpeech).mockResolvedValue(Buffer.from('fake-audio'));
+      vi.mocked(getPool).mockReturnValue({
+        query: vi.fn().mockResolvedValue({ rows: [] }),
+      } as never);
+      app = await createServer();
+    });
+
+    afterEach(() => {
+      envKeys.forEach((key) => { delete process.env[key]; });
+      vi.mocked(getPool).mockReturnValue(null);
+    });
+
+    const userWith = (issuer?: string) => ({
+      sub: 'test-user-123', email: 'admin@test.com', preferred_username: 'admin', issuer,
+    });
+
+    it.each([
+      ['an allowed issuer', ALLOWED, true],
+      ['a disallowed issuer', 'https://other.example.test/', false],
+      ['no issuer', undefined, false],
+    ])('/command offers personal memory only for %s', async (_label, issuer, expected) => {
+      mockedValidate.mockResolvedValueOnce(userWith(issuer));
+      await request(app)
+        .post('/command')
+        .set('Authorization', oidcAuthHeader)
+        .send({ command: 'Turn on the lights' })
+        .expect(200);
+      expect(mockedExecuteAICommand).toHaveBeenCalledTimes(1);
+      expect(mockedExecuteAICommand.mock.calls[0][7]).toEqual({ personalMemory: expected });
+    });
+
+    it.each([
+      ['an allowed issuer', ALLOWED, true],
+      ['a disallowed issuer', 'https://other.example.test/', false],
+      ['no issuer', undefined, false],
+    ])('/voice offers personal memory only for %s', async (_label, issuer, expected) => {
+      mockedValidate.mockResolvedValueOnce(userWith(issuer));
+      await request(app)
+        .post('/voice')
+        .set('Authorization', oidcAuthHeader)
+        .send({ text: 'Turn on the lights' })
+        .expect(200);
+      expect(mockedExecuteAICommand).toHaveBeenCalledTimes(1);
+      expect(mockedExecuteAICommand.mock.calls[0][7]).toEqual({ personalMemory: expected });
+    });
+
+    it('does not offer personal memory when the user turned it off', async () => {
+      vi.mocked(getPool).mockReturnValue({
+        query: vi.fn().mockResolvedValue({
+          rows: [{ memory_enabled: true, personal_memory_enabled: false, default_calendar_id: null }],
+        }),
+      } as never);
+      mockedValidate.mockResolvedValueOnce(userWith(ALLOWED));
+      await request(app)
+        .post('/command')
+        .set('Authorization', oidcAuthHeader)
+        .send({ command: 'Turn on the lights' })
+        .expect(200);
+      expect(mockedExecuteAICommand.mock.calls[0][7]).toEqual({ personalMemory: false });
     });
   });
 });

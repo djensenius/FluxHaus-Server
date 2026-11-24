@@ -25,10 +25,14 @@ function makeClient(overrides: Partial<ConstructorParameters<typeof HindsightCli
   });
 }
 
+const cancelSpies: vi.Mock[] = [];
 function jsonResponse(status: number, body: unknown = {}) {
+  const cancel = vi.fn().mockResolvedValue(undefined);
+  cancelSpies.push(cancel);
   return {
     ok: status >= 200 && status < 300,
     status,
+    body: { cancel },
     json: async () => body,
     text: async () => JSON.stringify(body),
   };
@@ -39,6 +43,7 @@ describe('HindsightClient', () => {
 
   beforeEach(() => {
     logCalls.length = 0;
+    cancelSpies.length = 0;
     fetchMock = vi.fn();
     global.fetch = fetchMock;
   });
@@ -158,6 +163,69 @@ describe('HindsightClient', () => {
     expect(logged).not.toContain(secretish);
   });
 
+  it('caps the per-request timeout at 12s', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { results: [] }));
+    await makeClient({ timeoutMs: 60_000 }).recall('s', 'q');
+    expect(timeoutSpy.mock.calls[0][0]).toBeLessThanOrEqual(12_000);
+    timeoutSpy.mockRestore();
+  });
+
+  it('shares one deadline across the requests of an operation', async () => {
+    vi.useFakeTimers();
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    // First request (recall) takes 7s and returns 404; the ensure-bank retry
+    // must only get the remainder of the 2 * 4s budget.
+    fetchMock
+      .mockImplementationOnce(async () => {
+        vi.advanceTimersByTime(7000);
+        return jsonResponse(404);
+      })
+      .mockResolvedValueOnce(jsonResponse(200));
+    await makeClient({ timeoutMs: 4000 }).recall('s', 'q');
+    expect(timeoutSpy.mock.calls[0][0]).toBe(4000);
+    expect(timeoutSpy.mock.calls[1][0]).toBeLessThanOrEqual(1000);
+    timeoutSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('fails without another request once the operation deadline has passed', async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(async () => {
+      vi.advanceTimersByTime(9000);
+      return jsonResponse(404);
+    });
+    await expect(makeClient({ timeoutMs: 4000 }).recall('s', 'q')).rejects.toThrow('timed out');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('retain re-ensures the bank and retries once on 404', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200)) // ensure
+      .mockResolvedValueOnce(jsonResponse(404)) // retain
+      .mockResolvedValueOnce(jsonResponse(200)) // ensure again
+      .mockResolvedValueOnce(jsonResponse(200)); // retain retry
+    await makeClient().retain('user-sub-1', 'Bikes to work');
+    expect(fetchMock.mock.calls.map(([, i]) => i.method)).toEqual(['PUT', 'POST', 'PUT', 'POST']);
+  });
+
+  it('retain gives up after a single retry', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse(200))
+      .mockResolvedValueOnce(jsonResponse(404))
+      .mockResolvedValueOnce(jsonResponse(200))
+      .mockResolvedValueOnce(jsonResponse(404));
+    await expect(makeClient().retain('s', 'fact')).rejects.toThrow('retain failed: 404');
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it('cancels unread response bodies on non-OK responses', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(500));
+    await expect(makeClient().recall('s', 'q')).rejects.toThrow('recall failed: 500');
+    expect(cancelSpies[0]).toHaveBeenCalled();
+  });
+
   it('refuses to make requests when unconfigured', async () => {
     await expect(makeClient({ appKey: '' }).recall('s', 'q')).rejects.toThrow('not configured');
     expect(fetchMock).not.toHaveBeenCalled();
@@ -169,7 +237,7 @@ describe('Hindsight config parsing', () => {
     expect(parseHindsightTimeout(undefined)).toBe(4000);
     expect(parseHindsightTimeout('abc')).toBe(4000);
     expect(parseHindsightTimeout('2500')).toBe(2500);
-    expect(parseHindsightTimeout('600000')).toBe(25000);
+    expect(parseHindsightTimeout('600000')).toBe(12000);
   });
 
   it('parses allowed issuers', () => {

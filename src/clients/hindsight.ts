@@ -5,6 +5,10 @@ import logger from '../logger';
 const hindsightLogger = logger.child({ subsystem: 'hindsight' });
 
 export const DEFAULT_HINDSIGHT_TIMEOUT_MS = 4000;
+/** Per-request ceiling. Two of these still fit under the 30s AI tool timeout. */
+export const MAX_HINDSIGHT_TIMEOUT_MS = 12_000;
+/** Total budget for one recall/retain operation, including ensure-bank retries. */
+const OPERATION_BUDGET_MS = 2 * MAX_HINDSIGHT_TIMEOUT_MS;
 export const DEFAULT_HINDSIGHT_BANK = 'shared';
 
 export interface HindsightConfig {
@@ -33,6 +37,15 @@ export class HindsightError extends Error {
 
 const normalizeIssuer = (issuer: string): string => issuer.trim().replace(/\/+$/, '');
 
+/** Release a response body we don't read, so the connection can be reused. */
+async function discardBody(res: Response): Promise<void> {
+  try {
+    await res.body?.cancel();
+  } catch {
+    // ignore
+  }
+}
+
 export class HindsightClient {
   private readonly baseUrl: string;
 
@@ -51,7 +64,7 @@ export class HindsightClient {
     this.appKey = (config.appKey || '').trim();
     this.bank = (config.bank || '').trim() || DEFAULT_HINDSIGHT_BANK;
     this.timeoutMs = config.timeoutMs && Number.isFinite(config.timeoutMs) && config.timeoutMs > 0
-      ? config.timeoutMs
+      ? Math.min(config.timeoutMs, MAX_HINDSIGHT_TIMEOUT_MS)
       : DEFAULT_HINDSIGHT_TIMEOUT_MS;
     this.allowedIssuers = new Set(
       (config.allowedIssuers || []).map(normalizeIssuer).filter(Boolean),
@@ -72,16 +85,27 @@ export class HindsightClient {
     return `/v1/default/banks/${encodeURIComponent(this.bank)}${suffix}`;
   }
 
+  /** Shared deadline for one logical operation (all of its HTTP requests). */
+  private newDeadline(): number {
+    return Date.now() + Math.min(2 * this.timeoutMs, OPERATION_BUDGET_MS);
+  }
+
   private async request(
     op: string,
     method: 'PUT' | 'POST',
     path: string,
     subject: string,
     body: unknown,
+    deadline: number,
   ): Promise<Response> {
     if (!this.configured) throw new HindsightError('Hindsight is not configured');
     if (!subject) throw new HindsightError('Hindsight subject is required');
     const started = Date.now();
+    const remaining = Math.min(this.timeoutMs, deadline - started);
+    if (remaining <= 0) {
+      hindsightLogger.warn({ op }, 'Hindsight operation deadline exceeded');
+      throw new HindsightError(`Hindsight ${op} timed out`);
+    }
     let response: Response;
     try {
       response = await fetch(`${this.baseUrl}${path}`, {
@@ -94,7 +118,7 @@ export class HindsightClient {
         },
         body: JSON.stringify(body),
         redirect: 'error',
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: AbortSignal.timeout(remaining),
       });
     } catch (err) {
       const reason = err instanceof Error ? err.name : 'Error';
@@ -105,11 +129,12 @@ export class HindsightClient {
     return response;
   }
 
-  private async ensureBank(subject: string): Promise<void> {
+  private async ensureBank(subject: string, deadline: number): Promise<void> {
     if (this.ensuredSubjects.has(subject)) return;
     const res = await this.request('ensure_bank', 'PUT', this.bankPath(), subject, {
       name: 'Shared personal memory',
-    });
+    }, deadline);
+    await discardBody(res);
     if (!res.ok) {
       hindsightLogger.warn({ op: 'ensure_bank', status: res.status }, 'Hindsight bank ensure failed');
       throw new HindsightError(`Hindsight ensure_bank failed: ${res.status}`, res.status);
@@ -118,18 +143,21 @@ export class HindsightClient {
   }
 
   async recall(subject: string, query: string): Promise<HindsightMemory[]> {
+    const deadline = this.newDeadline();
     const res = await this.request('recall', 'POST', this.bankPath('/memories/recall'), subject, {
       query,
       budget: 'low',
       max_tokens: 1024,
-    });
+    }, deadline);
     if (res.status === 404) {
       // Bank not created yet for this subject — create it and report nothing.
+      await discardBody(res);
       this.ensuredSubjects.delete(subject);
-      await this.ensureBank(subject);
+      await this.ensureBank(subject, deadline);
       return [];
     }
     if (!res.ok) {
+      await discardBody(res);
       hindsightLogger.warn({ op: 'recall', status: res.status }, 'Hindsight recall failed');
       throw new HindsightError(`Hindsight recall failed: ${res.status}`, res.status);
     }
@@ -148,8 +176,8 @@ export class HindsightClient {
   }
 
   async retain(subject: string, content: string): Promise<void> {
-    await this.ensureBank(subject);
-    const res = await this.request('retain', 'POST', this.bankPath('/memories'), subject, {
+    const deadline = this.newDeadline();
+    const body = {
       items: [{
         content,
         context: 'fluxhaus',
@@ -157,7 +185,17 @@ export class HindsightClient {
         metadata: { source: 'fluxhaus' },
       }],
       async: true,
-    });
+    };
+    await this.ensureBank(subject, deadline);
+    let res = await this.request('retain', 'POST', this.bankPath('/memories'), subject, body, deadline);
+    if (res.status === 404) {
+      // Bank disappeared (or cache was stale) — ensure it and retry once.
+      await discardBody(res);
+      this.ensuredSubjects.delete(subject);
+      await this.ensureBank(subject, deadline);
+      res = await this.request('retain', 'POST', this.bankPath('/memories'), subject, body, deadline);
+    }
+    await discardBody(res);
     if (!res.ok) {
       if (res.status === 404) this.ensuredSubjects.delete(subject);
       hindsightLogger.warn({ op: 'retain', status: res.status }, 'Hindsight retain failed');
@@ -170,7 +208,7 @@ export class HindsightClient {
 export function parseHindsightTimeout(raw?: string): number {
   const n = Number((raw || '').trim());
   // Keep well under the 30s AI tool timeout.
-  return Number.isFinite(n) && n > 0 ? Math.min(n, 25_000) : DEFAULT_HINDSIGHT_TIMEOUT_MS;
+  return Number.isFinite(n) && n > 0 ? Math.min(n, MAX_HINDSIGHT_TIMEOUT_MS) : DEFAULT_HINDSIGHT_TIMEOUT_MS;
 }
 
 export function parseAllowedIssuers(raw?: string): string[] {

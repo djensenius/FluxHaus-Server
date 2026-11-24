@@ -4,9 +4,12 @@
  */
 import { JWTPayload, jwtVerify } from 'jose';
 
+/** Public development fallback for SESSION_SECRET — never safe in production. */
+export const DEV_SESSION_SECRET = 'fluxhaus-dev-secret';
+
 /** HMAC key for signing/verifying self-issued MCP access tokens. */
 export function getMcpSigningKey(): Uint8Array {
-  const secret = process.env.SESSION_SECRET || 'fluxhaus-dev-secret';
+  const secret = process.env.SESSION_SECRET || DEV_SESSION_SECRET;
   return new TextEncoder().encode(secret);
 }
 

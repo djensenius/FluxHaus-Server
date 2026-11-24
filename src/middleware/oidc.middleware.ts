@@ -132,6 +132,16 @@ export async function validateBearerToken(
     }
   }
 
+  // Decode token payload (without verification) for logging and for labelling
+  // userinfo-validated tokens. Never trusted for authentication.
+  let tokenClaims: Record<string, unknown> | null = null;
+  try {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      tokenClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+    }
+  } catch { /* not a JWT — opaque token */ }
+
   // Try local JWT validation via JWKS (fast, no network call per request)
   if (jwks) {
     // Try primary issuer first, then additional trusted issuers.
@@ -175,15 +185,6 @@ export async function validateBearerToken(
     );
     if (results) return results;
 
-    // Decode token payload (without verification) to log what the token actually claims
-    let tokenClaims: Record<string, unknown> | null = null;
-    try {
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        tokenClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-      }
-    } catch { /* not a JWT — opaque token */ }
-
     if (tokenClaims) {
       oidcLogger.warn(
         {
@@ -221,12 +222,21 @@ export async function validateBearerToken(
     try {
       const userinfo = await fetchUserInfo(oidcClient, token, skipSubjectCheck);
       if (!userinfo.sub) return null;
+      // Userinfo proves the token is accepted, but not which provider minted
+      // it. Only label it with the primary issuer when the token itself is a
+      // JWT claiming that issuer; otherwise leave the issuer unknown (fail closed).
+      const primaryIssuer = oidcClient.serverMetadata().issuer;
+      const claimedIss = typeof tokenClaims?.iss === 'string' ? tokenClaims.iss : undefined;
+      const stripSlash = (v: string) => v.replace(/\/+$/, '');
+      const issuer = claimedIss && primaryIssuer
+        && stripSlash(claimedIss) === stripSlash(primaryIssuer)
+        ? primaryIssuer
+        : undefined;
       return {
         sub: userinfo.sub,
         email: userinfo.email as string | undefined,
         preferred_username: userinfo.preferred_username as string | undefined,
-        // Userinfo is served by the primary issuer, which vouches for the token.
-        issuer: oidcClient.serverMetadata().issuer,
+        issuer,
       };
     } catch (err) {
       const uiErr = err instanceof Error ? err : new Error(String(err));

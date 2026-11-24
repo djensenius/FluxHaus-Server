@@ -63,41 +63,67 @@ describe('user-preferences', () => {
         .rejects.toThrow('Database not available');
     });
 
-    it('upserts preferences', async () => {
-      mockPool.query
-        .mockResolvedValueOnce({ rows: [{ memory_enabled: true, default_calendar_id: null }] }) // getUserPreferences
-        .mockResolvedValueOnce({ rows: [] }); // INSERT ... ON CONFLICT
+    const returned = (memory: boolean, personal: boolean, calendar: string | null) => ({
+      rows: [{ memory_enabled: memory, personal_memory_enabled: personal, default_calendar_id: calendar }],
+    });
+
+    it('upserts only the supplied column and returns stored values', async () => {
+      mockPool.query.mockResolvedValueOnce(returned(false, true, null));
       const result = await setUserPreferences('user-1', { memoryEnabled: false });
       expect(result).toEqual({ memoryEnabled: false, personalMemoryEnabled: true, defaultCalendarId: null });
-      expect(mockPool.query).toHaveBeenCalledTimes(2);
-      const upsertCall = mockPool.query.mock.calls[1];
-      expect(upsertCall[0]).toContain('ON CONFLICT');
-      expect(upsertCall[1]).toEqual(['user-1', false, null, true]);
+      expect(mockPool.query).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('ON CONFLICT');
+      expect(sql).toContain('memory_enabled = EXCLUDED.memory_enabled');
+      expect(sql).not.toContain('personal_memory_enabled = EXCLUDED');
+      expect(sql).not.toContain('default_calendar_id = EXCLUDED');
+      expect(params).toEqual(['user-1', false]);
     });
 
     it('updates default calendar without clobbering memoryEnabled', async () => {
-      mockPool.query
-        .mockResolvedValueOnce({ rows: [{ memory_enabled: true, default_calendar_id: null }] })
-        .mockResolvedValueOnce({ rows: [] });
+      mockPool.query.mockResolvedValueOnce(returned(true, true, 'icloud:primary'));
 
       const result = await setUserPreferences('user-1', { defaultCalendarId: 'icloud:primary' });
 
       expect(result).toEqual({ memoryEnabled: true, personalMemoryEnabled: true, defaultCalendarId: 'icloud:primary' });
-      expect(mockPool.query.mock.calls[1][1]).toEqual(['user-1', true, 'icloud:primary', true]);
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).not.toContain('memory_enabled = EXCLUDED');
+      expect(params).toEqual(['user-1', 'icloud:primary']);
     });
 
     it('turns personal memory off independently of memoryEnabled', async () => {
-      mockPool.query
-        .mockResolvedValueOnce({
-          rows: [{ memory_enabled: true, personal_memory_enabled: true, default_calendar_id: null }],
-        })
-        .mockResolvedValueOnce({ rows: [] });
+      mockPool.query.mockResolvedValueOnce(returned(true, false, null));
 
       const result = await setUserPreferences('user-1', { personalMemoryEnabled: false });
 
       expect(result).toEqual({ memoryEnabled: true, personalMemoryEnabled: false, defaultCalendarId: null });
-      expect(mockPool.query.mock.calls[1][0]).toContain('personal_memory_enabled = EXCLUDED.personal_memory_enabled');
-      expect(mockPool.query.mock.calls[1][1]).toEqual(['user-1', true, null, false]);
+      const [sql, params] = mockPool.query.mock.calls[0];
+      expect(sql).toContain('personal_memory_enabled = EXCLUDED.personal_memory_enabled');
+      expect(sql).not.toMatch(/\bmemory_enabled = EXCLUDED\.memory_enabled/);
+      expect(params).toEqual(['user-1', false]);
+    });
+
+    it('never rewrites personal_memory_enabled because of a failed read', async () => {
+      // Even if a read would fail (fail-closed), an unrelated update must not
+      // persist personal_memory_enabled=false.
+      mockPool.query.mockImplementation(async (sql: string) => {
+        if (sql.startsWith('SELECT')) throw new Error('DB blip');
+        return returned(false, true, null);
+      });
+      const result = await setUserPreferences('user-1', { memoryEnabled: false });
+      expect(result.personalMemoryEnabled).toBe(true);
+      const writes = mockPool.query.mock.calls.filter(([sql]) => !sql.startsWith('SELECT'));
+      expect(writes).toHaveLength(1);
+      expect(writes[0][0]).not.toContain('personal_memory_enabled =');
+      expect(writes[0][1]).toEqual(['user-1', false]);
+    });
+
+    it('updates multiple supplied columns together', async () => {
+      mockPool.query.mockResolvedValueOnce(returned(false, false, 'm365:default'));
+      await setUserPreferences('user-1', {
+        memoryEnabled: false, personalMemoryEnabled: false, defaultCalendarId: 'm365:default',
+      });
+      expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1', false, false, 'm365:default']);
     });
   });
 });

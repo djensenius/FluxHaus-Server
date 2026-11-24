@@ -649,7 +649,8 @@ Separately from FluxHaus's own encrypted memories (`user_memories`, managed by `
 **Who gets it:** every signed-in OIDC user, isolated by their OIDC subject. It is **on by default** (`personalMemoryEnabled: true`) and only offered when all of these hold, checked server-side on every request:
 
 - `HINDSIGHT_URL`, `HINDSIGHT_APP_KEY`, and `HINDSIGHT_ALLOWED_ISSUERS` are all set (otherwise the feature is fully disabled);
-- the user has an OIDC subject and the issuer that validated their login is in `HINDSIGHT_ALLOWED_ISSUERS` (Basic-auth users never qualify; browser sessions created before this feature need to sign in again; MCP tokens qualify only if they were issued from a validated OIDC login);
+- `SESSION_SECRET` is set to a strong, non-default value (session cookies and MCP tokens that carry the issuer are signed with it, so personal memory stays disabled when it is unset or left at the `fluxhaus-dev-secret` default);
+- the user has an OIDC subject and the issuer that validated their login is in `HINDSIGHT_ALLOWED_ISSUERS` (Basic-auth users never qualify; browser sessions created before this feature need to sign in again; MCP tokens qualify only if they were issued from a validated OIDC login; bearer tokens that can only be validated through the primary issuer's userinfo endpoint qualify only if they are JWTs whose `iss` is the primary issuer — opaque tokens do not);
 - the user's `personalMemoryEnabled` preference is on (`PATCH /preferences { "personalMemoryEnabled": false }` turns it off).
 
 Otherwise the `recall_personal_memory` and `save_personal_memory` tools are not offered to the model and are refused if called. Background work (scheduled routines, webhooks, conversation titles) never uses personal memory.

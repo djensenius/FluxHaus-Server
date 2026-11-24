@@ -49,33 +49,42 @@ export async function setUserPreferences(
   const pool = getPool();
   if (!pool) throw new Error('Database not available');
 
-  const current = await getUserPreferences(userSub);
-  const merged: UserPreferences = {
-    memoryEnabled: prefs.memoryEnabled ?? current.memoryEnabled,
-    personalMemoryEnabled: prefs.personalMemoryEnabled ?? current.personalMemoryEnabled,
-    defaultCalendarId: prefs.defaultCalendarId === undefined
-      ? current.defaultCalendarId
-      : prefs.defaultCalendarId,
-  };
+  // Partial upsert: only the supplied columns are written, so a failed or
+  // fail-closed read can never clobber unrelated stored preferences.
+  // Column names come from this fixed list, never from user input.
+  const updates: Array<[string, unknown]> = [];
+  if (prefs.memoryEnabled !== undefined) updates.push(['memory_enabled', prefs.memoryEnabled]);
+  if (prefs.personalMemoryEnabled !== undefined) {
+    updates.push(['personal_memory_enabled', prefs.personalMemoryEnabled]);
+  }
+  if (prefs.defaultCalendarId !== undefined) updates.push(['default_calendar_id', prefs.defaultCalendarId]);
+  if (updates.length === 0) return getUserPreferences(userSub);
 
-  await pool.query(
-    `INSERT INTO user_preferences
-       (user_sub, memory_enabled, default_calendar_id, personal_memory_enabled)
-     VALUES ($1, $2, $3, $4)
+  const columns = updates.map(([column]) => column);
+  const result = await pool.query(
+    `INSERT INTO user_preferences (user_sub, ${columns.join(', ')})
+     VALUES ($1, ${columns.map((_, i) => `$${i + 2}`).join(', ')})
      ON CONFLICT (user_sub)
      DO UPDATE SET
-       memory_enabled = EXCLUDED.memory_enabled,
-       default_calendar_id = EXCLUDED.default_calendar_id,
-       personal_memory_enabled = EXCLUDED.personal_memory_enabled,
-       updated_at = NOW()`,
-    [userSub, merged.memoryEnabled, merged.defaultCalendarId, merged.personalMemoryEnabled],
+       ${columns.map((column) => `${column} = EXCLUDED.${column}`).join(',\n       ')},
+       updated_at = NOW()
+     RETURNING memory_enabled, personal_memory_enabled, default_calendar_id`,
+    [userSub, ...updates.map(([, value]) => value)],
   );
+
+  const row = result.rows?.[0];
+  if (!row) throw new Error('Failed to save preferences');
+  const saved: UserPreferences = {
+    memoryEnabled: row.memory_enabled !== false,
+    personalMemoryEnabled: row.personal_memory_enabled !== false,
+    defaultCalendarId: row.default_calendar_id ?? null,
+  };
 
   prefLogger.info({
     userSub,
-    memoryEnabled: merged.memoryEnabled,
-    personalMemoryEnabled: merged.personalMemoryEnabled,
-    defaultCalendarId: merged.defaultCalendarId,
+    memoryEnabled: saved.memoryEnabled,
+    personalMemoryEnabled: saved.personalMemoryEnabled,
+    defaultCalendarId: saved.defaultCalendarId,
   }, 'User preferences updated');
-  return merged;
+  return saved;
 }

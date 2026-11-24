@@ -56,11 +56,35 @@ describe('validateBearerToken issuer', () => {
     });
   });
 
-  it('attributes userinfo-validated opaque tokens to the primary issuer', async () => {
-    (jwtVerify as vi.Mock).mockRejectedValue(new Error('not a jwt'));
+  const fakeJwt = (claims: Record<string, unknown>) => [
+    Buffer.from('{"alg":"RS256"}').toString('base64url'),
+    Buffer.from(JSON.stringify(claims)).toString('base64url'),
+    'sig',
+  ].join('.');
+
+  it('labels a userinfo-validated JWT claiming the primary issuer with PRIMARY', async () => {
+    (jwtVerify as vi.Mock).mockRejectedValue(new Error('signature mismatch'));
     (fetchUserInfo as vi.Mock).mockResolvedValue({ sub: 'user-2' });
-    const claims = await validateBearerToken('opaque');
+    const claims = await validateBearerToken(fakeJwt({ iss: PRIMARY.replace(/\/$/, ''), sub: 'user-2' }));
     expect(claims?.sub).toBe('user-2');
     expect(claims?.issuer).toBe(PRIMARY);
+  });
+
+  it('leaves issuer undefined for a userinfo-validated JWT from a foreign issuer', async () => {
+    (jwtVerify as vi.Mock).mockRejectedValue(new Error('unexpected "iss" claim value'));
+    (fetchUserInfo as vi.Mock).mockResolvedValue({ sub: 'user-3' });
+    const claims = await validateBearerToken(
+      fakeJwt({ iss: 'https://auth.example.com/application/o/other/', sub: 'user-3' }),
+    );
+    expect(claims?.sub).toBe('user-3');
+    expect(claims?.issuer).toBeUndefined();
+  });
+
+  it('leaves issuer undefined for opaque tokens accepted by userinfo', async () => {
+    (jwtVerify as vi.Mock).mockRejectedValue(new Error('not a jwt'));
+    (fetchUserInfo as vi.Mock).mockResolvedValue({ sub: 'user-4' });
+    const claims = await validateBearerToken('opaque-token');
+    expect(claims?.sub).toBe('user-4');
+    expect(claims?.issuer).toBeUndefined();
   });
 });
