@@ -9,6 +9,8 @@ import type { FluxHausServices } from './services';
 import type { AuthenticatedUser } from './types/auth';
 import { getUserPreferences } from './user-preferences';
 import { DEV_SESSION_SECRET } from './mcp-auth';
+
+const PUBLIC_SESSION_SECRETS = new Set([DEV_SESSION_SECRET, 'change-me-to-a-random-string']);
 import logger from './logger';
 
 const pmLogger = logger.child({ subsystem: 'personal-memory' });
@@ -50,9 +52,9 @@ export async function isPersonalMemoryEligible(
   const client = services.hindsight;
   if (!client?.configured) return false;
   // Login cookies and MCP tokens (which carry the issuer) are signed with
-  // SESSION_SECRET; with the public dev default they could be forged.
+  // SESSION_SECRET; with a public default or placeholder they could be forged.
   const sessionSecret = process.env.SESSION_SECRET;
-  if (!sessionSecret || sessionSecret === DEV_SESSION_SECRET) return false;
+  if (!sessionSecret || PUBLIC_SESSION_SECRETS.has(sessionSecret)) return false;
   if (!user?.sub) return false;
   if (!client.isIssuerAllowed(user.issuer)) return false;
   try {

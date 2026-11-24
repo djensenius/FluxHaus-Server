@@ -81,6 +81,7 @@ describe('isPersonalMemoryEligible', () => {
   it.each([
     ['unset', undefined],
     ['the public dev default', 'fluxhaus-dev-secret'],
+    ['the .env-example placeholder', 'change-me-to-a-random-string'],
   ])('is not eligible when SESSION_SECRET is %s', async (_label, secret) => {
     if (secret === undefined) delete process.env.SESSION_SECRET;
     else process.env.SESSION_SECRET = secret;
