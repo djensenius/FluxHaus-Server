@@ -52,6 +52,7 @@ import transcribeAudio from './stt';
 import synthesizeSpeech from './tts';
 import { decrypt, encrypt } from './encryption';
 import { getUserPreferences } from './user-preferences';
+import { isPersonalMemoryEligible } from './personal-memory';
 import { buildMemoryPrompt } from './memory';
 import logger from './logger';
 import { PlexClient } from './clients/plex';
@@ -70,6 +71,7 @@ import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
 import { KagiClient } from './clients/kagi';
+import { HindsightClient, parseAllowedIssuers, parseHindsightTimeout } from './clients/hindsight';
 import { closeApns, initApns } from './apns';
 import { ensureAllChannels } from './apns-channels';
 import { onDishwasherStatusChange, onMieleStatusChange, onRobotStatusChange } from './live-activity-hooks';
@@ -425,6 +427,13 @@ export async function createServer(): Promise<Express> {
   const kagi = new KagiClient({
     apiKey: (process.env.KAGI_API_KEY || '').trim(),
   });
+  const hindsight = new HindsightClient({
+    url: (process.env.HINDSIGHT_URL || '').trim(),
+    appKey: (process.env.HINDSIGHT_APP_KEY || '').trim(),
+    bank: (process.env.HINDSIGHT_BANK || '').trim() || undefined,
+    timeoutMs: parseHindsightTimeout(process.env.HINDSIGHT_TIMEOUT_MS),
+    allowedIssuers: parseAllowedIssuers(process.env.HINDSIGHT_ALLOWED_ISSUERS),
+  });
   const calendar = createCalendarService(homeAssistantClient);
 
   // Shared services object — used by MCP, /command, and /voice endpoints
@@ -453,6 +462,7 @@ export async function createServer(): Promise<Express> {
     forgejo,
     pihole,
     kagi,
+    hindsight,
     calendar,
     carAnalytics,
     indoorClimate,
@@ -1444,7 +1454,17 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, undefined, images, memoryFragment, userSub);
+      const personalMemory = await isPersonalMemoryEligible(services, req.user);
+      const response = await executeAICommand(
+        command,
+        services,
+        history,
+        undefined,
+        images,
+        memoryFragment,
+        userSub,
+        { personalMemory },
+      );
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, false, images);
       }
@@ -1493,7 +1513,17 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memoryFragment = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, onProgress, images, memoryFragment, userSub);
+      const personalMemory = await isPersonalMemoryEligible(services, req.user);
+      const response = await executeAICommand(
+        command,
+        services,
+        history,
+        onProgress,
+        images,
+        memoryFragment,
+        userSub,
+        { personalMemory },
+      );
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, false, images);
       }
@@ -1544,7 +1574,17 @@ export async function createServer(): Promise<Express> {
         history = await loadConversationHistory(conversationId, userSub);
       }
       const memCtx = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, undefined, undefined, memCtx, userSub);
+      const personalMemory = await isPersonalMemoryEligible(services, req.user);
+      const response = await executeAICommand(
+        command,
+        services,
+        history,
+        undefined,
+        undefined,
+        memCtx,
+        userSub,
+        { personalMemory },
+      );
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }
@@ -1611,7 +1651,17 @@ export async function createServer(): Promise<Express> {
       };
 
       const memCtx = await getMemoryContext(userSub);
-      const response = await executeAICommand(command, services, history, onProgress, undefined, memCtx, userSub);
+      const personalMemory = await isPersonalMemoryEligible(services, req.user);
+      const response = await executeAICommand(
+        command,
+        services,
+        history,
+        onProgress,
+        undefined,
+        memCtx,
+        userSub,
+        { personalMemory },
+      );
       if (conversationId && userSub) {
         await storeMessages(conversationId, userSub, command, response, true);
       }

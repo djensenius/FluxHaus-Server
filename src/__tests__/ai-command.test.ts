@@ -559,3 +559,126 @@ describe('executeAICommand', () => {
     });
   });
 });
+
+describe('personal memory gating', () => {
+  /* eslint-disable @typescript-eslint/no-explicit-any */
+  let services: FluxHausServices;
+  let hindsight: any;
+  /* eslint-enable @typescript-eslint/no-explicit-any */
+
+  const toolNames = (tools: Array<{ name?: string; function?: { name: string } }>) => tools
+    .map((t) => t.name ?? t.function?.name);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    hindsight = {
+      configured: true,
+      isIssuerAllowed: vi.fn().mockReturnValue(true),
+      recall: vi.fn().mockResolvedValue([]),
+      retain: vi.fn().mockResolvedValue(undefined),
+    };
+    /* eslint-disable @typescript-eslint/no-explicit-any */
+    services = {
+      homeAssistantClient: { callService: vi.fn(), getState: vi.fn().mockResolvedValue([]) } as any,
+      cleanbot: {} as any,
+      car: {} as any,
+      mieleClient: {} as any,
+      dishwasher: {} as any,
+      cameraURL: '',
+      romperURL: '',
+      gymURL: '',
+      hindsight,
+    };
+    /* eslint-enable @typescript-eslint/no-explicit-any */
+    process.env.AI_PROVIDER = 'anthropic';
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+  });
+
+  afterEach(() => {
+    delete process.env.AI_PROVIDER;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.OPENAI_API_KEY;
+  });
+
+  function mockAnthropic(...responses: unknown[]) {
+    const mockCreate = vi.fn();
+    responses.forEach((r) => mockCreate.mockResolvedValueOnce(r));
+    (Anthropic as unknown as vi.Mock).mockImplementation(function () { return {
+      messages: { create: mockCreate },
+    }; });
+    return mockCreate;
+  }
+
+  const endTurn = { stop_reason: 'end_turn', content: [{ type: 'text', text: 'ok' }] };
+
+  it('does not offer personal memory tools by default (background callers)', async () => {
+    const mockCreate = mockAnthropic(endTurn);
+    await executeAICommand('hi', services, [], undefined, undefined, undefined, 'user-1');
+    const request = mockCreate.mock.calls[0][0];
+    expect(toolNames(request.tools)).not.toContain('recall_personal_memory');
+    expect(toolNames(request.tools)).not.toContain('save_personal_memory');
+    expect(toolNames(request.tools)).toContain('save_memory');
+    expect(request.system).not.toContain('Personal memory:');
+  });
+
+  it('offers the tools and notice when resolved eligible', async () => {
+    const mockCreate = mockAnthropic(endTurn);
+    await executeAICommand('hi', services, [], undefined, undefined, undefined, 'user-1', { personalMemory: true });
+    const request = mockCreate.mock.calls[0][0];
+    expect(toolNames(request.tools)).toEqual(expect.arrayContaining([
+      'recall_personal_memory', 'save_personal_memory',
+    ]));
+    expect(request.system).toContain('shared with their other assistants');
+  });
+
+  it('filters tools for OpenAI-compatible providers too', async () => {
+    process.env.AI_PROVIDER = 'openai';
+    process.env.OPENAI_API_KEY = 'test-key';
+    const mockCreate = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: 'ok', tool_calls: undefined }, finish_reason: 'stop' }],
+    });
+    (OpenAI as unknown as vi.Mock).mockImplementation(function () { return {
+      chat: { completions: { create: mockCreate } },
+    }; });
+    await executeAICommand('hi', services, [], undefined, undefined, undefined, 'user-1', { personalMemory: false });
+    await executeAICommand('hi', services, [], undefined, undefined, undefined, 'user-1', { personalMemory: true });
+    expect(toolNames(mockCreate.mock.calls[0][0].tools)).not.toContain('save_personal_memory');
+    expect(toolNames(mockCreate.mock.calls[1][0].tools)).toContain('save_personal_memory');
+  });
+
+  it('refuses in dispatch when a model calls the tool while not eligible', async () => {
+    mockAnthropic(
+      {
+        stop_reason: 'tool_use',
+        content: [{
+          type: 'tool_use', id: 'tu_1', name: 'save_personal_memory', input: { content: 'Likes tea' },
+        }],
+      },
+      endTurn,
+    );
+    await executeAICommand('hi', services, [], undefined, undefined, undefined, 'user-1');
+    expect(hindsight.retain).not.toHaveBeenCalled();
+  });
+
+  it('dispatches to Hindsight when eligible', async () => {
+    mockAnthropic(
+      {
+        stop_reason: 'tool_use',
+        content: [{
+          type: 'tool_use', id: 'tu_1', name: 'save_personal_memory', input: { content: 'Likes tea' },
+        }],
+      },
+      endTurn,
+    );
+    await executeAICommand('hi', services, [], undefined, undefined, undefined, 'user-1', { personalMemory: true });
+    expect(hindsight.retain).toHaveBeenCalledWith('user-1', 'Likes tea');
+  });
+
+  it('executeTool refuses without eligibility or a user', async () => {
+    expect(await executeTool('recall_personal_memory', { query: 'q' }, services, 'user-1'))
+      .toBe('Personal memory is not available for this request.');
+    expect(await executeTool('recall_personal_memory', { query: 'q' }, services, undefined, { personalMemory: true }))
+      .toBe('Personal memory is not available for this request.');
+    expect(hindsight.recall).not.toHaveBeenCalled();
+  });
+});

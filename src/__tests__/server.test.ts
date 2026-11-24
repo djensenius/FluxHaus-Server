@@ -653,6 +653,8 @@ describe('Server', () => {
         undefined,
         expect.stringContaining('long-term memory'),
         'test-user-123',
+        // Hindsight is unconfigured in tests, so personal memory is never offered.
+        { personalMemory: false },
       );
       expect(mockedSynthesizeSpeech).toHaveBeenCalledWith('Lights are on.');
       expect(response.headers['x-transcript']).toBe(encodeURIComponent('Turn on the lights'));
@@ -680,6 +682,8 @@ describe('Server', () => {
         undefined,
         expect.stringContaining('long-term memory'),
         'test-user-123',
+        // Hindsight is unconfigured in tests, so personal memory is never offered.
+        { personalMemory: false },
       );
     });
 

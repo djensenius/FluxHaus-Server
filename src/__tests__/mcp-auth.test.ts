@@ -27,6 +27,21 @@ describe('MCP auth token verification', () => {
     });
   });
 
+  it('returns the recorded OIDC issuer claim when present', async () => {
+    const jwt = await token({ oidc_iss: 'https://auth.example.com/application/o/fluxhaus/' });
+    await expect(verifyMcpToken(jwt, resource)).resolves.toMatchObject({
+      sub: 'user-1',
+      oidcIssuer: 'https://auth.example.com/application/o/fluxhaus/',
+    });
+  });
+
+  it('leaves the OIDC issuer undefined for tokens minted without one', async () => {
+    const jwt = await token({ oidc_iss: 42 });
+    const claims = await verifyMcpToken(jwt, resource);
+    expect(claims?.sub).toBe('user-1');
+    expect(claims?.oidcIssuer).toBeUndefined();
+  });
+
   it('rejects tokens with the wrong audience', async () => {
     const jwt = await token({}, 'https://haus.example.com', 'https://haus.example.com/other');
     await expect(verifyMcpToken(jwt, resource)).resolves.toBeNull();

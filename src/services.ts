@@ -20,6 +20,7 @@ import { UniFiClient } from './clients/unifi';
 import { ForgejoClient } from './clients/forgejo';
 import { PiHoleClient } from './clients/pihole';
 import { KagiClient } from './clients/kagi';
+import { HindsightClient, parseAllowedIssuers, parseHindsightTimeout } from './clients/hindsight';
 import CalendarService, { createCalendarService } from './calendar';
 import { CarAnalyticsService } from './car-analytics';
 import IndoorClimate from './indoor-climate';
@@ -52,6 +53,7 @@ export interface FluxHausServices {
   forgejo?: ForgejoClient;
   pihole?: PiHoleClient;
   kagi?: KagiClient;
+  hindsight?: HindsightClient;
   calendar?: CalendarService;
   carAnalytics?: CarAnalyticsService;
   indoorClimate?: IndoorClimate;
@@ -187,6 +189,13 @@ export async function createServices(): Promise<FluxHausServices> {
     }),
     kagi: new KagiClient({
       apiKey: (process.env.KAGI_API_KEY || '').trim(),
+    }),
+    hindsight: new HindsightClient({
+      url: (process.env.HINDSIGHT_URL || '').trim(),
+      appKey: (process.env.HINDSIGHT_APP_KEY || '').trim(),
+      bank: (process.env.HINDSIGHT_BANK || '').trim() || undefined,
+      timeoutMs: parseHindsightTimeout(process.env.HINDSIGHT_TIMEOUT_MS),
+      allowedIssuers: parseAllowedIssuers(process.env.HINDSIGHT_ALLOWED_ISSUERS),
     }),
     calendar,
     carAnalytics,

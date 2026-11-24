@@ -159,6 +159,8 @@ export async function initDatabase(): Promise<void> {
       );
       ALTER TABLE user_preferences
         ADD COLUMN IF NOT EXISTS default_calendar_id TEXT;
+      ALTER TABLE user_preferences
+        ADD COLUMN IF NOT EXISTS personal_memory_enabled BOOLEAN DEFAULT true;
 
       CREATE TABLE IF NOT EXISTS calendar_sources (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),

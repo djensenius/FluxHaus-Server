@@ -189,7 +189,7 @@ The server uses PostgreSQL for:
 - **Audit logs** (`audit_logs` table) — every request and auth event
 - **Session storage** (`session` table) — browser login sessions
 - **OAuth tokens** (`oauth_tokens` table) — Miele and HomeConnect tokens
-- **User preferences** (`user_preferences` table) — includes memory preferences and default calendar selection
+- **User preferences** (`user_preferences` table) — includes memory preferences (`memoryEnabled`, `personalMemoryEnabled`) and default calendar selection
 - **User memories** (`user_memories` table) — durable facts the assistant remembers about each user, grouped by `category` (`project`, `possession`, `wishlist`, `preference`, `fact`); content is encrypted at rest. The assistant captures these proactively as you chat and can fully manage them through chat tools — list, add, update, delete, or clear (`list_memories`, `save_memory`, `update_memory`, `delete_memory`, `delete_all_memories`). The REST API exposes a subset: `GET /memories` (list) and `DELETE /memories/:id` / `DELETE /memories` (delete one or clear all).
 
 ```
@@ -605,6 +605,12 @@ GET /audit?limit=50&offset=0&username=admin&since=2024-01-01T00:00:00Z
 | `ZAI_API_KEY` | Z.ai API key | |
 | `ZAI_BASE_URL` | Z.ai base URL | `https://api.z.ai/api/v1` |
 | `OPENAI_API_KEY` | OpenAI API key | |
+| **Personal memory (Hindsight)** | | |
+| `HINDSIGHT_URL` | Base URL of the private Hindsight service | |
+| `HINDSIGHT_APP_KEY` | Server-side app key for Hindsight (never logged or returned) | |
+| `HINDSIGHT_ALLOWED_ISSUERS` | Comma-separated OIDC issuer URLs whose users may use personal memory | |
+| `HINDSIGHT_BANK` | Hindsight memory bank name | `shared` |
+| `HINDSIGHT_TIMEOUT_MS` | Per-request timeout to Hindsight | `4000` |
 
 See `.env-example` for the complete list including Miele, HomeConnect, and Modern Dog integrations.
 
@@ -633,6 +639,26 @@ Configure the provider with `AI_PROVIDER` (default: `anthropic`) and the matchin
 | `copilot` / `github-copilot` | `gpt-4o` |
 | `zai` / `z.ai` | `glm-4-flash` |
 | `openai` | `gpt-4o` |
+
+## Personal memory (Hindsight)
+
+Separately from FluxHaus's own encrypted memories (`user_memories`, managed by `save_memory`/`list_memories`), the assistant can use a **personal memory** that each user shares with their other assistants. It is backed by the owner's private Hindsight service. Nothing is imported from or mirrored into FluxHaus's own memories.
+
+**Notice shown to users:** The assistant may save durable facts about you (preferences, household routines, projects) to your private personal memory, which is shared with your other assistants. Saved memories are processed by OpenAI for fact extraction and stored on the owner's home server. You can turn this off at any time with the `personalMemoryEnabled` preference; turning it off stops new saves and recall but does not delete anything already saved.
+
+**Who gets it:** every signed-in OIDC user, isolated by their OIDC subject. It is **on by default** (`personalMemoryEnabled: true`) and only offered when all of these hold, checked server-side on every request:
+
+- `HINDSIGHT_URL`, `HINDSIGHT_APP_KEY`, and `HINDSIGHT_ALLOWED_ISSUERS` are all set (otherwise the feature is fully disabled);
+- the user has an OIDC subject and the issuer that validated their login is in `HINDSIGHT_ALLOWED_ISSUERS` (Basic-auth users never qualify; browser sessions created before this feature need to sign in again; MCP tokens qualify only if they were issued from a validated OIDC login);
+- the user's `personalMemoryEnabled` preference is on (`PATCH /preferences { "personalMemoryEnabled": false }` turns it off).
+
+Otherwise the `recall_personal_memory` and `save_personal_memory` tools are not offered to the model and are refused if called. Background work (scheduled routines, webhooks, conversation titles) never uses personal memory.
+
+**What gets saved:** short (≤1000 characters), standalone, durable facts useful across assistants. The assistant is instructed never to save credentials, secrets, tokens, or codes; raw transcripts or conversation dumps; other people's sensitive data; precise security details such as door codes or alarm schedules; or transient chit-chat, and obvious credentials are rejected server-side. Recalled memories are capped (10 items / 4000 characters) and passed to the model as fenced, untrusted data.
+
+**Privacy and failure handling:** requests authenticate with the server-side app key and send the user's validated subject in `X-Hindsight-Subject`; redirects are refused and each request has a short timeout. Memory content, queries, and the app key are never logged — only operation names and status codes. If Hindsight is unavailable the assistant says so and chat and home controls keep working.
+
+Client toggles for `personalMemoryEnabled` live in the FluxHaus client apps (separate repositories) and are not part of this server.
 
 ## MCP Server
 

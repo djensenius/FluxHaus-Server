@@ -95,9 +95,17 @@ let oidcInitPromise: Promise<void> | null = null;
 let lastOidcInitAttempt = 0;
 const OIDC_REINIT_COOLDOWN_MS = 60_000; // 1 minute
 
+export interface ValidatedBearerClaims {
+  sub: string;
+  email?: string;
+  preferred_username?: string;
+  /** The issuer that actually validated the token. */
+  issuer?: string;
+}
+
 export async function validateBearerToken(
   token: string,
-): Promise<{ sub: string; email?: string; preferred_username?: string } | null> {
+): Promise<ValidatedBearerClaims | null> {
   if (!oidcIssuer) {
     const { OIDC_ISSUER_URL, OIDC_CLIENT_ID } = process.env;
     if (!OIDC_ISSUER_URL || !OIDC_CLIENT_ID) {
@@ -135,7 +143,7 @@ export async function validateBearerToken(
     const errorState = { last: null as Error | null };
     const tryIssuer = async (
       issuer: string,
-    ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> => {
+    ): Promise<ValidatedBearerClaims | null> => {
       try {
         const { payload } = await jwtVerify(token, jwks!, { issuer });
         const jwtPayload = payload as JWTPayload & {
@@ -147,6 +155,7 @@ export async function validateBearerToken(
           sub: jwtPayload.sub,
           email: jwtPayload.email,
           preferred_username: jwtPayload.preferred_username,
+          issuer,
         };
       } catch (err) {
         const jwtErr = err instanceof Error ? err : new Error(String(err));
@@ -162,9 +171,7 @@ export async function validateBearerToken(
     // Try each issuer sequentially, short-circuit on first match
     const results = await allIssuers.reduce(
       async (accP, issuer) => (await accP) ?? tryIssuer(issuer),
-      Promise.resolve(
-        null as { sub: string; email?: string; preferred_username?: string } | null,
-      ),
+      Promise.resolve(null as ValidatedBearerClaims | null),
     );
     if (results) return results;
 
@@ -218,6 +225,8 @@ export async function validateBearerToken(
         sub: userinfo.sub,
         email: userinfo.email as string | undefined,
         preferred_username: userinfo.preferred_username as string | undefined,
+        // Userinfo is served by the primary issuer, which vouches for the token.
+        issuer: oidcClient.serverMetadata().issuer,
       };
     } catch (err) {
       const uiErr = err instanceof Error ? err : new Error(String(err));
@@ -300,6 +309,7 @@ export function createAuthRouter(): Router {
         username: (userinfo.preferred_username || userinfo.email || userinfo.sub) as string,
         sub: userinfo.sub,
         email: userinfo.email as string | undefined,
+        issuer: oidcClient.serverMetadata().issuer,
       };
 
       // Store user in a signed cookie (reliable, unlike PG session store)
