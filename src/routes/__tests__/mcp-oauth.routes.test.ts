@@ -20,6 +20,9 @@ function app() {
 describe('MCP OAuth routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.MCP_AUTH_MODE;
+    delete process.env.MCP_ISSUER_URL;
+    delete process.env.MCP_RESOURCE_URL;
     process.env.OIDC_CLIENT_ID = 'oidc-client';
     (getOidcIssuer as vi.Mock).mockReturnValue({
       metadata: {
@@ -28,6 +31,56 @@ describe('MCP OAuth routes', () => {
       },
     });
   });
+
+  afterEach(() => {
+    delete process.env.MCP_AUTH_MODE;
+    delete process.env.MCP_ISSUER_URL;
+    delete process.env.MCP_RESOURCE_URL;
+  });
+
+  function directMode() {
+    process.env.MCP_AUTH_MODE = 'oidc';
+    process.env.MCP_ISSUER_URL = 'https://auth.example.com/application/o/fluxhaus-mcp/';
+    process.env.MCP_RESOURCE_URL = 'https://haus.example.com/mcp';
+  }
+
+  it.each(['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'])(
+    'publishes canonical direct metadata independent of Host at %s', async (path) => {
+      directMode();
+      const res = await request(app()).get(path).set('Host', 'attacker.example')
+        .set('X-Forwarded-Host', 'other.example').set('X-Forwarded-Proto', 'http').expect(200);
+      expect(res.body).toEqual({
+        resource: 'https://haus.example.com/mcp',
+        authorization_servers: ['https://auth.example.com/application/o/fluxhaus-mcp/'],
+        bearer_methods_supported: ['header'],
+        scopes_supported: ['fluxhaus:mcp'],
+      });
+    },
+  );
+
+  it.each([
+    ['get', '/.well-known/oauth-authorization-server'],
+    ['post', '/register'],
+    ['get', '/authorize'],
+    ['post', '/token'],
+    ['get', '/oauth/mcp-callback'],
+  ])('disables local proxy %s %s in direct mode', async (method, path) => {
+    directMode();
+    const application = request(app());
+    const res = method === 'get' ? await application.get(path) : await application.post(path).send({});
+    expect(res.status).toBe(404);
+    expect(getOidcIssuer).not.toHaveBeenCalled();
+  });
+
+  it.each(['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp', '/authorize'])(
+    'returns a sanitized 503 for invalid direct configuration at %s', async (path) => {
+      directMode();
+      process.env.MCP_ISSUER_URL = 'https://user:secret@auth.example/';
+      await request(app()).get(path).expect(503).expect(({ body }) => {
+        expect(body).toEqual({ error: 'MCP authentication not configured' });
+      });
+    },
+  );
 
   it('publishes MCP protected resource metadata for /mcp', async () => {
     const res = await request(app())

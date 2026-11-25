@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import cors from 'cors';
 import { SignJWT, decodeJwt } from 'jose';
 import { getOidcIssuer } from '../middleware/oidc.middleware';
-import { getMcpSigningKey, mcpResource, serverOrigin } from '../mcp-auth';
+import { getMcpAuthConfig, getMcpSigningKey, MCP_SCOPE, mcpResource, serverOrigin } from '../mcp-auth';
 import logger from '../logger';
 
 const oauthLogger = logger.child({ subsystem: 'mcp-oauth' });
@@ -135,24 +135,44 @@ export default function createMcpOAuthRouter(): Router {
   // Allow cross-origin requests from Claude and other MCP clients
   const openCors = cors();
 
+  // These routes belong exclusively to the local proxy authorization server.
+  router.use((req, res, next) => {
+    if (!/^\/(?:\.well-known\/oauth-authorization-server|register|authorize|token|oauth\/mcp-callback)\/?$/i.test(req.path)) {
+      next();
+      return;
+    }
+    try {
+      if (getMcpAuthConfig().mode === 'proxy') {
+        next();
+        return;
+      }
+      res.status(404).json({ error: 'not_found' });
+    } catch {
+      res.status(503).json({ error: 'MCP authentication not configured' });
+    }
+  });
+
   // RFC 9728 — Protected Resource Metadata (MCP spec MUST)
   router.get(
-    '/.well-known/oauth-protected-resource',
+    ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'],
     openCors,
     (req, res) => {
-      const origin = serverOrigin(req);
-      res.json({
-        resource: mcpResource(req),
-        authorization_servers: [origin],
-        bearer_methods_supported: ['header'],
-      });
-    },
-  );
-
-  router.get(
-    '/.well-known/oauth-protected-resource/mcp',
-    openCors,
-    (req, res) => {
+      let config;
+      try {
+        config = getMcpAuthConfig();
+      } catch {
+        res.status(503).json({ error: 'MCP authentication not configured' });
+        return;
+      }
+      if (config.mode === 'oidc') {
+        res.json({
+          resource: config.resource,
+          authorization_servers: [config.issuer],
+          bearer_methods_supported: ['header'],
+          scopes_supported: [MCP_SCOPE],
+        });
+        return;
+      }
       const origin = serverOrigin(req);
       res.json({
         resource: mcpResource(req),

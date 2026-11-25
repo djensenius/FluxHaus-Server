@@ -1,14 +1,16 @@
 import { NextFunction, Request, Response } from 'express';
+import { generateKeyPair, SignJWT } from 'jose';
 import { authMiddleware, requireOidcForMutations, requireRole } from '../auth.middleware';
 import { validateBearerToken } from '../oidc.middleware';
-import { verifyMcpToken } from '../../mcp-auth';
+import { McpScopeError, verifyMcpToken } from '../../mcp-auth';
 
 vi.mock('../oidc.middleware', () => ({
   validateBearerToken: vi.fn(),
   isOidcEnabled: vi.fn().mockReturnValue(false),
 }));
 
-vi.mock('../../mcp-auth', () => ({
+vi.mock('../../mcp-auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../mcp-auth')>(),
   verifyMcpToken: vi.fn().mockResolvedValue(null),
   mcpResource: vi.fn().mockReturnValue('http://localhost:8888/mcp'),
   serverOrigin: vi.fn().mockReturnValue('http://localhost:8888'),
@@ -36,6 +38,114 @@ describe('authMiddleware', () => {
     process.env.BASIC_AUTH_PASSWORD = 'adminpass';
     process.env.RHIZOME_PASSWORD = 'rhizomepass';
     process.env.DEMO_PASSWORD = 'demopass';
+    delete process.env.MCP_AUTH_MODE;
+    delete process.env.MCP_ISSUER_URL;
+    delete process.env.MCP_RESOURCE_URL;
+  });
+
+  afterEach(() => {
+    delete process.env.MCP_AUTH_MODE;
+    delete process.env.MCP_ISSUER_URL;
+    delete process.env.MCP_RESOURCE_URL;
+  });
+
+  function directMode() {
+    process.env.MCP_AUTH_MODE = 'oidc';
+    process.env.MCP_ISSUER_URL = 'https://auth.example.com/application/o/fluxhaus-mcp/';
+    process.env.MCP_RESOURCE_URL = 'https://haus.example.com/mcp';
+  }
+
+  it('propagates direct identity and exact issuer without using legacy validation', async () => {
+    directMode();
+    (verifyMcpToken as vi.Mock).mockResolvedValue({
+      sub: 'account-1', name: 'Account One', email: 'one@example.com',
+      oidcIssuer: process.env.MCP_ISSUER_URL,
+    });
+    const req = mockReq({ authorization: 'Bearer provider-token', host: 'evil.example' }, '/mcp') as Request;
+    await authMiddleware(req, mockRes() as Response, next);
+    expect(req.user).toEqual({
+      role: 'admin', username: 'Account One', sub: 'account-1',
+      email: 'one@example.com', name: 'Account One', issuer: process.env.MCP_ISSUER_URL,
+    });
+    expect(validateBearerToken).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalled();
+  });
+
+  it.each(['', 'Basic YWRtaW46YWRtaW5wYXNz', 'Bearer proxy-token'])(
+    'excludes cookie/session/basic/proxy auth in direct mode (%s)', async (authorization) => {
+      directMode();
+      const req = {
+        ...mockReq({ authorization }, '/MCP/'),
+        signedCookies: { auth_user: JSON.stringify({ role: 'admin', username: 'admin' }) },
+        session: { user: { role: 'admin', username: 'admin' } },
+      } as Request;
+      const res = mockRes() as Response;
+      await authMiddleware(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'WWW-Authenticate',
+        'Bearer resource_metadata="https://haus.example.com/.well-known/oauth-protected-resource/mcp"',
+      );
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    },
+  );
+
+  it('returns 403 insufficient_scope only for a verified direct token', async () => {
+    directMode();
+    (verifyMcpToken as vi.Mock).mockRejectedValueOnce(new McpScopeError());
+    const res = mockRes() as Response;
+    await authMiddleware(mockReq({ authorization: 'Bearer no-scope' }, '/mcp') as Request, res, next);
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(res.setHeader).toHaveBeenLastCalledWith(
+      'WWW-Authenticate',
+      'Bearer resource_metadata="https://haus.example.com/.well-known/oauth-protected-resource/mcp", error="insufficient_scope", scope="fluxhaus:mcp"',
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each(['bad-mode', 'oidc'])('fails closed for invalid MCP configuration (%s)', async (mode) => {
+    process.env.MCP_AUTH_MODE = mode;
+    const res = mockRes() as Response;
+    await authMiddleware(mockReq({ authorization: 'Bearer any' }, '/mcp') as Request, res, next);
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(verifyMcpToken).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { iss: 'https://auth.example.com/application/o/fluxhaus-mcp/', scope: 'fluxhaus:mcp' },
+    { aud: 'https://haus.example.com/mcp', scope: 'read' },
+    { aud: ['other', 'https://haus.example.com/mcp'] },
+  ])('denies dedicated JWT claims on REST before accepting legacy userinfo (%j)', async (claims) => {
+    directMode();
+    (validateBearerToken as vi.Mock).mockResolvedValue({ sub: 'would-be-admin' });
+    // Intentionally unsigned with missing/insufficient claims: decoding can only deny.
+    const token = `${Buffer.from('{"alg":"none"}').toString('base64url')}.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.invalid`;
+    const req = mockReq({ authorization: `Bearer ${token}` }, '/startCar') as Request;
+    const res = mockRes() as Response;
+    await authMiddleware(req, res, next);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(validateBearerToken).not.toHaveBeenCalled();
+    expect(req.user).toBeUndefined();
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('denies a signed dedicated access token on REST even when proxy mode is restored', async () => {
+    directMode();
+    process.env.MCP_AUTH_MODE = 'proxy';
+    const { privateKey } = await generateKeyPair('RS256');
+    const token = await new SignJWT({ scope: 'fluxhaus:mcp' })
+      .setProtectedHeader({ alg: 'RS256' }).setSubject('account-1')
+      .setIssuer(process.env.MCP_ISSUER_URL as string)
+      .setAudience(process.env.MCP_RESOURCE_URL as string)
+      .setExpirationTime('5m').sign(privateKey);
+    (validateBearerToken as vi.Mock).mockResolvedValue({ sub: 'account-1' });
+    const res = mockRes() as Response;
+    await authMiddleware(mockReq({ authorization: `Bearer ${token}` }, '/test') as Request, res, next);
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(validateBearerToken).not.toHaveBeenCalled();
+    expect(next).not.toHaveBeenCalled();
   });
 
   it('should return 401 when no auth provided', async () => {

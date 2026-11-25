@@ -3,6 +3,7 @@ export interface AuthenticatedUser {
   username: string;
   sub?: string;
   email?: string;
+  name?: string;
   /**
    * OIDC issuer that validated this user's identity. Only set for users
    * authenticated via a validated OIDC login/token (or an MCP token minted

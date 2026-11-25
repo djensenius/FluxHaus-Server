@@ -699,18 +699,39 @@ The main web server also exposes a Streamable HTTP MCP endpoint at:
 https://<your-fluxhaus-host>/mcp
 ```
 
-Remote MCP uses Bearer tokens issued by the built-in MCP OAuth proxy routes. Configure OIDC (`OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`) and a strong `SESSION_SECRET`. The OAuth protected-resource metadata is available at both:
+Remote MCP defaults to `MCP_AUTH_MODE=proxy`, using Bearer tokens issued by the built-in MCP OAuth proxy routes. Configure OIDC (`OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`) and a strong `SESSION_SECRET`. Existing clients keep this behavior unless an operator explicitly switches modes. The OAuth protected-resource metadata is available at both:
 
 ```text
 /.well-known/oauth-protected-resource
 /.well-known/oauth-protected-resource/mcp
 ```
 
+#### Opt-in direct Authentik OIDC
+
+This protects FluxHaus's **own** `/mcp` endpoint; it is not an external MCP client integration. Create a **dedicated FluxHaus MCP Authentik application and OAuth2/OIDC provider**, separate from browser/mobile and SynthBook providers:
+
+```dotenv
+MCP_AUTH_MODE=oidc
+MCP_ISSUER_URL=https://auth.example.com/application/o/fluxhaus-mcp/
+MCP_RESOURCE_URL=https://haus.fluxhaus.io/mcp
+```
+
+Both URLs must be absolute HTTPS with no credentials, query or fragment (explicit loopback HTTP is allowed for local tests/development). The resource path must be exactly `/mcp`; the issuer must match discovery and JWT `iss` exactly, including its trailing slash. Metadata and verification use these operator settings, never request Host or forwarded headers. Missing/invalid settings or unsupported modes fail closed with 503.
+
+- Pre-register a **public client ID** in Authentik and configure it in the MCP client; anonymous dynamic client registration is not assumed. Require authorization-code flow with **PKCE S256** and register Claude's exact redirect URI: `https://claude.ai/api/mcp/auth_callback`.
+- Configure asymmetric JWT **access tokens**, with the FluxHaus-only canonical audience `https://haus.fluxhaus.io/mcp` (your `MCP_RESOURCE_URL`) and a space-delimited `fluxhaus:mcp` scope. Request `offline_access` for refresh tokens and enable the provider's refresh-token policy; add `openid profile email` as needed for identity. ID tokens with the client ID audience, opaque tokens, proxy JWTs and SynthBook read tokens are not accepted.
+- If your Authentik version lacks RFC 8707 resource indicators, use a provider audience/scope mapping that emits the canonical MCP URL in `aud`, rather than its client ID. Verify actual access-token claims before switching; **never weaken the audience verifier**.
+- **`fluxhaus:mcp` grants the existing full FluxHaus admin toolset: private home, calendar and infrastructure access, including mutations. It is not read-only.** Limit application access and scope grants to accounts already authorized for FluxHaus; do not share the SynthBook issuer or grant SynthBook read-token holders this scope.
+- Direct mode advertises only the dedicated issuer, disables local `/register`, `/authorize`, `/token`, `/oauth/mcp-callback` and local authorization-server metadata, and has no proxy/browser/Basic/userinfo fallback. Dedicated MCP JWTs are also denied on general REST/admin routes before legacy bearer validation. Do **not** add the MCP issuer to `OIDC_ADDITIONAL_ISSUERS`.
+- Personal memory may require explicit inclusion of this exact issuer in `HINDSIGHT_ALLOWED_ISSUERS` and a matching subject mapping to the user's existing FluxHaus account. Preserve stable `sub` attribution across providers; do not automatically grant memory policies. Existing session-secret and memory eligibility requirements still apply.
+
+To retain or restore existing proxy clients, explicitly set `MCP_AUTH_MODE=proxy` and retain the existing OIDC/session configuration. Coordinate client/provider setup before the deployment switch; tokens are not interchangeable across modes.
+
 Security notes:
 
 - MCP access tokens are audience-bound to the `/mcp` resource and are not accepted as general REST admin tokens.
 - Browser-origin calls to `/mcp` are restricted by `MCP_ALLOWED_ORIGINS` (falls back to `CORS_ORIGINS`). Non-browser MCP clients usually omit `Origin` and authenticate with Bearer tokens. Defaults/examples include Claude and GitHub Copilot surfaces (`https://claude.ai`, `https://github.com`, `https://github.dev`, `https://vscode.dev`).
-- MCP OAuth dynamic client registration only accepts redirect URI origins listed in `MCP_ALLOWED_REDIRECT_ORIGINS`. Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`, any port) are always accepted for local clients such as Copilot CLI; GitHub/Copilot web origins are included in the defaults/examples.
+- In proxy mode, MCP OAuth dynamic client registration only accepts redirect URI origins listed in `MCP_ALLOWED_REDIRECT_ORIGINS`. Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`, any port) are always accepted for local clients such as Copilot CLI; GitHub/Copilot web origins are included in the defaults/examples.
 - Web/image fetching tools reject localhost, `.local`, loopback, link-local, and private-network URLs to reduce SSRF risk from model-controlled URL fetches.
 
 The MCP server exposes FluxHaus home, car, calendar, media, infrastructure, web, and image tools. Several high-value read tools return `structuredContent` in addition to text for modern MCP clients, and sensitive/state-changing tools are annotated with MCP tool hints.

@@ -69,7 +69,8 @@ vi.mock('../middleware/oidc.middleware', () => {
   };
 });
 
-vi.mock('../mcp-auth', () => ({
+vi.mock('../mcp-auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../mcp-auth')>(),
   verifyMcpToken: vi.fn().mockResolvedValue(null),
   serverOrigin: vi.fn().mockReturnValue('http://localhost:8888'),
   getMcpSigningKey: vi.fn().mockReturnValue(new Uint8Array(32)),
@@ -101,6 +102,10 @@ describe('Server', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.MCP_AUTH_MODE;
+    delete process.env.MCP_ISSUER_URL;
+    delete process.env.MCP_RESOURCE_URL;
+    delete process.env.MCP_ALLOWED_ORIGINS;
   });
 
   beforeEach(async () => {
@@ -194,6 +199,30 @@ describe('Server', () => {
 
   it('should return 401 without auth', async () => {
     await request(app).get('/').expect(401);
+  });
+
+  it.each(['/mcp', '/MCP', '/mcp/'])('exposes canonical direct auth challenges through MCP CORS at %s', async (path) => {
+    process.env.MCP_AUTH_MODE = 'oidc';
+    process.env.MCP_ISSUER_URL = 'https://auth.example.com/application/o/fluxhaus-mcp/';
+    process.env.MCP_RESOURCE_URL = 'https://haus.example.com/mcp';
+    const res = await request(app).get(path)
+      .set('Host', 'attacker.example').set('Origin', 'https://claude.ai').expect(401);
+    expect(res.headers['www-authenticate']).toBe(
+      'Bearer resource_metadata="https://haus.example.com/.well-known/oauth-protected-resource/mcp"',
+    );
+    expect(res.headers['access-control-allow-origin']).toBe('https://claude.ai');
+    expect(res.headers['access-control-expose-headers']).toBe('WWW-Authenticate');
+  });
+
+  it('keeps MCP preflight unauthenticated and rejects untrusted Origins', async () => {
+    process.env.MCP_ALLOWED_ORIGINS = 'https://claude.ai';
+    // Recreate to pick up the explicit Origin allowlist.
+    app = await createServer();
+    await request(app).options('/mcp').set('Origin', 'https://claude.ai')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'Authorization,MCP-Protocol-Version').expect(204);
+    await request(app).options('/mcp').set('Origin', 'https://attacker.example').expect(403);
+    await request(app).get('/mcp').set('Origin', 'https://attacker.example').expect(403);
   });
 
   it.each([oidcAuthHeader, basicAuthHeader('demo', 'demopassword')])('forwards robot availability in API snapshots', async (authorization) => {
