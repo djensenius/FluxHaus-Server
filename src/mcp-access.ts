@@ -26,9 +26,6 @@ export const MCP_READ_TOOLS: ReadonlySet<string> = new Set([
   'get_appliance_status',
   'get_entity_history',
   'get_logbook',
-  // HA REST /api/template renders in HA's sandboxed Jinja environment and has
-  // no side effects; dangerous patterns are additionally blocked.
-  'render_template',
   'get_home_summary',
   // Calendar reads
   'get_calendar_events',
@@ -60,11 +57,8 @@ export const MCP_READ_TOOLS: ReadonlySet<string> = new Set([
   // InfluxDB metadata (arbitrary Flux queries are full-only)
   'influxdb_list_buckets',
   'influxdb_list_measurements',
-  // Portainer reads
-  'portainer_list_endpoints',
+  // Portainer: Docker's container list (ContainerSummary) has no Env/Config.
   'portainer_list_containers',
-  'portainer_list_stacks',
-  'portainer_get_container',
   // Prometheus (PromQL HTTP query API is read-only)
   'prometheus_query',
   'prometheus_query_range',
@@ -154,9 +148,16 @@ export const MCP_FULL_ONLY_TOOLS: ReadonlySet<string> = new Set([
   'overseerr_request_media',
   'overseerr_approve_request',
   'portainer_container_action',
-  // Arbitrary query languages against data stores
+  // Expose secrets: stack Env, container Config.Env (e.g. database passwords),
+  // and endpoint objects (EdgeKey, TLS/credential config, raw snapshots).
+  'portainer_list_stacks',
+  'portainer_get_container',
+  'portainer_list_endpoints',
+  // Arbitrary query languages against data stores. render_template can read
+  // any HA state attribute (camera access tokens) and bypass read redaction.
   'influxdb_query',
   'grafana_query_datasource',
+  'render_template',
   // Paid or outbound network access
   'web_search',
   'fetch_webpage',
@@ -192,6 +193,68 @@ export const MCP_READ_PROMPTS: ReadonlySet<string> = new Set([
 ]);
 
 export const MCP_FULL_ONLY_PROMPTS: ReadonlySet<string> = new Set([]);
+
+const REDACTED = '[REDACTED]';
+const SENSITIVE_KEY = /^(access_token|refresh_token|api_key|apikey|password|secret|token)$/i;
+const TOKEN_QUERY_PARAM = /([?&](?:access_)?token=)[^&#"'\s\\]+/gi;
+const ACCESS_TOKEN_JSON = /("(?:access_token|refresh_token)"\s*:\s*)"(?:[^"\\]|\\.)*"/gi;
+
+function redactString(value: string): string {
+  return value
+    .replace(TOKEN_QUERY_PARAM, `$1${REDACTED}`)
+    .replace(ACCESS_TOKEN_JSON, `$1"${REDACTED}"`);
+}
+
+/**
+ * Deep-redacts credentials that Home Assistant (and other services) embed in
+ * otherwise read-only data: `access_token` attributes (cameras, media
+ * players), and `token=` query parameters in URLs such as `entity_picture`
+ * camera proxy links. Applied to every result served with read access.
+ */
+export function redactSensitive<T>(value: T): T {
+  if (typeof value === 'string') return redactString(value) as T;
+  if (Array.isArray(value)) return value.map((item) => redactSensitive(item)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
+      key,
+      SENSITIVE_KEY.test(key) && (typeof item === 'string' || typeof item === 'number')
+        ? REDACTED
+        : redactSensitive(item),
+    ])) as T;
+  }
+  return value;
+}
+
+/** Redacts a text block, preserving JSON formatting when the text is JSON. */
+export function redactSensitiveText(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try {
+      return JSON.stringify(redactSensitive(JSON.parse(trimmed)), null, 2);
+    } catch {
+      // not JSON — fall through to string redaction
+    }
+  }
+  return redactString(text);
+}
+
+/**
+ * Redacts tool, resource, and prompt results: every `text` field (JSON-aware)
+ * plus `structuredContent`.
+ */
+export function redactMcpResult<T>(result: T): T {
+  const walk = (value: unknown, key?: string): unknown => {
+    if (typeof value === 'string') return key === 'text' ? redactSensitiveText(value) : redactString(value);
+    if (Array.isArray(value)) return value.map((item) => walk(item));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, item]) => (
+        k === 'structuredContent' ? [k, redactSensitive(item)] : [k, walk(item, k)]
+      )));
+    }
+    return value;
+  };
+  return walk(result) as T;
+}
 
 export function isMcpToolAllowed(access: McpAccess, name: string): boolean {
   return access === 'full' || MCP_READ_TOOLS.has(name);

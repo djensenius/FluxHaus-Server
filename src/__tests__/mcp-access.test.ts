@@ -8,13 +8,32 @@ import createMcpServer from '../mcp-server';
 import {
   MCP_FULL_ONLY_PROMPTS, MCP_FULL_ONLY_RESOURCES, MCP_FULL_ONLY_TOOLS,
   MCP_READ_PROMPTS, MCP_READ_RESOURCES, MCP_READ_TOOLS, McpAccess, mcpAccessForUser,
+  redactMcpResult, redactSensitive,
 } from '../mcp-access';
 import { FluxHausServices } from '../services';
 
 vi.mock('fs');
 
+const CAMERA_TOKEN = 'secretcameratoken123';
+const cameraEntity = {
+  entity_id: 'camera.front_door',
+  state: 'idle',
+  attributes: {
+    friendly_name: 'Front door',
+    access_token: CAMERA_TOKEN,
+    entity_picture: `/api/camera_proxy/camera.front_door?token=${CAMERA_TOKEN}`,
+  },
+};
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function mockServices(): { services: FluxHausServices; car: any } {
+function mockServices(): { services: FluxHausServices; car: any; portainer: any } {
+  const portainer = {
+    configured: true,
+    listEndpoints: vi.fn().mockResolvedValue([{ Id: 1, EdgeKey: 'edge-secret' }]),
+    listContainers: vi.fn().mockResolvedValue([{ Id: 'c1', Names: ['/db'] }]),
+    listStacks: vi.fn().mockResolvedValue([{ Env: [{ name: 'POSTGRES_PASSWORD', value: 'pw' }] }]),
+    getContainer: vi.fn().mockResolvedValue({ Config: { Env: ['POSTGRES_PASSWORD=pw'] } }),
+  };
   const car = {
     status: { doorLock: true },
     odometer: 15000,
@@ -23,9 +42,12 @@ function mockServices(): { services: FluxHausServices; car: any } {
   };
   const services = {
     homeAssistantClient: {
-      getState: vi.fn().mockResolvedValue([]),
+      getState: vi.fn().mockImplementation(async (id: string) => (id ? cameraEntity : [cameraEntity])),
+      getHistory: vi.fn().mockResolvedValue([[cameraEntity]]),
+      renderTemplate: vi.fn().mockResolvedValue(CAMERA_TOKEN),
       callService: vi.fn().mockResolvedValue({}),
     },
+    portainer,
     cleanbot: { cachedStatus: { docked: true } },
     car,
     mieleClient: { washer: {}, dryer: {} },
@@ -34,7 +56,7 @@ function mockServices(): { services: FluxHausServices; car: any } {
     romperURL: '',
     gymURL: '',
   } as any as FluxHausServices;
-  return { services, car };
+  return { services, car, portainer };
 }
 
 const registeredNames = (server: any) => ({
@@ -45,13 +67,13 @@ const registeredNames = (server: any) => ({
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
 async function connect(access: McpAccess) {
-  const { services, car } = mockServices();
+  const { services, car, portainer } = mockServices();
   const server = createMcpServer(services, { userSub: 'user-1', access });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test', version: '1.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   return {
-    client, car, close: async () => { await client.close(); await server.close(); },
+    client, car, portainer, close: async () => { await client.close(); await server.close(); },
   };
 }
 
@@ -132,6 +154,86 @@ describe('MCP access policy', () => {
     const resource = server._registeredResources['fluxhaus://camera/url'];
     expect(resource.enabled).toBe(false);
     await expect(resource.readCallback(new URL('fluxhaus://camera/url'), {})).rejects.toThrow(/read-only/);
+  });
+});
+
+describe('read access secret isolation', () => {
+  beforeEach(() => {
+    (fs.existsSync as vi.Mock).mockReturnValue(true);
+    (fs.readFileSync as vi.Mock).mockReturnValue(JSON.stringify({
+      washer: { image: `https://ha.local/api/camera_proxy/camera.x?token=${CAMERA_TOKEN}` },
+    }));
+  });
+
+  const callText = async (client: Client, name: string, args: Record<string, unknown> = {}) => {
+    const result = await client.callTool({ name, arguments: args });
+    return JSON.stringify(result);
+  };
+
+  it.each(['portainer_list_stacks', 'portainer_get_container', 'portainer_list_endpoints', 'render_template'])(
+    'a read key cannot list or call %s',
+    async (name) => {
+      const { client, portainer, close } = await connect('read');
+      expect((await client.listTools()).tools.map((t) => t.name)).not.toContain(name);
+      const result = await client.callTool({
+        name, arguments: { endpointId: 1, containerId: 'c1', template: '{{ 1 }}' },
+      }).catch((err: Error) => ({ isError: true, content: [{ type: 'text', text: err.message }] }));
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).not.toMatch(/POSTGRES_PASSWORD|edge-secret|secretcameratoken/);
+      expect(portainer.listStacks).not.toHaveBeenCalled();
+      expect(portainer.getContainer).not.toHaveBeenCalled();
+      expect(portainer.listEndpoints).not.toHaveBeenCalled();
+      await close();
+    },
+  );
+
+  it('still lets a read key list containers', async () => {
+    const { client, close } = await connect('read');
+    expect(await callText(client, 'portainer_list_containers', { endpointId: 1 })).toContain('/db');
+    await close();
+  });
+
+  it('redacts camera tokens from every read tool, resource, and prompt that returns HA data', async () => {
+    const { client, close } = await connect('read');
+    const outputs = [
+      await callText(client, 'get_entity_state', { entity_id: 'camera.front_door' }),
+      await callText(client, 'list_entities', {}),
+      await callText(client, 'get_entity_history', { entity_id: 'camera.front_door', start: '2026-01-01T00:00:00Z' }),
+      await callText(client, 'get_home_summary', {}),
+      JSON.stringify(await client.readResource({ uri: 'fluxhaus://appliances/status' })),
+      JSON.stringify(await client.getPrompt({ name: 'appliance_report' })),
+      JSON.stringify(await client.getPrompt({ name: 'goodnight' })),
+    ];
+    outputs.forEach((output) => expect(output).not.toContain(CAMERA_TOKEN));
+    expect(outputs[0]).toContain('[REDACTED]');
+    expect(outputs[0]).toContain('/api/camera_proxy/camera.front_door?token=[REDACTED]');
+    expect(outputs[0]).toContain('Front door');
+    await close();
+  });
+
+  it('does not redact for full access', async () => {
+    const { client, close } = await connect('full');
+    expect(await callText(client, 'get_entity_state', { entity_id: 'camera.front_door' })).toContain(CAMERA_TOKEN);
+    await close();
+  });
+
+  it('redacts sensitive keys, token query params, and embedded JSON text', () => {
+    expect(redactSensitive({
+      a: { access_token: 'x', password: 'p', token: 7, nested: [{ entity_picture: '/p?a=1&token=abc&b=2' }] },
+      ok: 'plain',
+    })).toEqual({
+      a: {
+        access_token: '[REDACTED]',
+        password: '[REDACTED]',
+        token: '[REDACTED]',
+        nested: [{ entity_picture: '/p?a=1&token=[REDACTED]&b=2' }],
+      },
+      ok: 'plain',
+    });
+    const prompt = redactMcpResult({
+      messages: [{ content: { type: 'text', text: 'Data:\n{\n  "access_token": "abc"\n} see /x?token=abc' } }],
+    });
+    expect(JSON.stringify(prompt)).not.toContain('abc');
   });
 });
 

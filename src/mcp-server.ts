@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { FluxHausServices } from './services';
 import type { ThermostatControlResult, ThermostatControls } from './indoor-climate';
 import {
-  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess,
+  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess, redactMcpResult,
 } from './mcp-access';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -243,7 +243,8 @@ function readOnlyDenied(kind: string, name: string): string {
 
 // Wraps server.tool so every handler gets try/catch, logging, and timing.
 // With read access, tools outside the read allowlist are disabled (hidden
-// from tools/list) and their handlers refuse to run (defense in depth).
+// from tools/list) and their handlers refuse to run (defense in depth), and
+// all results are redacted of embedded credentials (camera tokens etc.).
 function wrapToolHandlers(server: McpServer, access: McpAccess): McpServer['tool'] {
   const originalTool = server.tool.bind(server);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -260,6 +261,7 @@ function wrapToolHandlers(server: McpServer, access: McpAccess): McpServer['tool
       return registered;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const finish = <T>(result: T): T => (access === 'read' ? redactMcpResult(result) : result);
     wrappedArgs[handlerIndex] = async (...handlerArgs: any[]) => {
       if (!allowed) {
         return {
@@ -274,15 +276,15 @@ function wrapToolHandlers(server: McpServer, access: McpAccess): McpServer['tool
         if (elapsed > 5000) {
           console.warn(`[MCP] ${name} completed in ${elapsed}ms (slow)`);
         }
-        return addStructuredContentIfJsonText(result);
+        return finish(addStructuredContentIfJsonText(result));
       } catch (err) {
         const elapsed = Date.now() - start;
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[MCP] ${name} failed after ${elapsed}ms: ${message}`);
-        return {
+        return finish({
           isError: true,
           content: [{ type: 'text' as const, text: `Error in ${name}: ${message}` }],
-        };
+        });
       }
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -294,10 +296,12 @@ function wrapToolHandlers(server: McpServer, access: McpAccess): McpServer['tool
 }
 
 // Wraps server.resource / server.prompt so registrations outside the read
-// allowlists are disabled for read access and their callbacks refuse to run.
+// allowlists are disabled for read access and their callbacks refuse to run;
+// allowed callbacks have their results redacted for read access.
 function wrapAccessControlled<T extends (...args: never[]) => unknown>(
   original: T,
   kind: 'Resource' | 'Prompt',
+  access: McpAccess,
   isAllowed: (name: string) => boolean,
 ): T {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -311,6 +315,9 @@ function wrapAccessControlled<T extends (...args: never[]) => unknown>(
       args[callbackIndex] = async () => {
         throw new Error(readOnlyDenied(kind, name));
       };
+    } else if (access === 'read' && typeof callback === 'function') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      args[callbackIndex] = async (...callbackArgs: any[]) => redactMcpResult(await callback(...callbackArgs));
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const registered = (original as any)(...args);
@@ -372,11 +379,13 @@ export default function createMcpServer(
   server.resource = wrapAccessControlled(
     server.resource.bind(server),
     'Resource',
+    access,
     (name) => isMcpResourceAllowed(access, name),
   );
   server.prompt = wrapAccessControlled(
     server.prompt.bind(server),
     'Prompt',
+    access,
     (name) => isMcpPromptAllowed(access, name),
   );
 
