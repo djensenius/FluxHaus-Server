@@ -147,8 +147,10 @@ export default function createMcpOAuthRouter(): Router {
         return;
       }
       res.status(404).json({ error: 'not_found' });
+      return;
     } catch {
       res.status(503).json({ error: 'MCP authentication not configured' });
+      return;
     }
   });
 

@@ -79,7 +79,7 @@ export async function authMiddleware(
       const token = authHeader.slice(7);
       let mcpClaims;
       try {
-        mcpClaims = await verifyMcpToken(token, mcpResource(req));
+        mcpClaims = await verifyMcpToken(token, mcpResource(req, config), config);
       } catch (error) {
         if (error instanceof McpScopeError) {
           res.setHeader('WWW-Authenticate', `${challenge}, error="insufficient_scope", scope="${MCP_SCOPE}"`);

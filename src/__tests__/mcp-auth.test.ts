@@ -1,7 +1,7 @@
 import { createServer, Server } from 'http';
 import { AddressInfo } from 'net';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
-import { getMcpAuthConfig, getMcpSigningKey, McpConfigurationError, McpScopeError, verifyMcpToken } from '../mcp-auth';
+import { getMcpAuthConfig, getMcpSigningKey, McpConfigurationError, McpScopeError, mcpResource, verifyMcpToken } from '../mcp-auth';
 
 describe('MCP auth token verification', () => {
   const resource = 'https://haus.example.com/mcp';
@@ -81,6 +81,26 @@ describe('MCP auth token verification', () => {
       });
       await expect(verifyMcpToken(jwt, resource)).resolves.toMatchObject({ sub: 'account-1' });
       expect(discoveryRequests).toBe(1);
+    });
+
+    it('accepts actual IPv6 loopback HTTP issuer and resource configuration', () => {
+      process.env.MCP_ISSUER_URL = 'http://[::1]:8888/application/o/mcp/';
+      process.env.MCP_RESOURCE_URL = 'http://[::1]:8888/mcp';
+      expect(new URL(process.env.MCP_ISSUER_URL).hostname).toBe('[::1]');
+      expect(getMcpAuthConfig()).toEqual({
+        mode: 'oidc', issuer: process.env.MCP_ISSUER_URL, resource: process.env.MCP_RESOURCE_URL,
+      });
+    });
+
+    it('uses the resolved direct config for both resource and verification without reparsing', async () => {
+      const config = getMcpAuthConfig();
+      const jwt = await accessToken();
+      process.env.MCP_AUTH_MODE = 'invalid-after-resolution';
+      const req = { protocol: 'http', get: () => 'attacker.example' };
+      expect(mcpResource(req, config)).toBe(resource);
+      await expect(verifyMcpToken(jwt, mcpResource(req, config), config))
+        .resolves.toMatchObject({ sub: 'account-1', oidcIssuer: issuer });
+      await expect(verifyMcpToken(jwt, resource)).rejects.toBeInstanceOf(McpConfigurationError);
     });
 
     it.each([
@@ -189,6 +209,21 @@ describe('MCP auth token verification', () => {
       email: 'user@example.com',
       preferred_username: undefined,
     });
+  });
+
+  it('uses the resolved proxy config and preserves request-bound audience verification', async () => {
+    const config = getMcpAuthConfig();
+    const jwt = await token({});
+    process.env.MCP_AUTH_MODE = 'invalid-after-resolution';
+    try {
+      const req = { protocol: 'https', get: () => 'haus.example.com' };
+      expect(mcpResource(req, config)).toBe(resource);
+      await expect(verifyMcpToken(jwt, mcpResource(req, config), config)).resolves.toMatchObject({ sub: 'user-1' });
+      await expect(verifyMcpToken(jwt, 'https://attacker.example/mcp', config)).resolves.toBeNull();
+      await expect(verifyMcpToken(jwt, resource)).rejects.toBeInstanceOf(McpConfigurationError);
+    } finally {
+      delete process.env.MCP_AUTH_MODE;
+    }
   });
 
   it('returns the recorded OIDC issuer claim when present', async () => {

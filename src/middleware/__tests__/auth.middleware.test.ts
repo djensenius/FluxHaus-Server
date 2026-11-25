@@ -2,22 +2,26 @@ import { NextFunction, Request, Response } from 'express';
 import { generateKeyPair, SignJWT } from 'jose';
 import { authMiddleware, requireOidcForMutations, requireRole } from '../auth.middleware';
 import { validateBearerToken } from '../oidc.middleware';
-import { McpScopeError, verifyMcpToken } from '../../mcp-auth';
+import { getMcpAuthConfig, McpScopeError, mcpResource, verifyMcpToken } from '../../mcp-auth';
 
 vi.mock('../oidc.middleware', () => ({
   validateBearerToken: vi.fn(),
   isOidcEnabled: vi.fn().mockReturnValue(false),
 }));
 
-vi.mock('../../mcp-auth', async (importOriginal) => ({
-  ...await importOriginal<typeof import('../../mcp-auth')>(),
-  verifyMcpToken: vi.fn().mockResolvedValue(null),
-  mcpResource: vi.fn().mockReturnValue('http://localhost:8888/mcp'),
-  serverOrigin: vi.fn().mockReturnValue('http://localhost:8888'),
-}));
+vi.mock('../../mcp-auth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../mcp-auth')>();
+  return {
+    ...actual,
+    getMcpAuthConfig: vi.fn(actual.getMcpAuthConfig),
+    verifyMcpToken: vi.fn().mockResolvedValue(null),
+    mcpResource: vi.fn(actual.mcpResource),
+    serverOrigin: vi.fn().mockReturnValue('http://localhost:8888'),
+  };
+});
 
 function mockReq(headers: Record<string, string> = {}, path = '/test'): Partial<Request> {
-  return { headers, path } as Partial<Request>;
+  return { headers, path, protocol: 'http', get: (name: string) => headers[name] || 'localhost:8888' } as Partial<Request>;
 }
 
 function mockRes(): Partial<Response> {
@@ -68,6 +72,10 @@ describe('authMiddleware', () => {
       email: 'one@example.com', name: 'Account One', issuer: process.env.MCP_ISSUER_URL,
     });
     expect(validateBearerToken).not.toHaveBeenCalled();
+    expect(getMcpAuthConfig).toHaveBeenCalledTimes(1);
+    const config = { mode: 'oidc', issuer: process.env.MCP_ISSUER_URL, resource: process.env.MCP_RESOURCE_URL };
+    expect(mcpResource).toHaveBeenCalledWith(req, config);
+    expect(verifyMcpToken).toHaveBeenCalledWith('provider-token', process.env.MCP_RESOURCE_URL, config);
     expect(next).toHaveBeenCalled();
   });
 
@@ -183,7 +191,9 @@ describe('authMiddleware', () => {
     const req = mockReq({ authorization: 'Bearer mcp-token' }, '/mcp') as Request;
     const res = mockRes() as Response;
     await authMiddleware(req, res, next);
-    expect(verifyMcpToken).toHaveBeenCalledWith('mcp-token', 'http://localhost:8888/mcp');
+    expect(getMcpAuthConfig).toHaveBeenCalledTimes(1);
+    expect(mcpResource).toHaveBeenCalledWith(req, { mode: 'proxy' });
+    expect(verifyMcpToken).toHaveBeenCalledWith('mcp-token', 'http://localhost:8888/mcp', { mode: 'proxy' });
     expect(validateBearerToken).not.toHaveBeenCalled();
     expect(req.user).toEqual({
       role: 'admin',

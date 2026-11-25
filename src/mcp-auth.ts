@@ -109,8 +109,8 @@ export function serverOrigin(
 /** Canonical OAuth resource identifier for this server's MCP endpoint. */
 export function mcpResource(
   req: { protocol: string; get(name: string): string | undefined },
+  config: McpAuthConfig = getMcpAuthConfig(),
 ): string {
-  const config = getMcpAuthConfig();
   if (config.mode === 'oidc') return config.resource;
   return `${serverOrigin(req)}/mcp`;
 }
@@ -135,8 +135,8 @@ export interface McpTokenClaims {
 export async function verifyMcpToken(
   token: string,
   expectedResource: string,
+  config: McpAuthConfig = getMcpAuthConfig(),
 ): Promise<McpTokenClaims | null> {
-  const config = getMcpAuthConfig();
   if (config.mode === 'oidc') {
     let payload: JWTPayload;
     try {
