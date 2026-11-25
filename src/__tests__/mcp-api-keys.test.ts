@@ -137,17 +137,29 @@ describe('mcp-api-keys', () => {
 
   it('lists only the owner keys without hashes', async () => {
     await listMcpApiKeys('user-1');
-    expect(mockPool.query.mock.calls[0][0]).toMatch(/WHERE owner_sub = \$1/);
+    expect(mockPool.query.mock.calls[0][0]).toMatch(/WHERE TRUE AND owner_sub = \$1 ORDER/);
     expect(mockPool.query.mock.calls[0][0]).not.toMatch(/key_hash/);
     expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1']);
   });
 
-  it('revokes by id scoped to the owner, or by public id', async () => {
+  it('scopes listing by owner issuer when given, and lists all keys without an owner', async () => {
+    await listMcpApiKeys('user-1', 'https://idp/');
+    expect(mockPool.query.mock.calls[0][0]).toMatch(/owner_sub = \$1 AND owner_issuer = \$2/);
+    expect(mockPool.query.mock.calls[0][1]).toEqual(['user-1', 'https://idp/']);
+    await listMcpApiKeys();
+    expect(mockPool.query.mock.calls[1][0]).toMatch(/WHERE TRUE ORDER BY/);
+    expect(mockPool.query.mock.calls[1][1]).toEqual([]);
+  });
+
+  it('revokes by id scoped to the owner (and issuer), or by public id', async () => {
     await revokeMcpApiKey('11111111-2222-3333-4444-555555555555', 'user-1');
-    expect(mockPool.query.mock.calls[0][0]).toMatch(/WHERE id = \$1 AND owner_sub = \$2/);
+    expect(mockPool.query.mock.calls[0][0]).toMatch(/WHERE id = \$1 AND owner_sub = \$2\n/);
     await revokeMcpApiKey('0123456789abcdef');
     expect(mockPool.query.mock.calls[1][0]).toMatch(/WHERE public_id = \$1\n/);
     expect(mockPool.query.mock.calls[1][1]).toEqual(['0123456789abcdef']);
+    await revokeMcpApiKey('11111111-2222-3333-4444-555555555555', 'user-1', 'https://idp/');
+    expect(mockPool.query.mock.calls[2][0]).toMatch(/WHERE id = \$1 AND owner_sub = \$2 AND owner_issuer = \$3\n/);
+    expect(mockPool.query.mock.calls[2][1]).toEqual(['11111111-2222-3333-4444-555555555555', 'user-1', 'https://idp/']);
   });
 
   it('throws on management operations when the database is unavailable', async () => {

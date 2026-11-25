@@ -27,7 +27,7 @@ const router = Router();
 
 router.get('/mcp-keys', requireOidcUser, async (req: Request, res: Response) => {
   try {
-    const keys = await listMcpApiKeys(req.user!.sub!);
+    const keys = await listMcpApiKeys(req.user!.sub!, req.user!.issuer);
     res.json({ enabled: isMcpApiKeysEnabled(), keys });
   } catch (err) {
     routesLogger.error({ err }, 'Failed to list MCP API keys');
@@ -79,7 +79,7 @@ router.delete('/mcp-keys/:id', requireOidcUser, async (req: Request, res: Respon
   }
   const user = req.user!;
   try {
-    const record = await revokeMcpApiKey(id, user.sub!);
+    const record = await revokeMcpApiKey(id, user.sub!, user.issuer);
     if (!record) {
       res.status(404).json({ error: 'MCP API key not found' });
       return;

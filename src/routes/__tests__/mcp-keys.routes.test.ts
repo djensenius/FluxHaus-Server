@@ -62,7 +62,7 @@ describe('/mcp-keys routes', () => {
     (listMcpApiKeys as vi.Mock).mockResolvedValue([{ id: KEY_ID, public_id: 'abc' }]);
     const res = await request(makeApp(oidcUser)).get('/mcp-keys').expect(200);
     expect(res.body).toEqual({ enabled: false, keys: [{ id: KEY_ID, public_id: 'abc' }] });
-    expect(listMcpApiKeys).toHaveBeenCalledWith('user-1');
+    expect(listMcpApiKeys).toHaveBeenCalledWith('user-1', 'https://idp/');
   });
 
   it('creates a key for the caller identity and returns the secret once', async () => {
@@ -98,7 +98,7 @@ describe('/mcp-keys routes', () => {
   it('revokes only the caller keys', async () => {
     (revokeMcpApiKey as vi.Mock).mockResolvedValueOnce({ id: KEY_ID, public_id: 'abc' });
     await request(makeApp(oidcUser)).delete(`/mcp-keys/${KEY_ID}`).expect(204);
-    expect(revokeMcpApiKey).toHaveBeenCalledWith(KEY_ID, 'user-1');
+    expect(revokeMcpApiKey).toHaveBeenCalledWith(KEY_ID, 'user-1', 'https://idp/');
     expect(logEvent).toHaveBeenCalledWith(expect.objectContaining({ action: 'mcp_api_key_revoked' }));
 
     (revokeMcpApiKey as vi.Mock).mockResolvedValueOnce(null);

@@ -161,15 +161,28 @@ export async function createMcpApiKey(input: CreateMcpApiKeyInput): Promise<{ ke
 }
 
 /** Lists keys (never hashes), optionally restricted to one owner. */
-export async function listMcpApiKeys(ownerSub?: string): Promise<McpApiKey[]> {
+// Owner filter: sub, plus issuer when the requester has one (subs are only
+// unique per issuer). Returns the SQL clause and appends its parameters.
+function ownerFilter(values: string[], ownerSub?: string, ownerIssuer?: string): string {
+  if (!ownerSub) return '';
+  values.push(ownerSub);
+  let clause = ` AND owner_sub = $${values.length}`;
+  if (ownerIssuer) {
+    values.push(ownerIssuer);
+    clause += ` AND owner_issuer = $${values.length}`;
+  }
+  return clause;
+}
+
+export async function listMcpApiKeys(ownerSub?: string, ownerIssuer?: string): Promise<McpApiKey[]> {
   const pool = getPool();
   if (!pool) throw new Error('Database not available');
-  const result = ownerSub
-    ? await pool.query(
-      `SELECT ${PUBLIC_COLUMNS} FROM mcp_api_keys WHERE owner_sub = $1 ORDER BY created_at DESC`,
-      [ownerSub],
-    )
-    : await pool.query(`SELECT ${PUBLIC_COLUMNS} FROM mcp_api_keys ORDER BY created_at DESC`);
+  const values: string[] = [];
+  const ownerClause = ownerFilter(values, ownerSub, ownerIssuer);
+  const result = await pool.query(
+    `SELECT ${PUBLIC_COLUMNS} FROM mcp_api_keys WHERE TRUE${ownerClause} ORDER BY created_at DESC`,
+    values,
+  );
   return result.rows;
 }
 
@@ -177,16 +190,16 @@ export async function listMcpApiKeys(ownerSub?: string): Promise<McpApiKey[]> {
  * Revokes a key by UUID id or public id. When ownerSub is provided only that
  * owner's key can be revoked. Returns the revoked key or null if not found.
  */
-export async function revokeMcpApiKey(identifier: string, ownerSub?: string): Promise<McpApiKey | null> {
+export async function revokeMcpApiKey(
+  identifier: string,
+  ownerSub?: string,
+  ownerIssuer?: string,
+): Promise<McpApiKey | null> {
   const pool = getPool();
   if (!pool) throw new Error('Database not available');
   const column = UUID_PATTERN.test(identifier) ? 'id' : 'public_id';
   const values: string[] = [identifier];
-  let ownerClause = '';
-  if (ownerSub) {
-    values.push(ownerSub);
-    ownerClause = ' AND owner_sub = $2';
-  }
+  const ownerClause = ownerFilter(values, ownerSub, ownerIssuer);
   const result = await pool.query(
     `UPDATE mcp_api_keys SET revoked_at = COALESCE(revoked_at, NOW())
      WHERE ${column} = $1${ownerClause}
