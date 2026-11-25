@@ -708,18 +708,18 @@ Remote MCP defaults to `MCP_AUTH_MODE=proxy`, using Bearer tokens issued by the 
 
 #### Opt-in direct Authentik OIDC
 
-This protects FluxHaus's **own** `/mcp` endpoint; it is not an external MCP client integration. Create a **dedicated FluxHaus MCP Authentik application and OAuth2/OIDC provider**, separate from browser/mobile and SynthBook providers:
+This protects FluxHaus's **own** `/mcp` endpoint; it is not an external MCP client integration. Create a **dedicated public FluxHaus MCP Authentik application and OAuth2/OIDC provider** with slug `fluxhaus-mcp-oidc`, separate from browser/mobile and SynthBook providers. Leave the existing confidential `fluxhaus-mcp` application/provider unchanged: it serves the legacy proxy callback.
 
 ```dotenv
 MCP_AUTH_MODE=oidc
-MCP_ISSUER_URL=https://auth.example.com/application/o/fluxhaus-mcp/
-MCP_RESOURCE_URL=https://haus.fluxhaus.io/mcp
+MCP_ISSUER_URL=https://auth.fluxhaus.io/application/o/fluxhaus-mcp-oidc/
+MCP_RESOURCE_URL=https://api.fluxhaus.io/mcp
 ```
 
 Both URLs must be absolute HTTPS with no credentials, query or fragment (explicit loopback HTTP is allowed for local tests/development). The resource path must be exactly `/mcp`; the issuer must match discovery and JWT `iss` exactly, including its trailing slash. Metadata and verification use these operator settings, never request Host or forwarded headers. Missing/invalid settings or unsupported modes fail closed with 503.
 
 - Pre-register a **public client ID** in Authentik and configure it in the MCP client; anonymous dynamic client registration is not assumed. Require authorization-code flow with **PKCE S256** and register Claude's exact redirect URI: `https://claude.ai/api/mcp/auth_callback`.
-- Configure asymmetric JWT **access tokens**, with the FluxHaus-only canonical audience `https://haus.fluxhaus.io/mcp` (your `MCP_RESOURCE_URL`) and a space-delimited `fluxhaus:mcp` scope. Request `offline_access` for refresh tokens and enable the provider's refresh-token policy; add `openid profile email` as needed for identity. ID tokens with the client ID audience, opaque tokens, proxy JWTs and SynthBook read tokens are not accepted.
+- Configure asymmetric JWT **access tokens**, with the FluxHaus-only canonical audience `https://api.fluxhaus.io/mcp` (your `MCP_RESOURCE_URL`) and a space-delimited `fluxhaus:mcp` scope. Request `offline_access` for refresh tokens and enable the provider's refresh-token policy; add `openid profile email` as needed for identity. ID tokens with the client ID audience, opaque tokens, proxy JWTs and SynthBook read tokens are not accepted.
 - If your Authentik version lacks RFC 8707 resource indicators, use a provider audience/scope mapping that emits the canonical MCP URL in `aud`, rather than its client ID. Verify actual access-token claims before switching; **never weaken the audience verifier**.
 - **`fluxhaus:mcp` grants the existing full FluxHaus admin toolset: private home, calendar and infrastructure access, including mutations. It is not read-only.** Limit application access and scope grants to accounts already authorized for FluxHaus; do not share the SynthBook issuer or grant SynthBook read-token holders this scope.
 - Direct mode advertises only the dedicated issuer, disables local `/register`, `/authorize`, `/token`, `/oauth/mcp-callback` and local authorization-server metadata, and has no proxy/browser/Basic/userinfo fallback. Dedicated MCP JWTs are also denied on general REST/admin routes before legacy bearer validation. Do **not** add the MCP issuer to `OIDC_ADDITIONAL_ISSUERS`.
