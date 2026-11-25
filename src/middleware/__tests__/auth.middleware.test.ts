@@ -248,6 +248,48 @@ describe('authMiddleware', () => {
       expect(validateBearerToken).not.toHaveBeenCalled();
       expect(next).not.toHaveBeenCalled();
     });
+
+    const variants = [
+      ['double space', `Bearer  ${API_KEY}`],
+      ['uppercase prefix', `Bearer ${API_KEY.replace('fhmcp_', 'FHMCP_')}`],
+      ['tab separator', `Bearer\t${API_KEY}`],
+      ['lowercase scheme', `bearer ${API_KEY}`],
+      ['non-Bearer scheme', `Token ${API_KEY}`],
+    ];
+
+    it.each(variants)('denies a %s key variant on REST before cookies or validators', async (_label, header) => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord);
+      (validateBearerToken as vi.Mock).mockResolvedValue({ sub: 'user-1' });
+      const req = mockReq({ authorization: header }, '/mcp-keys') as Request;
+      (req as Request & { signedCookies: unknown }).signedCookies = {
+        auth_user: JSON.stringify({ username: 'alice', role: 'admin', sub: 'user-1' }),
+      };
+      const res = mockRes() as Response;
+      await authMiddleware(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(req.user).toBeUndefined();
+      expect(validateMcpApiKey).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it.each(variants)('rejects a %s key variant on /mcp as an invalid key', async (_label, header) => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord);
+      const res = mockRes() as Response;
+      await authMiddleware(mockReq({ authorization: header }, '/mcp') as Request, res, next);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'WWW-Authenticate',
+        'Bearer resource_metadata="http://localhost:8888/.well-known/oauth-protected-resource/mcp"',
+      );
+      expect(validateMcpApiKey).not.toHaveBeenCalled();
+      expect(verifyMcpToken).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+      expectNoSecretLogged();
+    });
   });
 
   it('should return 401 when no auth provided', async () => {

@@ -7,7 +7,7 @@ import {
   mcpResource, serverOrigin, verifyMcpToken,
 } from '../mcp-auth';
 import {
-  isMcpApiKeysEnabled, isMcpApiKeyToken, mcpApiKeyPublicId, validateMcpApiKey,
+  containsMcpApiKeyMarker, isMcpApiKeysEnabled, mcpApiKeyPublicId, validateMcpApiKey,
 } from '../mcp-api-keys';
 import { logEvent } from '../audit';
 import { writePoint } from '../influx';
@@ -78,12 +78,13 @@ export async function authMiddleware(
     const origin = config.mode === 'oidc' ? new URL(config.resource).origin : serverOrigin(req);
     const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
     const authHeader = req.headers.authorization || '';
-    if (authHeader.startsWith('Bearer ') && isMcpApiKeyToken(authHeader.slice(7))) {
-      // Scoped MCP API keys never reach JWT/userinfo validation.
-      const token = authHeader.slice(7);
+    if (containsMcpApiKeyMarker(authHeader)) {
+      // Scoped MCP API keys (and any malformed case/whitespace variant) never
+      // reach JWT/userinfo validation; only the exact format can validate.
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
       const publicId = mcpApiKeyPublicId(token);
       const enabled = isMcpApiKeysEnabled();
-      const key = enabled ? await validateMcpApiKey(token) : null;
+      const key = enabled && publicId ? await validateMcpApiKey(token) : null;
       if (key) {
         req.user = {
           role: 'admin',
@@ -105,7 +106,7 @@ export async function authMiddleware(
           userAgent: req.headers['user-agent'],
           clientIP: req.ip,
           publicId,
-          reason: enabled ? 'invalid_key' : 'mcp_api_keys_disabled',
+          reason: !enabled ? 'mcp_api_keys_disabled' : (publicId ? 'invalid_key' : 'malformed_key'),
         },
         'MCP API key rejected',
       );
@@ -164,8 +165,8 @@ export async function authMiddleware(
   // or MCP API keys (which must never be sent to the IdP). This is rejection
   // only, including unsigned/malformed-signature JWTs, regardless of config.
   const bearer = req.headers.authorization;
-  if (bearer?.startsWith('Bearer ')
-    && (isMcpApiKeyToken(bearer.slice(7)) || isDedicatedMcpToken(bearer.slice(7)))) {
+  if (containsMcpApiKeyMarker(bearer)
+    || (bearer?.startsWith('Bearer ') && isDedicatedMcpToken(bearer.slice(7)))) {
     res.status(401).json({ message: 'Unauthorized' });
     return;
   }

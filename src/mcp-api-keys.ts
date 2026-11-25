@@ -39,6 +39,15 @@ export function isMcpApiKeyToken(token: string): boolean {
   return token.startsWith(MCP_API_KEY_PREFIX);
 }
 
+/**
+ * True when an Authorization header carries anything resembling an MCP API
+ * key (any case/whitespace variant). Such headers must never reach JWT or IdP
+ * userinfo validation.
+ */
+export function containsMcpApiKeyMarker(header: string | undefined): boolean {
+  return /fhmcp_/i.test(header || '');
+}
+
 /** Public id of a well-formed key (safe to log), otherwise null. */
 export function mcpApiKeyPublicId(token: string): string | null {
   return KEY_PATTERN.exec(token)?.[1] ?? null;
