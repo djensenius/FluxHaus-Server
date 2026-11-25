@@ -9,6 +9,9 @@ import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
 import type { ThermostatControlResult, ThermostatControls } from './indoor-climate';
+import {
+  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess,
+} from './mcp-access';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
@@ -234,8 +237,14 @@ async function fetchPublicHttpUrl(rawUrl: string | URL, init: RequestInit, maxRe
   throw new Error('Too many redirects');
 }
 
+function readOnlyDenied(kind: string, name: string): string {
+  return `${kind} ${name} is not available with read-only MCP access`;
+}
+
 // Wraps server.tool so every handler gets try/catch, logging, and timing.
-function wrapToolHandlers(server: McpServer): McpServer['tool'] {
+// With read access, tools outside the read allowlist are disabled (hidden
+// from tools/list) and their handlers refuse to run (defense in depth).
+function wrapToolHandlers(server: McpServer, access: McpAccess): McpServer['tool'] {
   const originalTool = server.tool.bind(server);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wrapped = (...rawArgs: any[]) => {
@@ -243,12 +252,21 @@ function wrapToolHandlers(server: McpServer): McpServer['tool'] {
     const name = wrappedArgs[0] as string;
     const handlerIndex = wrappedArgs.length - 1;
     const originalHandler = wrappedArgs[handlerIndex];
+    const allowed = isMcpToolAllowed(access, name);
     if (typeof originalHandler !== 'function') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (originalTool as any)(...rawArgs);
+      const registered = (originalTool as any)(...rawArgs);
+      if (!allowed) registered.disable();
+      return registered;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     wrappedArgs[handlerIndex] = async (...handlerArgs: any[]) => {
+      if (!allowed) {
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: readOnlyDenied('Tool', name) }],
+        };
+      }
       const start = Date.now();
       try {
         const result = await originalHandler(...handlerArgs);
@@ -268,9 +286,38 @@ function wrapToolHandlers(server: McpServer): McpServer['tool'] {
       }
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (originalTool as any)(...wrappedArgs);
+    const registered = (originalTool as any)(...wrappedArgs);
+    if (!allowed) registered.disable();
+    return registered;
   };
   return wrapped as McpServer['tool'];
+}
+
+// Wraps server.resource / server.prompt so registrations outside the read
+// allowlists are disabled for read access and their callbacks refuse to run.
+function wrapAccessControlled<T extends (...args: never[]) => unknown>(
+  original: T,
+  kind: 'Resource' | 'Prompt',
+  isAllowed: (name: string) => boolean,
+): T {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wrapped = (...rawArgs: any[]) => {
+    const name = String(rawArgs[0]);
+    const allowed = isAllowed(name);
+    const args = [...rawArgs];
+    const callbackIndex = args.length - 1;
+    const callback = args[callbackIndex];
+    if (!allowed && typeof callback === 'function') {
+      args[callbackIndex] = async () => {
+        throw new Error(readOnlyDenied(kind, name));
+      };
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registered = (original as any)(...args);
+    if (!allowed) registered.disable();
+    return registered;
+  };
+  return wrapped as unknown as T;
 }
 
 // Dangerous Jinja2 patterns that could access the HA host system.
@@ -291,7 +338,7 @@ const MAX_TEMPLATE_LENGTH = 4000;
 
 export default function createMcpServer(
   services: FluxHausServices,
-  options: { userSub?: string } = {},
+  options: { userSub?: string; access?: McpAccess } = {},
 ): McpServer {
   const {
     homeAssistantClient,
@@ -300,6 +347,7 @@ export default function createMcpServer(
     cameraURL,
   } = services;
   const { userSub } = options;
+  const access: McpAccess = options.access ?? 'full';
   const calendarUnavailable = () => ({
     isError: true,
     content: [{
@@ -320,7 +368,17 @@ export default function createMcpServer(
   );
 
   // Wrap all tool handlers with error handling and logging
-  server.tool = wrapToolHandlers(server);
+  server.tool = wrapToolHandlers(server, access);
+  server.resource = wrapAccessControlled(
+    server.resource.bind(server),
+    'Resource',
+    (name) => isMcpResourceAllowed(access, name),
+  );
+  server.prompt = wrapAccessControlled(
+    server.prompt.bind(server),
+    'Prompt',
+    (name) => isMcpPromptAllowed(access, name),
+  );
 
   // ── Resources ────────────────────────────────────────────────────────────────
 
