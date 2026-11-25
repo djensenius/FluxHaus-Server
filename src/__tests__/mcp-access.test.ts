@@ -114,7 +114,7 @@ describe('MCP access policy', () => {
       .catch((err: Error) => ({ isError: true, content: [{ type: 'text', text: err.message }] }));
     expect(result.isError).toBe(true);
     expect(car.unlock).not.toHaveBeenCalled();
-    await expect(client.readResource({ uri: 'fluxhaus://camera/url' })).rejects.toThrow();
+    await expect(client.readResource({ uri: 'fluxhaus://camera/url' })).rejects.toThrow(/disabled/);
     const allowed = await client.callTool({ name: 'get_car_status', arguments: {} });
     expect(allowed.isError).toBeFalsy();
     await close();

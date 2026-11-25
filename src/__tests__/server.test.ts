@@ -13,6 +13,8 @@ import { executeAICommand } from '../ai-command';
 import { getPool } from '../db';
 import { validateBearerToken } from '../middleware/oidc.middleware';
 import { verifyMcpToken } from '../mcp-auth';
+import { validateMcpApiKey } from '../mcp-api-keys';
+import { MCP_READ_TOOLS } from '../mcp-access';
 
 // Mock dependencies
 vi.mock('fs');
@@ -78,6 +80,11 @@ vi.mock('../mcp-auth', async (importOriginal) => ({
   DEV_SESSION_SECRET: 'fluxhaus-dev-secret',
 }));
 
+vi.mock('../mcp-api-keys', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../mcp-api-keys')>(),
+  validateMcpApiKey: vi.fn().mockResolvedValue(null),
+}));
+
 // Mock global fetch
 global.fetch = vi.fn(() => Promise.resolve({
   json: () => Promise.resolve({}),
@@ -107,6 +114,7 @@ describe('Server', () => {
     delete process.env.MCP_ISSUER_URL;
     delete process.env.MCP_RESOURCE_URL;
     delete process.env.MCP_ALLOWED_ORIGINS;
+    delete process.env.MCP_API_KEYS_ENABLED;
   });
 
   beforeEach(async () => {
@@ -239,6 +247,51 @@ describe('Server', () => {
     expect(res.headers['access-control-allow-origin']).toBe('https://claude.ai');
     expect(res.headers['access-control-expose-headers']).toBe('WWW-Authenticate');
     expect(res.body.error.message).toBe('Method not allowed in stateless mode');
+  });
+
+  describe('MCP API keys', () => {
+    const apiKey = `fhmcp_0123456789abcdef_${'b'.repeat(64)}`;
+    const keyRecord = (scope: 'read' | 'full') => ({
+      id: 'key-uuid', public_id: '0123456789abcdef', owner_sub: 'user-1', owner_issuer: null,
+      owner_username: 'alice', scope,
+    });
+
+    async function listTools() {
+      const res = await request(app).post('/mcp')
+        .set('Authorization', `Bearer ${apiKey}`)
+        .set('Accept', 'application/json, text/event-stream')
+        .send({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} })
+        .expect(200);
+      const data = res.text.split('\n').find((line) => line.startsWith('data: '));
+      return (JSON.parse(data!.slice(6)).result.tools as { name: string }[]).map((t) => t.name);
+    }
+
+    it('serves only read-allowlisted tools to a read key on /mcp', async () => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord('read'));
+      const tools = await listTools();
+      expect(tools.sort()).toEqual([...MCP_READ_TOOLS].sort());
+      expect(verifyMcpToken).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+    });
+
+    it('serves every tool to a full key on /mcp', async () => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord('full'));
+      const tools = await listTools();
+      expect(tools).toEqual(expect.arrayContaining(['unlock_car', 'influxdb_query']));
+    });
+
+    it('rejects keys on /mcp when disabled and on REST always', async () => {
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord('full'));
+      await request(app).post('/mcp').set('Authorization', `Bearer ${apiKey}`)
+        .send({ jsonrpc: '2.0', id: 1, method: 'tools/list' }).expect(401);
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      await request(app).get('/').set('Authorization', `Bearer ${apiKey}`).expect(401);
+      await request(app).get('/mcp-keys').set('Authorization', `Bearer ${apiKey}`).expect(401);
+      expect(validateMcpApiKey).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+    });
   });
 
   it.each([oidcAuthHeader, basicAuthHeader('demo', 'demopassword')])('forwards robot availability in API snapshots', async (authorization) => {

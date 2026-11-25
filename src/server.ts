@@ -38,6 +38,7 @@ import radarRouter from './routes/radar.routes';
 import createRoutinesRouter from './routes/routines.routes';
 import createWebhooksRouter from './routes/webhooks.routes';
 import preferencesRouter from './routes/preferences.routes';
+import mcpKeysRouter from './routes/mcp-keys.routes';
 import calendarSourcesRouter from './routes/calendar-sources.routes';
 import createCalendarSettingsRouter from './routes/calendar-settings.routes';
 import memoryRouter from './routes/memory.routes';
@@ -45,6 +46,7 @@ import conversationSearchRouter from './routes/conversation-search.routes';
 import gt3Router from './routes/gt3.routes';
 import gt3PublicRouter from './routes/gt3-public.routes';
 import createMcpServer from './mcp-server';
+import { mcpAccessForUser } from './mcp-access';
 import { ConversationMessage, ProgressCallback, executeAICommand } from './ai-command';
 import { loadAndScheduleAll } from './scheduler';
 import { setAlertCallback, startMonitor } from './alert-monitor';
@@ -1726,7 +1728,10 @@ export async function createServer(): Promise<Express> {
       const mcpTransport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
       });
-      const mcpServer = createMcpServer(allServices, { userSub: req.user.sub });
+      const mcpServer = createMcpServer(allServices, {
+        userSub: req.user.sub,
+        access: mcpAccessForUser(req.user),
+      });
       res.on('close', () => {
         mcpTransport.close();
         mcpServer.close();
@@ -1766,6 +1771,7 @@ export async function createServer(): Promise<Express> {
   app.use(adminRouter);
   app.use(pushRouter);
   app.use(preferencesRouter);
+  app.use(mcpKeysRouter);
   app.use(calendarSourcesRouter);
   app.use(createCalendarSettingsRouter(allServices));
   app.use(memoryRouter);

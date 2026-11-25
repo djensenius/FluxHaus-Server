@@ -347,6 +347,23 @@ export async function initDatabase(): Promise<void> {
       );
       CREATE INDEX IF NOT EXISTS idx_gt3_ride_shares_ride ON gt3_ride_shares (ride_id);
       CREATE INDEX IF NOT EXISTS idx_gt3_ride_shares_user ON gt3_ride_shares (user_sub, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS mcp_api_keys (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        public_id TEXT NOT NULL UNIQUE,
+        key_hash TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        owner_sub TEXT NOT NULL,
+        owner_issuer TEXT,
+        owner_username TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK (scope IN ('read', 'full')),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        expires_at TIMESTAMPTZ,
+        last_used_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        created_by_sub TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_owner ON mcp_api_keys (owner_sub, created_at DESC);
     `);
     dbLogger.info('Database tables initialized');
   } catch (err) {
