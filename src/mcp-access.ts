@@ -197,14 +197,16 @@ export const MCP_FULL_ONLY_PROMPTS: ReadonlySet<string> = new Set([]);
 const REDACTED = '[REDACTED]';
 // Key names whose values are credentials: *_token, *_secret, *_password,
 // passphrase, authkey, api(_)key, private(_)key, credential(s), and UniFi's
-// x_*key fields (x_authkey, x_vwirekey, x_iapp_key, ...).
+// x_*key fields (x_authkey, x_vwirekey, x_iapp_key, ...). SENSITIVE_CAMEL_KEY
+// (case-sensitive) covers camelCase names: accessToken, clientSecret, ...
 const SENSITIVE_KEY = /(^|_)(token|secret|password|passphrase|authkey|api_?key|private_?key|credentials?)$|^x_.*key$/i;
-const SENSITIVE_QUERY_PARAM = /([?&](?:token|access_token|apikey|api_key|key|auth|authSig|password|secret)=)[^&#"'\s\\]+/gi;
+const SENSITIVE_CAMEL_KEY = /[a-z0-9](Token|Secret|Password|Passphrase|AuthKey|ApiKey|PrivateKey|Credentials?)$/;
+const SENSITIVE_QUERY_PARAM = /([?&](?:token|access_token|apikey|api_key|key|auth|authSig|password|secret|x-plex-token)=)[^&#"'\s\\]+/gi;
 const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/?#@\s"'\\:]+:[^/?#@\s"'\\]+@/gi;
 const SENSITIVE_JSON_STRING = /("([^"\\]+)"\s*:\s*)("(?:[^"\\]|\\.)*"|-?\d[\d.eE+-]*)/g;
 
 export function isSensitiveKey(key: string): boolean {
-  return SENSITIVE_KEY.test(key);
+  return SENSITIVE_KEY.test(key) || SENSITIVE_CAMEL_KEY.test(key);
 }
 
 function redactString(value: string): string {

@@ -327,7 +327,16 @@ describe('read access secret isolation', () => {
     expect(urls[1]).toBe('postgres://[REDACTED]@db:5432/app');
     expect(urls[2]).toBe('https://user@host/path');
     expect(['x_vwirekey', 'x_authkey', 'db_password', 'passphrase', 'credential'].every(isSensitiveKey)).toBe(true);
-    expect(['tokens', 'keyboard', 'secretary', 'entity_picture'].some(isSensitiveKey)).toBe(false);
+    expect(['accessToken', 'refreshToken', 'authToken', 'clientSecret', 'authKey', 'apiKey', 'AuthKey',
+      'privateKey', 'userPassword', 'awsCredentials'].every(isSensitiveKey)).toBe(true);
+    expect(['tokens', 'keyboard', 'secretary', 'entity_picture', 'total_tokens', 'monkey', 'totalTokens',
+      'secretaryName', 'tokenCount', 'hotkey'].some(isSensitiveKey)).toBe(false);
+    expect(redactSensitive({ accessToken: 'a', clientSecret: { v: 1 }, totalTokens: 3 }))
+      .toEqual({ accessToken: '[REDACTED]', clientSecret: '[REDACTED]', totalTokens: 3 });
+    expect(redactSensitive('https://plex/library/parts/1/file?X-Plex-Token=plexsecret&download=1'))
+      .toBe('https://plex/library/parts/1/file?X-Plex-Token=[REDACTED]&download=1');
+    expect(redactSensitive('/photo/:/transcode?url=x&x-plex-token=plexsecret'))
+      .toBe('/photo/:/transcode?url=x&x-plex-token=[REDACTED]');
     expect(redactMcpResult({ content: [{ type: 'text', text: 'not json "x_authkey": "zz" and "api_key": 42' }] }))
       .toEqual({ content: [{ type: 'text', text: 'not json "x_authkey": "[REDACTED]" and "api_key": "[REDACTED]"' }] });
     expect(omitKeysDeep({ a: [{ Labels: 1, b: { Labels: 2, c: 3 } }] }, new Set(['Labels'])))

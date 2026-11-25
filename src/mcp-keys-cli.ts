@@ -12,10 +12,12 @@ Commands:
          [--issuer <issuer-url>] [--expires <ISO-8601>]
       Create a key for an OIDC user. The key is printed once; store it securely.
       --issuer defaults to OIDC_ISSUER_URL; it must match the user's login
-      issuer for the key to appear in their self-service list.
+      issuer for the key to appear in their self-service list. Users who sign
+      in through another trusted issuer need an explicit --issuer.
   list [--sub <sub> [--issuer <issuer-url>]]
       List keys (all owners, or one owner; --issuer defaults to
-      OIDC_ISSUER_URL). Hashes and secrets are never shown.
+      OIDC_ISSUER_URL, so pass it explicitly for other trusted issuers).
+      Hashes and secrets are never shown.
   revoke <id|public-id>
       Revoke a key by UUID or public id.
 `;
