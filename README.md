@@ -725,7 +725,7 @@ Both URLs must be absolute HTTPS with no credentials, query or fragment (explici
 - Direct mode advertises only the dedicated issuer, disables local `/register`, `/authorize`, `/token`, `/oauth/mcp-callback` and local authorization-server metadata, and has no proxy/browser/Basic/userinfo fallback. Dedicated MCP JWTs are also denied on general REST/admin routes before legacy bearer validation. Do **not** add the MCP issuer to `OIDC_ADDITIONAL_ISSUERS`.
 - Personal memory may require explicit inclusion of this exact issuer in `HINDSIGHT_ALLOWED_ISSUERS` and a matching subject mapping to the user's existing FluxHaus account. Preserve stable `sub` attribution across providers; do not automatically grant memory policies. Existing session-secret and memory eligibility requirements still apply.
 
-To retain or restore existing proxy clients, explicitly set `MCP_AUTH_MODE=proxy` and retain the existing OIDC/session configuration. Coordinate client/provider setup before the deployment switch; tokens are not interchangeable across modes.
+To retain or restore existing proxy clients, explicitly set `MCP_AUTH_MODE=proxy` and retain the existing OIDC/session configuration. **Keep both `MCP_ISSUER_URL` and `MCP_RESOURCE_URL` configured while the dedicated tokens/provider remain usable, even in proxy mode:** the REST deny guard uses those identifiers to prevent dedicated MCP tokens from becoming general REST/admin credentials. Do not remove both identifiers during rollback. Coordinate client/provider setup before the deployment switch; tokens are not interchangeable across modes.
 
 Security notes:
 
