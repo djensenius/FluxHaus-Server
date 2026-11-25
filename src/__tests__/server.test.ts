@@ -12,6 +12,7 @@ import synthesizeSpeech from '../tts';
 import { executeAICommand } from '../ai-command';
 import { getPool } from '../db';
 import { validateBearerToken } from '../middleware/oidc.middleware';
+import { verifyMcpToken } from '../mcp-auth';
 
 // Mock dependencies
 vi.mock('fs');
@@ -69,7 +70,8 @@ vi.mock('../middleware/oidc.middleware', () => {
   };
 });
 
-vi.mock('../mcp-auth', () => ({
+vi.mock('../mcp-auth', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../mcp-auth')>(),
   verifyMcpToken: vi.fn().mockResolvedValue(null),
   serverOrigin: vi.fn().mockReturnValue('http://localhost:8888'),
   getMcpSigningKey: vi.fn().mockReturnValue(new Uint8Array(32)),
@@ -101,6 +103,10 @@ describe('Server', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    delete process.env.MCP_AUTH_MODE;
+    delete process.env.MCP_ISSUER_URL;
+    delete process.env.MCP_RESOURCE_URL;
+    delete process.env.MCP_ALLOWED_ORIGINS;
   });
 
   beforeEach(async () => {
@@ -194,6 +200,45 @@ describe('Server', () => {
 
   it('should return 401 without auth', async () => {
     await request(app).get('/').expect(401);
+  });
+
+  it.each(['/mcp', '/MCP', '/mcp/'])('exposes canonical direct auth challenges through MCP CORS at %s', async (path) => {
+    process.env.MCP_AUTH_MODE = 'oidc';
+    process.env.MCP_ISSUER_URL = 'https://auth.example.com/application/o/fluxhaus-mcp/';
+    process.env.MCP_RESOURCE_URL = 'https://haus.example.com/mcp';
+    const res = await request(app).get(path)
+      .set('Host', 'attacker.example').set('Origin', 'https://claude.ai').expect(401);
+    expect(res.headers['www-authenticate']).toBe(
+      'Bearer resource_metadata="https://haus.example.com/.well-known/oauth-protected-resource/mcp"',
+    );
+    expect(res.headers['access-control-allow-origin']).toBe('https://claude.ai');
+    expect(res.headers['access-control-expose-headers']).toBe('WWW-Authenticate');
+  });
+
+  it.each(['/mcp', '/MCP', '/mcp/'])('keeps MCP preflight unauthenticated and rejects untrusted Origins at %s', async (path) => {
+    process.env.MCP_ALLOWED_ORIGINS = 'https://claude.ai';
+    // Recreate to pick up the explicit Origin allowlist.
+    app = await createServer();
+    await request(app).options(path).set('Origin', 'https://claude.ai')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'Authorization,MCP-Protocol-Version').expect(204);
+    await request(app).options(path).set('Origin', 'https://attacker.example').expect(403);
+    await request(app).get(path).set('Origin', 'https://attacker.example').expect(403);
+  });
+
+  it.each([
+    ['get', '/mcp'], ['get', '/MCP'], ['get', '/mcp/'],
+    ['delete', '/mcp'], ['delete', '/MCP'], ['delete', '/mcp/'],
+  ])('preserves authenticated stateless %s %s responses with pre-auth CORS', async (method, path) => {
+    (verifyMcpToken as vi.Mock).mockResolvedValueOnce({ sub: 'account-1' });
+    const client = request(app);
+    const call = method === 'get' ? client.get(path) : client.delete(path);
+    const res = await call.set('Authorization', 'Bearer valid-mcp-token')
+      .set('Origin', 'https://claude.ai').expect(405);
+    expect(res.headers.allow).toBe('POST');
+    expect(res.headers['access-control-allow-origin']).toBe('https://claude.ai');
+    expect(res.headers['access-control-expose-headers']).toBe('WWW-Authenticate');
+    expect(res.body.error.message).toBe('Method not allowed in stateless mode');
   });
 
   it.each([oidcAuthHeader, basicAuthHeader('demo', 'demopassword')])('forwards robot availability in API snapshots', async (authorization) => {

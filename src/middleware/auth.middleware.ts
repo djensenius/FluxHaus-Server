@@ -2,7 +2,10 @@ import { NextFunction, Request, Response } from 'express';
 import { createHash } from 'crypto';
 import { AuthenticatedUser } from '../types/auth';
 import { isOidcEnabled, validateBearerToken } from './oidc.middleware';
-import { mcpResource, serverOrigin, verifyMcpToken } from '../mcp-auth';
+import {
+  getMcpAuthConfig, isDedicatedMcpToken, MCP_SCOPE, McpScopeError,
+  mcpResource, serverOrigin, verifyMcpToken,
+} from '../mcp-auth';
 import { logEvent } from '../audit';
 import { writePoint } from '../influx';
 import logger from '../logger';
@@ -62,18 +65,40 @@ export async function authMiddleware(
   // MCP HTTP is protected by audience-bound MCP Bearer tokens only. Do not
   // accept browser cookies, sessions, or generic OIDC access tokens on /mcp.
   if (isMcpPath(req.path)) {
+    let config;
+    try {
+      config = getMcpAuthConfig();
+    } catch {
+      res.status(503).json({ message: 'MCP authentication not configured' });
+      return;
+    }
+    const origin = config.mode === 'oidc' ? new URL(config.resource).origin : serverOrigin(req);
+    const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
     const authHeader = req.headers.authorization || '';
     if (authHeader.startsWith('Bearer ')) {
       const token = authHeader.slice(7);
-      const mcpClaims = await verifyMcpToken(token, mcpResource(req));
+      let mcpClaims;
+      try {
+        mcpClaims = await verifyMcpToken(token, mcpResource(req, config), config);
+      } catch (error) {
+        if (error instanceof McpScopeError) {
+          res.setHeader('WWW-Authenticate', `${challenge}, error="insufficient_scope", scope="${MCP_SCOPE}"`);
+          res.status(403).json({ message: 'Insufficient scope' });
+          return;
+        }
+        res.status(503).json({ message: 'MCP authentication not configured' });
+        return;
+      }
       if (mcpClaims) {
         req.user = {
           role: 'admin',
           username: mcpClaims.preferred_username
+            || mcpClaims.name
             || mcpClaims.email
             || mcpClaims.sub,
           sub: mcpClaims.sub,
           email: mcpClaims.email,
+          name: mcpClaims.name,
           issuer: mcpClaims.oidcIssuer,
         };
         authLogger.debug({ username: req.user.username }, 'MCP token auth success');
@@ -92,11 +117,15 @@ export async function authMiddleware(
       );
     }
 
-    const origin = serverOrigin(req);
-    res.setHeader(
-      'WWW-Authenticate',
-      `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`,
-    );
+    res.setHeader('WWW-Authenticate', challenge);
+    res.status(401).json({ message: 'Unauthorized' });
+    return;
+  }
+
+  // Never let the legacy REST validator's userinfo fallback accept MCP JWTs.
+  // This is rejection only, including unsigned/malformed-signature JWTs.
+  const bearer = req.headers.authorization;
+  if (bearer?.startsWith('Bearer ') && isDedicatedMcpToken(bearer.slice(7))) {
     res.status(401).json({ message: 'Unauthorized' });
     return;
   }
