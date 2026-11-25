@@ -21,6 +21,10 @@ function auditMiddleware(req: Request, _res: Response, next: NextFunction): void
     route: req.path,
     method: req.method,
     ip: req.ip,
+    // Identify which MCP API key made the call (never the secret or hash).
+    ...(user?.authMethod === 'mcp_api_key' ? {
+      details: { authMethod: user.authMethod, mcpKeyId: user.mcpKeyId, mcpAccess: user.mcpAccess },
+    } : {}),
   }).catch((err) => {
     auditLogger.debug({ err }, 'Audit log write failed');
   });
