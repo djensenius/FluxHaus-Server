@@ -20,6 +20,13 @@ import logger from '../logger';
 
 const oidcLogger = logger.child({ subsystem: 'oidc' });
 
+/** Linear-time trailing-slash trim (avoids regex backtracking on untrusted input). */
+function stripTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value[end - 1] === '/') end -= 1;
+  return value.slice(0, end);
+}
+
 let oidcClient: Configuration | null = null;
 let oidcIssuer: { metadata: ServerMetadata } | null = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -95,9 +102,17 @@ let oidcInitPromise: Promise<void> | null = null;
 let lastOidcInitAttempt = 0;
 const OIDC_REINIT_COOLDOWN_MS = 60_000; // 1 minute
 
+export interface ValidatedBearerClaims {
+  sub: string;
+  email?: string;
+  preferred_username?: string;
+  /** The issuer that actually validated the token. */
+  issuer?: string;
+}
+
 export async function validateBearerToken(
   token: string,
-): Promise<{ sub: string; email?: string; preferred_username?: string } | null> {
+): Promise<ValidatedBearerClaims | null> {
   if (!oidcIssuer) {
     const { OIDC_ISSUER_URL, OIDC_CLIENT_ID } = process.env;
     if (!OIDC_ISSUER_URL || !OIDC_CLIENT_ID) {
@@ -124,6 +139,16 @@ export async function validateBearerToken(
     }
   }
 
+  // Decode token payload (without verification) for logging and for labelling
+  // userinfo-validated tokens. Never trusted for authentication.
+  let tokenClaims: Record<string, unknown> | null = null;
+  try {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      tokenClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
+    }
+  } catch { /* not a JWT — opaque token */ }
+
   // Try local JWT validation via JWKS (fast, no network call per request)
   if (jwks) {
     // Try primary issuer first, then additional trusted issuers.
@@ -135,7 +160,7 @@ export async function validateBearerToken(
     const errorState = { last: null as Error | null };
     const tryIssuer = async (
       issuer: string,
-    ): Promise<{ sub: string; email?: string; preferred_username?: string } | null> => {
+    ): Promise<ValidatedBearerClaims | null> => {
       try {
         const { payload } = await jwtVerify(token, jwks!, { issuer });
         const jwtPayload = payload as JWTPayload & {
@@ -147,6 +172,7 @@ export async function validateBearerToken(
           sub: jwtPayload.sub,
           email: jwtPayload.email,
           preferred_username: jwtPayload.preferred_username,
+          issuer,
         };
       } catch (err) {
         const jwtErr = err instanceof Error ? err : new Error(String(err));
@@ -162,20 +188,9 @@ export async function validateBearerToken(
     // Try each issuer sequentially, short-circuit on first match
     const results = await allIssuers.reduce(
       async (accP, issuer) => (await accP) ?? tryIssuer(issuer),
-      Promise.resolve(
-        null as { sub: string; email?: string; preferred_username?: string } | null,
-      ),
+      Promise.resolve(null as ValidatedBearerClaims | null),
     );
     if (results) return results;
-
-    // Decode token payload (without verification) to log what the token actually claims
-    let tokenClaims: Record<string, unknown> | null = null;
-    try {
-      const parts = token.split('.');
-      if (parts.length === 3) {
-        tokenClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString());
-      }
-    } catch { /* not a JWT — opaque token */ }
 
     if (tokenClaims) {
       oidcLogger.warn(
@@ -214,10 +229,20 @@ export async function validateBearerToken(
     try {
       const userinfo = await fetchUserInfo(oidcClient, token, skipSubjectCheck);
       if (!userinfo.sub) return null;
+      // Userinfo proves the token is accepted, but not which provider minted
+      // it. Only label it with the primary issuer when the token itself is a
+      // JWT claiming that issuer; otherwise leave the issuer unknown (fail closed).
+      const primaryIssuer = oidcClient.serverMetadata().issuer;
+      const claimedIss = typeof tokenClaims?.iss === 'string' ? tokenClaims.iss : undefined;
+      const issuer = claimedIss && primaryIssuer
+        && stripTrailingSlashes(claimedIss) === stripTrailingSlashes(primaryIssuer)
+        ? primaryIssuer
+        : undefined;
       return {
         sub: userinfo.sub,
         email: userinfo.email as string | undefined,
         preferred_username: userinfo.preferred_username as string | undefined,
+        issuer,
       };
     } catch (err) {
       const uiErr = err instanceof Error ? err : new Error(String(err));
@@ -300,6 +325,7 @@ export function createAuthRouter(): Router {
         username: (userinfo.preferred_username || userinfo.email || userinfo.sub) as string,
         sub: userinfo.sub,
         email: userinfo.email as string | undefined,
+        issuer: oidcClient.serverMetadata().issuer,
       };
 
       // Store user in a signed cookie (reliable, unlike PG session store)

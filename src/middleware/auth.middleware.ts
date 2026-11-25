@@ -74,6 +74,7 @@ export async function authMiddleware(
             || mcpClaims.sub,
           sub: mcpClaims.sub,
           email: mcpClaims.email,
+          issuer: mcpClaims.oidcIssuer,
         };
         authLogger.debug({ username: req.user.username }, 'MCP token auth success');
         next();
@@ -138,6 +139,7 @@ export async function authMiddleware(
         username: claims.preferred_username || claims.email || claims.sub,
         sub: claims.sub,
         email: claims.email,
+        issuer: claims.issuer,
       };
       authLogger.debug({ username: req.user.username }, 'OIDC auth success');
       next();

@@ -4,9 +4,12 @@
  */
 import { JWTPayload, jwtVerify } from 'jose';
 
+/** Public development fallback for SESSION_SECRET — never safe in production. */
+export const DEV_SESSION_SECRET = 'fluxhaus-dev-secret';
+
 /** HMAC key for signing/verifying self-issued MCP access tokens. */
 export function getMcpSigningKey(): Uint8Array {
-  const secret = process.env.SESSION_SECRET || 'fluxhaus-dev-secret';
+  const secret = process.env.SESSION_SECRET || DEV_SESSION_SECRET;
   return new TextEncoder().encode(secret);
 }
 
@@ -30,6 +33,11 @@ export interface McpTokenClaims {
   sub: string;
   email?: string;
   preferred_username?: string;
+  /**
+   * Original OIDC issuer recorded when this MCP token was minted from a
+   * validated OIDC login. Undefined for tokens minted without one.
+   */
+  oidcIssuer?: string;
 }
 
 /**
@@ -48,10 +56,12 @@ export async function verifyMcpToken(
       issuer,
     });
     if (payload.sub && (payload as JWTPayload & { type?: string }).type === 'mcp') {
+      const oidcIss = (payload as JWTPayload & { oidc_iss?: unknown }).oidc_iss;
       return {
         sub: payload.sub as string,
         email: (payload as JWTPayload & { email?: string }).email,
         preferred_username: (payload as JWTPayload & { preferred_username?: string }).preferred_username,
+        oidcIssuer: typeof oidcIss === 'string' && oidcIss ? oidcIss : undefined,
       };
     }
     return null;

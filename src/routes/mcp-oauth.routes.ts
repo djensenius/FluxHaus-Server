@@ -25,6 +25,8 @@ interface UserClaims {
   sub: string;
   email?: string;
   preferred_username?: string;
+  /** OIDC issuer whose token endpoint/userinfo validated this login. */
+  issuer?: string;
 }
 
 interface AuthCode {
@@ -339,6 +341,11 @@ export default function createMcpOAuthRouter(): Router {
               email: payload.email as string | undefined,
               preferred_username: payload
                 .preferred_username as string | undefined,
+              // id_token came straight from the issuer's token endpoint;
+              // only record the issuer if its claim agrees.
+              issuer: payload.iss === issuer.metadata.issuer
+                ? issuer.metadata.issuer
+                : undefined,
             };
           }
         } catch {
@@ -364,6 +371,7 @@ export default function createMcpOAuthRouter(): Router {
                 email: ui.email as string | undefined,
                 preferred_username: ui
                   .preferred_username as string | undefined,
+                issuer: issuer.metadata.issuer,
               };
             }
           }
@@ -477,6 +485,8 @@ export default function createMcpOAuthRouter(): Router {
       sub: stored.userClaims.sub,
       email: stored.userClaims.email,
       preferred_username: stored.userClaims.preferred_username,
+      // Original OIDC issuer (from the validated code exchange above).
+      oidc_iss: stored.userClaims.issuer,
       type: 'mcp',
     })
       .setProtectedHeader({ alg: 'HS256' })

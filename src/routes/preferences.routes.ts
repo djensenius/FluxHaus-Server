@@ -23,17 +23,27 @@ router.patch('/preferences', csrfMiddleware, async (req, res) => {
     res.status(403).json({ error: 'OIDC authentication required' });
     return;
   }
-  const { memoryEnabled, defaultCalendarId } = req.body as {
+  const { memoryEnabled, personalMemoryEnabled, defaultCalendarId } = req.body as {
     memoryEnabled?: boolean;
+    personalMemoryEnabled?: boolean;
     defaultCalendarId?: string | null;
   };
-  if (memoryEnabled === undefined && defaultCalendarId === undefined) {
+  if (
+    memoryEnabled === undefined
+    && personalMemoryEnabled === undefined
+    && defaultCalendarId === undefined
+  ) {
     res.status(400).json({ error: 'No valid preference fields provided' });
+    return;
+  }
+  if (personalMemoryEnabled !== undefined && typeof personalMemoryEnabled !== 'boolean') {
+    res.status(400).json({ error: 'personalMemoryEnabled must be a boolean' });
     return;
   }
   try {
     const prefs = await setUserPreferences(req.user.sub, {
       memoryEnabled,
+      personalMemoryEnabled,
       defaultCalendarId,
     });
     res.json(prefs);

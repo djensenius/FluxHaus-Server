@@ -1,5 +1,7 @@
+import crypto from 'crypto';
 import express from 'express';
 import request from 'supertest';
+import { decodeJwt } from 'jose';
 import createMcpOAuthRouter from '../mcp-oauth.routes';
 import { getOidcIssuer } from '../../middleware/oidc.middleware';
 
@@ -106,5 +108,93 @@ describe('MCP OAuth routes', () => {
       })
       .expect(400)
       .expect(({ body }) => expect(body.error).toBe('invalid_request'));
+  });
+
+  describe('records the original OIDC issuer in minted MCP tokens', () => {
+    const ISSUER = 'https://auth.example.com/application/o/fluxhaus/';
+    const redirectUri = 'http://localhost:6274/callback';
+    const b64url = (value: string | Buffer) => Buffer.from(value).toString('base64url');
+    const unsignedJwt = (claims: Record<string, unknown>) => (
+      `${b64url(JSON.stringify({ alg: 'none' }))}.${b64url(JSON.stringify(claims))}.`
+    );
+    const originalFetch = global.fetch;
+
+    beforeEach(() => {
+      process.env.SESSION_SECRET = 'test-session-secret';
+      (getOidcIssuer as vi.Mock).mockReturnValue({
+        metadata: {
+          issuer: ISSUER,
+          authorization_endpoint: 'https://auth.example.com/authorize',
+          token_endpoint: 'https://auth.example.com/token',
+        },
+      });
+    });
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+      delete process.env.SESSION_SECRET;
+    });
+
+    async function mintToken(idTokenIss: string) {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          access_token: 'upstream-access',
+          id_token: unsignedJwt({ sub: 'user-1', iss: idTokenIss, email: 'u@example.com' }),
+        }),
+      }) as never;
+      const application = app();
+      const registered = await request(application)
+        .post('/register')
+        .send({ redirect_uris: [redirectUri] })
+        .expect(201);
+      const clientId = registered.body.client_id;
+      const verifier = b64url(crypto.randomBytes(32));
+      const challenge = b64url(crypto.createHash('sha256').update(verifier).digest());
+
+      const authorize = await request(application)
+        .get('/authorize')
+        .query({
+          client_id: clientId,
+          redirect_uri: redirectUri,
+          state: 'client-state',
+          code_challenge: challenge,
+          code_challenge_method: 'S256',
+        })
+        .expect(302);
+      const internalState = new URL(authorize.headers.location).searchParams.get('state');
+
+      const callback = await request(application)
+        .get('/oauth/mcp-callback')
+        .query({ code: 'upstream-code', state: internalState })
+        .expect(302);
+      const code = new URL(callback.headers.location).searchParams.get('code');
+
+      const token = await request(application)
+        .post('/token')
+        .type('form')
+        .send({
+          grant_type: 'authorization_code',
+          code,
+          code_verifier: verifier,
+          client_id: clientId,
+          redirect_uri: redirectUri,
+        })
+        .expect(200);
+      return decodeJwt(token.body.access_token);
+    }
+
+    it('mints oidc_iss when the id_token iss matches the issuer', async () => {
+      const claims = await mintToken(ISSUER);
+      expect(claims.sub).toBe('user-1');
+      expect(claims.oidc_iss).toBe(ISSUER);
+    });
+
+    it('omits oidc_iss when the id_token iss does not match', async () => {
+      const claims = await mintToken('https://auth.example.com/application/o/other/');
+      expect(claims.sub).toBe('user-1');
+      expect(claims.oidc_iss).toBeUndefined();
+    });
   });
 });

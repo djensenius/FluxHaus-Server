@@ -84,6 +84,52 @@ describe('authMiddleware', () => {
     expect(next).toHaveBeenCalled();
   });
 
+  it('should carry the validating issuer for OIDC bearer users', async () => {
+    (validateBearerToken as vi.Mock).mockResolvedValue({
+      sub: 'user-123',
+      preferred_username: 'adminuser',
+      issuer: 'https://auth.example.com/application/o/mobile/',
+    });
+    const req = mockReq({ authorization: 'Bearer valid-token' }) as Request;
+    await authMiddleware(req, mockRes() as Response, next);
+    expect(req.user?.issuer).toBe('https://auth.example.com/application/o/mobile/');
+  });
+
+  it('should carry the recorded OIDC issuer for MCP tokens, and none when absent', async () => {
+    (verifyMcpToken as vi.Mock).mockResolvedValueOnce({
+      sub: 'user-123', oidcIssuer: 'https://auth.example.com/application/o/fluxhaus/',
+    });
+    const withIssuer = mockReq({ authorization: 'Bearer mcp-token' }, '/mcp') as Request;
+    await authMiddleware(withIssuer, mockRes() as Response, next);
+    expect(withIssuer.user?.issuer).toBe('https://auth.example.com/application/o/fluxhaus/');
+
+    (verifyMcpToken as vi.Mock).mockResolvedValueOnce({ sub: 'user-123' });
+    const legacy = mockReq({ authorization: 'Bearer mcp-token' }, '/mcp') as Request;
+    await authMiddleware(legacy, mockRes() as Response, next);
+    expect(legacy.user?.sub).toBe('user-123');
+    expect(legacy.user?.issuer).toBeUndefined();
+  });
+
+  it('should restore issuer from the signed auth cookie', async () => {
+    const cookieUser = {
+      role: 'admin', username: 'adminuser', sub: 'user-123', issuer: 'https://auth.example.com/application/o/fluxhaus/',
+    };
+    const req = {
+      headers: {}, path: '/test', signedCookies: { auth_user: JSON.stringify(cookieUser) }, session: {},
+    } as unknown as Request;
+    await authMiddleware(req, mockRes() as Response, next);
+    expect(req.user).toEqual(cookieUser);
+    expect(req.session.user).toEqual(cookieUser);
+  });
+
+  it('should not set an issuer for Basic auth users', async () => {
+    const encoded = Buffer.from('admin:adminpass').toString('base64');
+    const req = mockReq({ authorization: `Basic ${encoded}` }) as Request;
+    await authMiddleware(req, mockRes() as Response, next);
+    expect(req.user).toEqual({ role: 'admin', username: 'admin' });
+    expect(req.user && 'issuer' in req.user).toBe(false);
+  });
+
   it('should reject generic OIDC bearer tokens on /mcp', async () => {
     (verifyMcpToken as vi.Mock).mockResolvedValue(null);
     (validateBearerToken as vi.Mock).mockResolvedValue({ sub: 'oidc-user' });
