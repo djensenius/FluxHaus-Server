@@ -2122,7 +2122,15 @@ async function executeWithAnthropic(
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
 
   const model = process.env.AI_MODEL || 'claude-3-5-sonnet-20241022';
-  const client = new Anthropic({ apiKey });
+  const client = new Anthropic({
+    apiKey,
+    // SDK 1.x changed API-version and API-key headers; preserve our existing contract.
+    defaultHeaders: {
+      'anthropic-version': '2023-06-01',
+      'X-Api-Key': apiKey,
+      Authorization: null,
+    },
+  });
 
   const tools: Anthropic.Tool[] = toolDefinitionsFor(options).map((def) => ({
     name: def.name,
