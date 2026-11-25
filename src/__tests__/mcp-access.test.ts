@@ -8,7 +8,7 @@ import createMcpServer from '../mcp-server';
 import {
   MCP_FULL_ONLY_PROMPTS, MCP_FULL_ONLY_RESOURCES, MCP_FULL_ONLY_TOOLS,
   MCP_READ_PROMPTS, MCP_READ_RESOURCES, MCP_READ_TOOLS, McpAccess, mcpAccessForUser,
-  redactMcpResult, redactSensitive,
+  isSensitiveKey, omitKeysDeep, redactMcpResult, redactSensitive,
 } from '../mcp-access';
 import { FluxHausServices } from '../services';
 
@@ -25,12 +25,27 @@ const cameraEntity = {
   },
 };
 
+const unifiDevice = {
+  mac: 'aa:bb:cc:dd:ee:ff',
+  name: 'Office AP',
+  x_authkey: 'unifiauthkey',
+  x_vwirekey: 'unifivwirekey',
+  x_ssh_hostkey_fingerprint: 'fp',
+  wlan_overrides: [{ x_passphrase: 'wifipassphrase' }],
+  config_network: { type: 'dhcp' },
+};
+
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function mockServices(): { services: FluxHausServices; car: any; portainer: any } {
   const portainer = {
     configured: true,
     listEndpoints: vi.fn().mockResolvedValue([{ Id: 1, EdgeKey: 'edge-secret' }]),
-    listContainers: vi.fn().mockResolvedValue([{ Id: 'c1', Names: ['/db'] }]),
+    listContainers: vi.fn().mockResolvedValue([{
+      Id: 'c1',
+      Names: ['/db'],
+      Command: 'postgres --password=cmdsecret',
+      Labels: { 'com.example.db-password': 'labelsecret' },
+    }]),
     listStacks: vi.fn().mockResolvedValue([{ Env: [{ name: 'POSTGRES_PASSWORD', value: 'pw' }] }]),
     getContainer: vi.fn().mockResolvedValue({ Config: { Env: ['POSTGRES_PASSWORD=pw'] } }),
   };
@@ -48,6 +63,25 @@ function mockServices(): { services: FluxHausServices; car: any; portainer: any 
       callService: vi.fn().mockResolvedValue({}),
     },
     portainer,
+    unifi: {
+      configured: true,
+      listDevices: vi.fn().mockResolvedValue([unifiDevice]),
+      getDevice: vi.fn().mockResolvedValue(unifiDevice),
+    },
+    prometheus: {
+      configured: true,
+      getTargets: vi.fn().mockResolvedValue({
+        status: 'success',
+        data: {
+          activeTargets: [{
+            labels: { job: 'node' },
+            discoveredLabels: { __meta_docker_container_label_secret: 'discoveredsecret' },
+            health: 'up',
+          }],
+          droppedTargets: [{ discoveredLabels: { __address__: 'droppedsecret' } }],
+        },
+      }),
+    },
     cleanbot: { cachedStatus: { docked: true } },
     car,
     mieleClient: { washer: {}, dryer: {} },
@@ -211,6 +245,36 @@ describe('read access secret isolation', () => {
     await close();
   });
 
+  it('redacts UniFi device credentials for read access', async () => {
+    const { client, close } = await connect('read');
+    const outputs = [
+      await callText(client, 'unifi_list_devices', {}),
+      await callText(client, 'unifi_get_device', { mac: unifiDevice.mac }),
+    ];
+    outputs.forEach((output) => {
+      expect(output).not.toMatch(/unifiauthkey|unifivwirekey|wifipassphrase/);
+      expect(output).toContain('Office AP');
+      expect(output).toContain('x_authkey');
+    });
+    await close();
+  });
+
+  it('omits container Command/Labels and Prometheus discoveredLabels for read access', async () => {
+    const read = await connect('read');
+    const containers = await callText(read.client, 'portainer_list_containers', { endpointId: 1 });
+    expect(containers).toContain('/db');
+    expect(containers).not.toMatch(/Command|Labels|cmdsecret|labelsecret/);
+    const targets = await callText(read.client, 'prometheus_get_targets', {});
+    expect(targets).toContain('node');
+    expect(targets).not.toMatch(/discoveredLabels|discoveredsecret|droppedsecret/);
+    await read.close();
+
+    const full = await connect('full');
+    expect(await callText(full.client, 'portainer_list_containers', { endpointId: 1 })).toContain('cmdsecret');
+    expect(await callText(full.client, 'prometheus_get_targets', {})).toContain('discoveredsecret');
+    await full.close();
+  });
+
   it('does not redact for full access', async () => {
     const { client, close } = await connect('full');
     expect(await callText(client, 'get_entity_state', { entity_id: 'camera.front_door' })).toContain(CAMERA_TOKEN);
@@ -230,6 +294,44 @@ describe('read access secret isolation', () => {
       },
       ok: 'plain',
     });
+    expect(redactSensitive({
+      credentials: { user: 'u', pass: 'p' },
+      private_key: ['line1', 'line2'],
+      api_key: 123,
+      authkey: 'a',
+      x_iapp_key: 'k',
+      client_secret: 's',
+      total_tokens: 5,
+      monkey: 'banana',
+      keyboard: 'qwerty',
+      empty_token: null,
+    })).toEqual({
+      credentials: '[REDACTED]',
+      private_key: '[REDACTED]',
+      api_key: '[REDACTED]',
+      authkey: '[REDACTED]',
+      x_iapp_key: '[REDACTED]',
+      client_secret: '[REDACTED]',
+      total_tokens: 5,
+      monkey: 'banana',
+      keyboard: 'qwerty',
+      empty_token: null,
+    });
+    const urls = redactSensitive([
+      'https://h/x?apikey=a1&api_key=a2&key=a3&auth=a4&authSig=a5&password=a6&secret=a7&access_token=a8&keep=ok',
+      'postgres://admin:hunter2@db:5432/app',
+      'https://user@host/path',
+    ]);
+    expect(urls[0]).not.toMatch(/a[1-8]\b/);
+    expect(urls[0]).toContain('keep=ok');
+    expect(urls[1]).toBe('postgres://[REDACTED]@db:5432/app');
+    expect(urls[2]).toBe('https://user@host/path');
+    expect(['x_vwirekey', 'x_authkey', 'db_password', 'passphrase', 'credential'].every(isSensitiveKey)).toBe(true);
+    expect(['tokens', 'keyboard', 'secretary', 'entity_picture'].some(isSensitiveKey)).toBe(false);
+    expect(redactMcpResult({ content: [{ type: 'text', text: 'not json "x_authkey": "zz" and "api_key": 42' }] }))
+      .toEqual({ content: [{ type: 'text', text: 'not json "x_authkey": "[REDACTED]" and "api_key": "[REDACTED]"' }] });
+    expect(omitKeysDeep({ a: [{ Labels: 1, b: { Labels: 2, c: 3 } }] }, new Set(['Labels'])))
+      .toEqual({ a: [{ b: { c: 3 } }] });
     const prompt = redactMcpResult({
       messages: [{ content: { type: 'text', text: 'Data:\n{\n  "access_token": "abc"\n} see /x?token=abc' } }],
     });

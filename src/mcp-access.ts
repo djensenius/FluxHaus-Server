@@ -195,21 +195,32 @@ export const MCP_READ_PROMPTS: ReadonlySet<string> = new Set([
 export const MCP_FULL_ONLY_PROMPTS: ReadonlySet<string> = new Set([]);
 
 const REDACTED = '[REDACTED]';
-const SENSITIVE_KEY = /^(access_token|refresh_token|api_key|apikey|password|secret|token)$/i;
-const TOKEN_QUERY_PARAM = /([?&](?:access_)?token=)[^&#"'\s\\]+/gi;
-const ACCESS_TOKEN_JSON = /("(?:access_token|refresh_token)"\s*:\s*)"(?:[^"\\]|\\.)*"/gi;
+// Key names whose values are credentials: *_token, *_secret, *_password,
+// passphrase, authkey, api(_)key, private(_)key, credential(s), and UniFi's
+// x_*key fields (x_authkey, x_vwirekey, x_iapp_key, ...).
+const SENSITIVE_KEY = /(^|_)(token|secret|password|passphrase|authkey|api_?key|private_?key|credentials?)$|^x_.*key$/i;
+const SENSITIVE_QUERY_PARAM = /([?&](?:token|access_token|apikey|api_key|key|auth|authSig|password|secret)=)[^&#"'\s\\]+/gi;
+const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/?#@\s"'\\:]+:[^/?#@\s"'\\]+@/gi;
+const SENSITIVE_JSON_STRING = /("([^"\\]+)"\s*:\s*)("(?:[^"\\]|\\.)*"|-?\d[\d.eE+-]*)/g;
+
+export function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEY.test(key);
+}
 
 function redactString(value: string): string {
   return value
-    .replace(TOKEN_QUERY_PARAM, `$1${REDACTED}`)
-    .replace(ACCESS_TOKEN_JSON, `$1"${REDACTED}"`);
+    .replace(SENSITIVE_QUERY_PARAM, `$1${REDACTED}`)
+    .replace(URL_USERINFO, `$1${REDACTED}@`)
+    .replace(SENSITIVE_JSON_STRING, (match, prefix: string, key: string) => (
+      isSensitiveKey(key) ? `${prefix}"${REDACTED}"` : match
+    ));
 }
 
 /**
- * Deep-redacts credentials that Home Assistant (and other services) embed in
- * otherwise read-only data: `access_token` attributes (cameras, media
- * players), and `token=` query parameters in URLs such as `entity_picture`
- * camera proxy links. Applied to every result served with read access.
+ * Deep-redacts credentials that Home Assistant and other services embed in
+ * otherwise read-only data: values under sensitive keys (the whole value,
+ * including objects/arrays), credential URL parameters such as camera proxy
+ * `token=`, and `user:pass@` URL userinfo. Applied to every read-access result.
  */
 export function redactSensitive<T>(value: T): T {
   if (typeof value === 'string') return redactString(value) as T;
@@ -217,10 +228,19 @@ export function redactSensitive<T>(value: T): T {
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
       key,
-      SENSITIVE_KEY.test(key) && (typeof item === 'string' || typeof item === 'number')
-        ? REDACTED
-        : redactSensitive(item),
+      isSensitiveKey(key) && item !== null && item !== undefined ? REDACTED : redactSensitive(item),
     ])) as T;
+  }
+  return value;
+}
+
+/** Removes the named keys at any depth (used to trim noisy/secret-prone fields). */
+export function omitKeysDeep<T>(value: T, keys: ReadonlySet<string>): T {
+  if (Array.isArray(value)) return value.map((item) => omitKeysDeep(item, keys)) as T;
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+      .filter(([key]) => !keys.has(key))
+      .map(([key, item]) => [key, omitKeysDeep(item, keys)])) as T;
   }
   return value;
 }

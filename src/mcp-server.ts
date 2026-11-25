@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { FluxHausServices } from './services';
 import type { ThermostatControlResult, ThermostatControls } from './indoor-climate';
 import {
-  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess, redactMcpResult,
+  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess, omitKeysDeep, redactMcpResult,
 } from './mcp-access';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -1485,7 +1485,9 @@ export default function createMcpServer(
         return { content: [{ type: 'text' as const, text: 'Portainer is not configured' }] };
       }
       const data = await services.portainer.listContainers(endpointId);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+      // Command lines and labels can carry credentials; read access omits them.
+      const shown = access === 'read' ? omitKeysDeep(data, new Set(['Command', 'Labels'])) : data;
+      return { content: [{ type: 'text' as const, text: JSON.stringify(shown, null, 2) }] };
     },
   );
 
@@ -1577,7 +1579,10 @@ export default function createMcpServer(
         return { content: [{ type: 'text' as const, text: 'Prometheus is not configured' }] };
       }
       const data = await services.prometheus.getTargets();
-      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+      // Pre-relabel discovered labels expose service-discovery metadata
+      // (e.g. container env/labels); read access omits them.
+      const shown = access === 'read' ? omitKeysDeep(data, new Set(['discoveredLabels'])) : data;
+      return { content: [{ type: 'text' as const, text: JSON.stringify(shown, null, 2) }] };
     },
   );
 
