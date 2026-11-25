@@ -44,8 +44,33 @@ function io() {
 }
 
 describe('mcp-keys CLI', () => {
+  const originalIssuer = process.env.OIDC_ISSUER_URL;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    delete process.env.OIDC_ISSUER_URL;
+  });
+
+  afterAll(() => {
+    if (originalIssuer === undefined) delete process.env.OIDC_ISSUER_URL;
+    else process.env.OIDC_ISSUER_URL = originalIssuer;
+  });
+
+  it('defaults the owner issuer to OIDC_ISSUER_URL for create and list', async () => {
+    process.env.OIDC_ISSUER_URL = 'https://auth.example/application/o/fluxhaus/';
+    (createMcpApiKey as vi.Mock).mockResolvedValue({ key: 'fhmcp_rawkey', record });
+    (listMcpApiKeys as vi.Mock).mockResolvedValue([]);
+    const t = io();
+    expect(await runMcpKeysCommand([
+      'create', '--sub', 'user-1', '--username', 'alice', '--scope', 'read', '--label', 'x',
+    ], t.io)).toBe(0);
+    expect(createMcpApiKey).toHaveBeenCalledWith(expect.objectContaining({
+      ownerIssuer: 'https://auth.example/application/o/fluxhaus/',
+    }));
+    expect(await runMcpKeysCommand(['list', '--sub', 'user-1'], t.io)).toBe(0);
+    expect(listMcpApiKeys).toHaveBeenCalledWith('user-1', 'https://auth.example/application/o/fluxhaus/');
+    expect(await runMcpKeysCommand(['list', '--sub', 'user-1', '--issuer', 'https://other/'], t.io)).toBe(0);
+    expect(listMcpApiKeys).toHaveBeenLastCalledWith('user-1', 'https://other/');
   });
 
   it('creates a key for a given owner and prints it once', async () => {
@@ -83,7 +108,7 @@ describe('mcp-keys CLI', () => {
     (listMcpApiKeys as vi.Mock).mockResolvedValue([record]);
     const t = io();
     expect(await runMcpKeysCommand(['list', '--sub', 'user-1'], t.io)).toBe(0);
-    expect(listMcpApiKeys).toHaveBeenCalledWith('user-1');
+    expect(listMcpApiKeys).toHaveBeenCalledWith('user-1', undefined);
     expect(t.out[1]).toContain('0123456789abcdef');
     expect(t.out[1]).toContain('active');
   });

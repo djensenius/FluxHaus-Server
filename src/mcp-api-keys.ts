@@ -134,6 +134,15 @@ export function validateMcpApiKeyInput(
   return { label, scope: input.scope, expiresAt };
 }
 
+/**
+ * Canonical issuer form used for both storage and ownership comparison:
+ * trimmed, without trailing slashes; empty/missing becomes null.
+ */
+export function normalizeMcpKeyIssuer(issuer?: string | null): string | null {
+  const normalized = (issuer ?? '').trim().replace(/\/+$/, '');
+  return normalized || null;
+}
+
 /** Creates a key. The raw key is returned once and only its hash is stored. */
 export async function createMcpApiKey(input: CreateMcpApiKeyInput): Promise<{ key: string; record: McpApiKey }> {
   const pool = getPool();
@@ -149,7 +158,7 @@ export async function createMcpApiKey(input: CreateMcpApiKeyInput): Promise<{ ke
       hashMcpApiKey(key),
       input.label,
       input.ownerSub,
-      input.ownerIssuer ?? null,
+      normalizeMcpKeyIssuer(input.ownerIssuer),
       input.ownerUsername,
       input.scope,
       input.expiresAt ?? null,
@@ -161,23 +170,19 @@ export async function createMcpApiKey(input: CreateMcpApiKeyInput): Promise<{ ke
 }
 
 /** Lists keys (never hashes), optionally restricted to one owner. */
-// Owner filter: sub, plus issuer when the requester has one (subs are only
-// unique per issuer). Returns the SQL clause and appends its parameters.
-function ownerFilter(values: string[], ownerSub?: string, ownerIssuer?: string): string {
+// Owner filter: sub plus (normalized) issuer, since subs are only unique per
+// issuer. A requester without an issuer matches only keys without one.
+// Returns the SQL clause and appends its parameters.
+function ownerFilter(values: (string | null)[], ownerSub?: string, ownerIssuer?: string | null): string {
   if (!ownerSub) return '';
-  values.push(ownerSub);
-  let clause = ` AND owner_sub = $${values.length}`;
-  if (ownerIssuer) {
-    values.push(ownerIssuer);
-    clause += ` AND owner_issuer = $${values.length}`;
-  }
-  return clause;
+  values.push(ownerSub, normalizeMcpKeyIssuer(ownerIssuer));
+  return ` AND owner_sub = $${values.length - 1} AND owner_issuer IS NOT DISTINCT FROM $${values.length}`;
 }
 
-export async function listMcpApiKeys(ownerSub?: string, ownerIssuer?: string): Promise<McpApiKey[]> {
+export async function listMcpApiKeys(ownerSub?: string, ownerIssuer?: string | null): Promise<McpApiKey[]> {
   const pool = getPool();
   if (!pool) throw new Error('Database not available');
-  const values: string[] = [];
+  const values: (string | null)[] = [];
   const ownerClause = ownerFilter(values, ownerSub, ownerIssuer);
   const result = await pool.query(
     `SELECT ${PUBLIC_COLUMNS} FROM mcp_api_keys WHERE TRUE${ownerClause} ORDER BY created_at DESC`,
@@ -193,12 +198,12 @@ export async function listMcpApiKeys(ownerSub?: string, ownerIssuer?: string): P
 export async function revokeMcpApiKey(
   identifier: string,
   ownerSub?: string,
-  ownerIssuer?: string,
+  ownerIssuer?: string | null,
 ): Promise<McpApiKey | null> {
   const pool = getPool();
   if (!pool) throw new Error('Database not available');
   const column = UUID_PATTERN.test(identifier) ? 'id' : 'public_id';
-  const values: string[] = [identifier];
+  const values: (string | null)[] = [identifier];
   const ownerClause = ownerFilter(values, ownerSub, ownerIssuer);
   const result = await pool.query(
     `UPDATE mcp_api_keys SET revoked_at = COALESCE(revoked_at, NOW())

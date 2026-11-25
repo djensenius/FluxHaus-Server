@@ -11,8 +11,11 @@ Commands:
   create --sub <sub> --username <name> --scope <read|full> --label <label>
          [--issuer <issuer-url>] [--expires <ISO-8601>]
       Create a key for an OIDC user. The key is printed once; store it securely.
-  list [--sub <sub>]
-      List keys (all owners, or one owner). Hashes and secrets are never shown.
+      --issuer defaults to OIDC_ISSUER_URL; it must match the user's login
+      issuer for the key to appear in their self-service list.
+  list [--sub <sub> [--issuer <issuer-url>]]
+      List keys (all owners, or one owner; --issuer defaults to
+      OIDC_ISSUER_URL). Hashes and secrets are never shown.
   revoke <id|public-id>
       Revoke a key by UUID or public id.
 `;
@@ -72,6 +75,7 @@ export async function runMcpKeysCommand(argv: string[], io: CliIo): Promise<numb
     return 2;
   }
   const { values, positionals } = parsed;
+  const issuer = values.issuer ?? process.env.OIDC_ISSUER_URL;
   const [command, ...rest] = positionals;
   if (values.help || !command) {
     io.out(MCP_KEYS_CLI_USAGE);
@@ -93,7 +97,7 @@ export async function runMcpKeysCommand(argv: string[], io: CliIo): Promise<numb
     const { key, record } = await createMcpApiKey({
       ...input,
       ownerSub: values.sub,
-      ownerIssuer: values.issuer ?? null,
+      ownerIssuer: issuer ?? null,
       ownerUsername: values.username,
       createdBySub: null,
     });
@@ -108,7 +112,7 @@ export async function runMcpKeysCommand(argv: string[], io: CliIo): Promise<numb
   }
 
   if (command === 'list') {
-    const keys = await listMcpApiKeys(values.sub);
+    const keys = await listMcpApiKeys(values.sub, issuer);
     io.out('id\tpublic_id\tscope\tstatus\towner_username\towner_sub\texpires\tlast_used\tlabel');
     keys.forEach((key) => io.out(formatKey(key)));
     return 0;
