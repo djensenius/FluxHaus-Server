@@ -7,6 +7,9 @@ import {
   parsePlacementDays,
   PLACEMENT_CACHE_TTL_MS,
   PLACEMENT_DEGRADED_TTL_MS,
+  resolveTimeZone,
+  rowsToSeries,
+  toCelsius,
 } from '../climate-placement-service';
 import createClimatePlacementRouter from '../routes/climate-placement.routes';
 
@@ -34,8 +37,8 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   const influxdb = {
     configured: true,
     query: vi.fn().mockResolvedValue([
-      { _time: '2026-01-19T06:00:00Z', _value: '18.5', entity_id: 'office_temperature' },
-      { _time: '2026-01-19T06:00:00Z', _value: '20.5', entity_id: 'kitchen_temperature' },
+      { _time: '2026-01-19T06:00:00Z', _value: '18.5', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T06:00:00Z', _value: '20.5', _measurement: '°C', entity_id: 'kitchen_temperature' },
     ]),
   };
   const homeAssistant = {
@@ -108,9 +111,78 @@ describe('parseClimateHistory', () => {
     ]);
   });
 
+  it('drops set points whose unit is unknown', () => {
+    expect(parseClimateHistory([[
+      { state: 'heat', attributes: { temperature: 21, hvac_action: 'idle' }, last_updated: '2026-01-19T06:00:00Z' },
+    ]], null)[0].setpoint).toBeNull();
+  });
+
   it('treats unexpected payloads as empty', () => {
     expect(parseClimateHistory({}, '°C')).toEqual([]);
     expect(parseClimateHistory([], '°C')).toEqual([]);
+  });
+});
+
+describe('temperature units', () => {
+  const sensors = [
+    {
+      id: 'office_temperature', name: 'Office', isThermostat: false, unit: '°F',
+    },
+    {
+      id: 'den_temperature', name: 'Den', isThermostat: false, unit: null,
+    },
+    {
+      id: 'kitchen_temperature', name: 'Kitchen', isThermostat: false, unit: '°C',
+    },
+  ];
+
+  it('converts by measurement unit, else the sensor unit, and drops unknown units', () => {
+    const series = rowsToSeries([
+      {
+        _time: '2026-01-19T06:00:00Z', _value: '68', _measurement: '°F', entity_id: 'office_temperature',
+      },
+      {
+        _time: '2026-01-19T06:15:00Z', _value: '50', _measurement: 'climate', entity_id: 'office_temperature',
+      },
+      {
+        _time: '2026-01-19T06:00:00Z', _value: '20', _measurement: 'climate', entity_id: 'den_temperature',
+      },
+      {
+        _time: '2026-01-19T06:00:00Z', _value: '20', _measurement: '°C', entity_id: 'den_temperature',
+      },
+      {
+        _time: '2026-01-19T06:00:00Z', _value: '21', _measurement: 'climate', entity_id: 'kitchen_temperature',
+      },
+    ], sensors);
+    expect(series.map((s) => s.points.map((p) => p.v))).toEqual([[20, 10], [20], [21]]);
+  });
+
+  it('only converts known units', () => {
+    expect(toCelsius(212, '°F')).toBe(100);
+    expect(toCelsius(20, '°C')).toBe(20);
+    expect(toCelsius(20, 'K')).toBeNull();
+    expect(toCelsius(20, null)).toBeNull();
+  });
+});
+
+describe('resolveTimeZone', () => {
+  const originalTz = process.env.TZ;
+  afterEach(() => {
+    if (originalTz === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTz;
+  });
+
+  it('prefers an explicit zone, then TZ, then the system zone', () => {
+    process.env.TZ = 'America/Toronto';
+    expect(resolveTimeZone('Europe/Paris')).toBe('Europe/Paris');
+    expect(resolveTimeZone()).toBe('America/Toronto');
+    delete process.env.TZ;
+    expect(resolveTimeZone()).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  });
+
+  it('skips invalid zones', () => {
+    delete process.env.TZ;
+    expect(resolveTimeZone('Not/AZone')).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone);
   });
 });
 
@@ -156,6 +228,30 @@ describe('ClimatePlacementService', () => {
     expect(homeAssistant.getHistory).toHaveBeenCalledTimes(2);
   });
 
+  it('retries discovery and treats a missing thermostat as degraded', async () => {
+    const { service, deps, influxdb, advance } = makeDeps();
+    deps.indoorClimate.cachedStatus = { ...deps.indoorClimate.cachedStatus, thermostat: null } as never;
+    const result = await service.getInsights('14');
+    expect(deps.indoorClimate.refresh).toHaveBeenCalledTimes(1);
+    expect(result.coverage.hvacHistoryAvailable).toBe(false);
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('14');
+    expect(influxdb.query).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries soon when discovery found no sensors', async () => {
+    const { service, deps, influxdb, advance } = makeDeps();
+    deps.indoorClimate.cachedStatus = { ...deps.indoorClimate.cachedStatus, sensors: [] } as never;
+    const result = await service.getInsights('14');
+    expect(deps.indoorClimate.refresh).toHaveBeenCalled();
+    expect(result.sensors).toEqual([]);
+    expect(influxdb.query).not.toHaveBeenCalled();
+    deps.indoorClimate.cachedStatus = { ...deps.indoorClimate.cachedStatus, sensors: [sensor('sensor.office_temperature', 'Office')] } as never;
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    const retried = await service.getInsights('14');
+    expect(retried.sensors.map((s) => s.id)).toEqual(['office_temperature']);
+  });
+
   it('degrades to empty analysis when InfluxDB fails', async () => {
     const { service, influxdb } = makeDeps();
     influxdb.query.mockRejectedValue(new Error('influx down'));
@@ -164,10 +260,12 @@ describe('ClimatePlacementService', () => {
     expect(result.recommendations).toEqual([]);
   });
 
-  it('builds a safe Flux query', () => {
+  it('builds a safe Flux query limited to sensor entities in any temperature unit', () => {
     const flux = buildPlacementQuery('fluxhaus', ['office_temperature', 'bad"id'], new Date(0), new Date(1000));
     expect(flux).toContain('from(bucket: "fluxhaus")');
-    expect(flux).toContain('set: ["office_temperature"]');
+    expect(flux).toContain('r.domain == "sensor" and contains(value: r.entity_id, set: ["office_temperature"])');
+    expect(flux).toContain('r._measurement == "°F"');
+    expect(flux).toContain('group(columns: ["domain", "entity_id", "_measurement"])');
     expect(flux).toContain('aggregateWindow(every: 15m, fn: mean, createEmpty: false)');
   });
 });

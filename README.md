@@ -379,47 +379,80 @@ coordinated with a running web server.
 ### Sensor placement insights
 
 `GET /climate/placement-insights?days=14` (admin and demo users; `days` is an
-integer from 3 to 30, default 14, otherwise `400`) analyzes recent history to
-suggest where room sensors should go or which ones the comfort settings should
-use. It is computed on request and cached per `days` for 15 minutes (1 minute
-when an upstream read failed).
+integer from 3 to 30, default 14, otherwise `400`) looks at recent history for
+sensors that may be worth checking (placement, or whether they belong in the
+thermostat's comfort setting). It is computed on request and cached per `days`
+for 15 minutes; results with missing data (a failed read, no discovered
+sensors, no thermostat, no temperature data or no thermostat history) are
+cached for 1 minute so they are retried soon. Recommendations are hypotheses:
+the server can't see which sensors a comfort setting actually uses or what
+drives the thermostat, so they suggest what to check rather than stating a cause.
 
-- Room temperatures come from InfluxDB (the indoor sensors discovered above,
-  logged under the `climate` or `°C` measurement, averaged per 15 minutes);
-  outdoor-looking sensors (`outdoor`, `outside`, `patio`, `exterior`,
-  `environment_canada`) are skipped.
-- Thermostat history (`hvac_action`, `preset_mode`, set points) comes from Home
-  Assistant's `/api/history/period` for the reported thermostat. Morning
-  warm-ups are a set point rise, a preset change to home/comfort or heating
-  starting between 04:00 and 10:00 server time (`TZ`), once per day; returns
-  from Away are a preset change off `away`, or a set point jump of 1.5 °C after
-  a setback held 3 hours. Before the recorder's retention (or when history is
-  unavailable, `coverage.hvacHistoryAvailable: false`) morning warm-ups are
-  inferred from the house average rising 0.5 °C within an hour.
-- For the 2 hours after each event, each sensor's offset from the house average
-  (mean of all indoor sensors) and how far it rose above the set point
-  (`overshoot`) are measured. A sensor is `cold`/`warm` when it is at least
-  1.0 °C below/above the average in 60% of events, `insufficient` with fewer
-  than 3 events or 12 samples, and `representative` otherwise.
-- Recommendations (`high`, `medium`, `low`) are `move` (cold or warm sensors),
-  `exclude_from_comfort` (a cold thermostat sensor), `include_in_comfort`
-  (representative/warm rooms that overshoot by 1.0 °C) or `none`.
+- **Room temperatures** come from InfluxDB: the indoor sensors discovered above,
+  matched on Home Assistant's `domain` (`sensor`) and `entity_id` (object id)
+  tags, from the `climate`, `°C` and `°F` measurements, averaged per 15 minutes.
+  `°F` readings are converted; `climate` readings use the sensor's Home
+  Assistant unit, and readings whose unit is unknown are dropped. Outdoor-looking
+  sensors (`outdoor`, `outside`, `patio`, `exterior`, `environment_canada`) are
+  skipped.
+- **Alignment:** readings are placed on a 15-minute grid, each carried forward
+  for at most 30 minutes (older readings are stale and never compared). A
+  sensor joins an event's house average only if it is fresh for at least 75% of
+  the event, and the average is only taken where every joined sensor is fresh,
+  so membership doesn't change within an event.
+- **Events** come from Home Assistant's `/api/history/period` for the reported
+  thermostat (`hvac_action`, `preset_mode`, set points in its
+  `temperatureUnit`, converted to °C; dropped if the unit is unknown).
+  - A *morning warm-up* is the earliest heating start, set point rise of at
+    least 0.5 °C, or preset change to home/comfort between 04:00 and 10:00
+    server time, once per day. Server time is `TZ`, else the system time zone,
+    else UTC.
+  - A *return from Away* is only an explicit preset change from `away` to
+    home/comfort. Without presets in the history,
+    `coverage.returnHistoryAvailable` is `false` and no returns are reported.
+  - Before the start of the thermostat history (`coverage.hvacHistoryStart`,
+    e.g. because the recorder keeps fewer days than requested), or with none at
+    all (`hvacHistoryAvailable: false`), morning warm-ups are inferred from the
+    house average rising 0.5 °C within an hour; `inferredMorningEvents` counts
+    those.
+- **Offsets:** each sensor's offset from the house average is measured from the
+  event until heating stops (at most 2 hours). A sensor is `cold`/`warm` when it
+  is at least 1.0 °C below/above the average in 60% of its events,
+  `insufficient` with fewer than 3 events or 12 samples, and `representative`
+  otherwise.
+- **`overshoot`** is how far a room rose above the set point after the
+  thermostat reported it stopped heating, for up to 2 hours, ending early at the
+  next set point or preset change or event; it's `0` when the room stayed at or
+  below it. It is `null` when that can't be established: inferred events, set
+  points with an unknown unit, or heating that wasn't reported to stop within 4
+  hours.
+- **Recommendations** (`high`, `medium`, `low`): `move` suggests checking a cold
+  or warm sensor's placement and whether it's in the comfort setting;
+  `exclude_from_comfort` suggests reviewing a cold thermostat sensor;
+  `include_in_comfort` suggests considering a representative or warm room that
+  overshoots by 1.0 °C or more; `none` summarizes what the data did cover (it
+  only mentions overshoot when it was measured, and names sensors without
+  enough data).
 
 ```json
 {
   "generatedAt": "ISO", "windowDays": 14, "unit": "°C",
-  "coverage": {"start": "ISO", "end": "ISO", "hvacHistoryAvailable": true, "morningEvents": 9, "returnEvents": 3},
+  "coverage": {"start": "ISO", "end": "ISO", "hvacHistoryAvailable": true,
+    "hvacHistoryStart": "ISO", "returnHistoryAvailable": true,
+    "morningEvents": 9, "inferredMorningEvents": 0, "returnEvents": 3},
   "sensors": [{"id": "office_temperature", "name": "Office", "isThermostat": false,
     "averageOffset": -1.8, "morningOffset": -2.1, "returnOffset": -1.4, "overshoot": 0,
     "sampleCount": 120, "classification": "cold"}],
   "recommendations": [{"id": "move-office", "severity": "high", "sensorId": "office_temperature",
-    "action": "move", "title": "Move the Office sensor", "detail": "Office reads 2.1 °C below the house average during morning heat-ups, so the thermostat keeps heating while the Kitchen climbs to 23.4 °C. …"}]
+    "action": "move", "title": "Check the Office sensor placement",
+    "detail": "Office read at least 1.0 °C below the house average in 10 of 12 heat-ups (2.1 °C below on average during morning heat-ups). If it is in the active comfort setting, it may be keeping the heat on while warmer rooms such as the Kitchen rose 1.6 °C above the set point after heating stopped; check the comfort setting, and whether the sensor sits near an exterior wall, window, draft or cold floor."}]
 }
 ```
 
-Offsets and `overshoot` are `null` without data (`overshoot` also without set
-points); `sensorId` is `null` for the `none` recommendation. InfluxDB or Home
-Assistant failures return an empty/partial analysis rather than an error;
+`hvacHistoryStart`, `returnHistoryAvailable` and `inferredMorningEvents` extend
+the issue's original contract. Offsets and `overshoot` are `null` without
+data; `sensorId` is `null` for the `none` recommendation. InfluxDB or Home
+Assistant failures return an empty or partial analysis rather than an error;
 `503` means InfluxDB isn't configured.
 
 ## Car analytics
