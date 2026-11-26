@@ -388,7 +388,9 @@ cached for 1 minute so they are retried soon. Recommendations are hypotheses:
 the server can't see which sensors a comfort setting actually uses or what
 drives the thermostat, so they suggest what to check rather than stating a
 cause. Where the evidence is missing, values are `null` or events are marked
-inferred rather than guessed.
+inferred rather than guessed. A cold sensor's text only mentions warm rooms
+when another room's overshoot was measured; otherwise it rests on the offset
+alone ("the thermostat may keep heating to satisfy it").
 
 - **Room temperatures** come from InfluxDB: the indoor sensors discovered above,
   matched on Home Assistant's `domain` (`sensor`) and `entity_id` (object id)
@@ -439,7 +441,8 @@ inferred rather than guessed.
     timestamp as returned, as `coverage.hvacEarliestStateAt`; it may just be a
     snapshot of the state in force at the start of the window, so it is never
     used on its own to rule heating out. `inferredMorningEvents` counts inferred events, and
-    recommendation text says how many of a sensor's heat-ups were inferred.
+    every recommendation's text (including `include_in_comfort`) says how many
+    of a sensor's heat-ups were inferred.
 - **Heating stopped:** the thermostat is *satisfied* only when it goes from
   heating to a reported non-heating action in a mode that can heat, with the
   mode, set point and preset unchanged since the event. Switching to
@@ -448,7 +451,9 @@ inferred rather than guessed.
   and no overshoot is measured for it.
 - **Offsets:** each sensor's offset from the house average is measured from the
   event until heating is satisfied or interrupted (at most 2 hours, and not
-  past a gap in thermostat history). A sensor is `cold`/`warm` when it is at least 1.0 °C below/above
+  past a gap in thermostat history). An inferred event's window also ends at
+  the first recorded `off`/`cool` state or gap, so readings taken once heating
+  was impossible or unknown don't count. A sensor is `cold`/`warm` when it is at least 1.0 °C below/above
   the average in 60% of its events, `insufficient` with fewer than 3 events or
   12 samples, and `representative` otherwise.
 - **`overshoot`** is how far a room's highest 15-minute average was above the set

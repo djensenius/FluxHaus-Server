@@ -358,7 +358,63 @@ describe('analyzePlacement', () => {
       id: 'exclude-home-current', action: 'exclude_from_comfort', sensorId: 'home_current_temperature',
       title: 'Review the Home thermostat sensor',
     });
-    expect(result.recommendations[0].detail).toContain('If the thermostat\'s own sensor is in the active comfort setting, it may be');
+    expect(result.recommendations[0].detail).toContain(
+      'If the thermostat\'s own sensor is in the active comfort setting, the thermostat may keep heating to satisfy it;',
+    );
+  });
+
+  it('words a cold sensor only from its offset when no room has overshoot evidence', () => {
+    // Heating is never reported as stopping, so overshoot is unknown for every
+    // room: the text must not claim other rooms are warm or overshoot.
+    const neverIdle = hvac(5).map((s) => ({ ...s, hvacAction: 'heating' }));
+    const result = analyzePlacement(input({ hvac: neverIdle }));
+    expect(result.sensors.every((s) => s.overshoot === null)).toBe(true);
+    const office = result.recommendations.find((r) => r.sensorId === 'office_temperature')!;
+    expect(office.detail).toContain('If it is in the active comfort setting, the thermostat may keep heating to satisfy it;');
+    expect(result.recommendations.every((r) => !/warm|overshoot|peaked/.test(r.detail))).toBe(true);
+  });
+
+  it('discloses inferred heat-ups when recommending a sensor for comfort', () => {
+    // Days 3–4 lack the reported 06:00 heating start, so those mornings are
+    // inferred; their offsets feed the representative sensors' text.
+    const hour = (t: number) => ((t - START) % DAY) / HOUR;
+    const samples = hvac(5, { setpoint: 19.5 }).filter((s) => s.t < START + 3 * DAY || ![6, 8.5].includes(hour(s.t)));
+    const result = analyzePlacement(input({
+      sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: samples,
+    }));
+    expect(result.coverage.inferredMorningEvents).toBe(2);
+    const include = result.recommendations.filter((r) => r.action === 'include_in_comfort');
+    expect(include).toHaveLength(2);
+    include.forEach((r) => expect(r.detail).toMatch(/\. 2 of these \d+ heat-ups were inferred from room temperatures, not thermostat history\. /));
+  });
+
+  it.each([
+    ['switched off', (t: number) => state(t, 'off', { presetMode: null, setpoint: null, hvacMode: 'off' })],
+    ['switched to cool', (t: number) => state(t, 'idle', { presetMode: null, setpoint: 24, hvacMode: 'cool' })],
+    ['unavailable', gap],
+  ])('ends an inferred heat-up window when the thermostat is %s', (_, interruption) => {
+    // No reported heating, so mornings are inferred from the rooms warming.
+    // At 06:30 the thermostat is interrupted and the Office drops 3 °C; those
+    // readings, taken when heating was impossible or unknown, must not count.
+    const samples = Array.from({ length: 5 }, (_unused, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 18 }),
+      interruption(at(d, 6.5)),
+      state(at(d, 12), 'idle', { presetMode: null, setpoint: 18 }),
+    ]).flat();
+    const office = (t: number) => {
+      const h = ((t - START) % DAY) / HOUR;
+      return h >= 6.5 && h < 12 ? -3 : 0;
+    };
+    const result = analyzePlacement(input({
+      sensors: series({
+        office_temperature: office, kitchen_temperature: 0, living_temperature: 0, bedroom_temperature: 0,
+      }, 5),
+      hvac: samples,
+    }));
+    expect(result.coverage).toMatchObject({ morningEvents: 5, inferredMorningEvents: 5 });
+    const sensor = result.sensors.find((s) => s.id === 'office_temperature')!;
+    expect(sensor.classification).toBe('representative');
+    expect(sensor.morningOffset).toBe(0);
   });
 
   it('marks sensors insufficient with too few events', () => {

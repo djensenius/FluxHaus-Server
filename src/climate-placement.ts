@@ -424,8 +424,12 @@ function overshootWindow(
 
 function eventContexts(grid: Grid, events: PlacementEvent[], samples: HvacSample[]): EventContext[] {
   return events.map((event, index) => {
-    const stopped = event.inferred ? null : heatUpEnd(samples, event).at;
-    const gap = event.inferred ? undefined : samples.find((s) => s.t > event.t && s.gap)?.t;
+    // An inferred window also ends at the first recorded state in which the
+    // thermostat couldn't heat (off/cool), so later readings never count.
+    const stopped = event.inferred
+      ? samples.find((s) => s.t > event.t && rulesOutHeating(s))?.t ?? null
+      : heatUpEnd(samples, event).at;
+    const gap = samples.find((s) => s.t > event.t && s.gap)?.t;
     const end = Math.min(event.t + EVENT_WINDOW_MS, stopped ?? Number.POSITIVE_INFINITY, gap ?? Number.POSITIVE_INFINITY);
     const { cohort, times } = cohortAt(grid, grid.times.filter((t) => t >= event.t && t <= end));
     const nextEvent = events[index + 1]?.t ?? Number.POSITIVE_INFINITY;
@@ -499,6 +503,16 @@ interface Analyzed {
 
 type BiasDirection = 'below' | 'above';
 
+// ". N of these M heat-ups were inferred …" when any of a sensor's heat-ups
+// were inferred from room temperatures; '' otherwise.
+function inferredDisclosure(a: Analyzed): string {
+  const events = a.stats.eventOffsets;
+  const inferred = events.filter((e) => e.inferred).length;
+  return inferred > 0
+    ? `. ${inferred} of these ${events.length} heat-ups were inferred from room temperatures, not thermostat history`
+    : '';
+}
+
 // Plain-language summary of a cold/warm sensor's bias. Quotes the first period
 // (morning, then returns, then all heat-ups) whose mean offset is on the
 // classified side, so a mixed-sign period is never quoted against it.
@@ -515,10 +529,7 @@ function biasSummary(a: Analyzed, direction: BiasDirection): { text: string; mag
   const match = periods.find(([offset]) => offset !== null && sign * offset >= OFFSET_THRESHOLD);
   const counted = `${s.name} read at least ${OFFSET_THRESHOLD.toFixed(1)} °C ${direction} the house average `
     + `in ${biased} of ${events.length} heat-ups`;
-  const inferred = events.filter((e) => e.inferred).length;
-  const provenance = inferred > 0
-    ? `. ${inferred} of these ${events.length} heat-ups were inferred from room temperatures, not thermostat history`
-    : '';
+  const provenance = inferredDisclosure(a);
   if (!match) return { text: `${counted}${provenance}`, magnitude: Math.abs(s.averageOffset ?? 0) };
   const offset = match[0]!;
   return {
@@ -541,9 +552,11 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
     if (s.classification === 'cold') {
       const { text, magnitude } = biasSummary(a, 'below');
       const warmer = overshooting.find((o) => o.out.id !== s.id && o.out.classification !== 'cold');
+      // Other rooms are only described as warm when overshoot was measured;
+      // otherwise the hypothesis rests on the relative offset alone.
       const effect = warmer
-        ? `while warmer rooms such as the ${warmer.out.name} peaked ${fmt(warmer.out.overshoot!)} °C above the set point on average after heating stopped`
-        : 'after other rooms are already warm';
+        ? `it may be keeping the heat on while warmer rooms such as the ${warmer.out.name} peaked ${fmt(warmer.out.overshoot!)} °C above the set point on average after heating stopped`
+        : 'the thermostat may keep heating to satisfy it';
       const severity: RecommendationSeverity = warmer && magnitude >= STRONG_OFFSET ? 'high' : 'medium';
       if (s.isThermostat) {
         recs.push({
@@ -554,7 +567,7 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
             sensorId: s.id,
             action: 'exclude_from_comfort',
             title: `Review the ${s.name} thermostat sensor`,
-            detail: `${text}. If the thermostat's own sensor is in the active comfort setting, it may be keeping the heat on ${effect}; `
+            detail: `${text}. If the thermostat's own sensor is in the active comfort setting, ${effect}; `
               + 'check the comfort setting, and consider excluding it or looking for drafts near the thermostat.',
           },
         });
@@ -567,7 +580,7 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
             sensorId: s.id,
             action: 'move',
             title: `Check the ${s.name} sensor placement`,
-            detail: `${text}. If it is in the active comfort setting, it may be keeping the heat on ${effect}; `
+            detail: `${text}. If it is in the active comfort setting, ${effect}; `
               + 'check the comfort setting, and whether the sensor sits near an exterior wall, window, draft or cold floor.',
           },
         });
@@ -586,7 +599,7 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
           sensorId: s.id,
           action: 'include_in_comfort',
           title: `Consider the ${s.name} sensor for comfort`,
-          detail: `${s.name} peaked ${fmt(s.overshoot)} °C above the set point on average after the thermostat stopped heating${tracks}. `
+          detail: `${s.name} peaked ${fmt(s.overshoot)} °C above the set point on average after the thermostat stopped heating${tracks}${inferredDisclosure(a)}. `
             + 'If it isn\'t already in the active comfort setting, adding it may help the thermostat stop heating sooner.',
         },
       });
