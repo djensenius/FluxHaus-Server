@@ -8,10 +8,14 @@ describe('safe-params', () => {
     expect(safePathSegment('my.repo', 'repo')).toBe('my.repo');
     expect(safePathSegment('6a1b2c3d-0000-4000-8000-000000000000', 'id')).toBe('6a1b2c3d-0000-4000-8000-000000000000');
     expect(safePathSegment(42, 'index')).toBe('42');
+    expect(safePathSegment('.profile', 'repo')).toBe('.profile');
+    expect(safePathSegment('.github', 'repo')).toBe('.github');
+    expect(safePathSegment('...', 'repo')).toBe('...');
+    expect(safePathSegment('a..b', 'repo')).toBe('a..b');
   });
 
   it.each([
-    '..', '.', '.hidden', '../config', 'a/b', 'a?b=1', 'a#b', 'a&b', '%2e%2e', 'a%2Fb', 'a b', 'a"b', 'a\\b',
+    '..', '.', '../config', './x', '.github/../x', 'a/b', 'a?b=1', 'a#b', 'a&b', '%2e%2e', 'a%2Fb', 'a b', 'a"b', 'a\\b',
     'a\nb', 'a\tb', '', 'x'.repeat(300),
   ])('rejects unsafe path segment %j', (value) => {
     expect(() => safePathSegment(value, 'id')).toThrow(UnsafeParameterError);
@@ -31,8 +35,15 @@ describe('safe-params', () => {
     expect(safeTimestamp('2026-01-01T00:00:00+05:00')).toBe('2026-01-01T00%3A00%3A00%2B05%3A00');
     expect(() => safeTimestamp('2026-01-01/../../states')).toThrow('Invalid timestamp');
     expect(() => safeTimestamp('../config')).toThrow('Invalid timestamp');
+    expect(safeTimestamp('2026-01-01 12:30:00')).toBe('2026-01-01T12%3A30%3A00');
+    expect(() => safeTimestamp('2026-01-01  12:30:00')).toThrow('Invalid timestamp');
+    expect(() => safeTimestamp('2026-01-01 12:30 ../x')).toThrow('Invalid timestamp');
     expect(safeMacAddress('AA:BB:CC:DD:EE:FF')).toBe('aa:bb:cc:dd:ee:ff');
-    expect(safeMacAddress('aabbccddeeff')).toBe('aabbccddeeff');
+    expect(safeMacAddress('AA-BB-CC-DD-EE-FF')).toBe('aa:bb:cc:dd:ee:ff');
+    expect(safeMacAddress('aabbccddeeff')).toBe('aa:bb:cc:dd:ee:ff');
+    expect(safeMacAddress('AABB.CCDD.EEFF')).toBe('aa:bb:cc:dd:ee:ff');
+    ['aa:bb-cc:dd:ee:ff', 'aa:bb:cc:dd:ee', 'aabb.ccdd.eeff.0011', 'aabbccddeeff0', 'aa:bb:cc:dd:ee:gg']
+      .forEach((mac) => expect(() => safeMacAddress(mac)).toThrow('Invalid MAC address'));
     expect(() => safeMacAddress('aa:bb:cc:dd:ee:ff/../../rest/user')).toThrow('Invalid MAC address');
     expect(safeEnum('open', ['open', 'closed'], 'state')).toBe('open');
     expect(() => safeEnum('open&type=x', ['open', 'closed'], 'state')).toThrow('Invalid state');

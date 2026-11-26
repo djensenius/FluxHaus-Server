@@ -12,15 +12,18 @@ export class UnsafeParameterError extends Error {
   }
 }
 
-// Opaque IDs/names: letters, digits, `_`, `-`, `.`, `:`, `@`, `~`; must not
-// start with `.` (so `.` and `..` dot-segments are impossible).
-const PATH_SEGMENT = /^[A-Za-z0-9_@:~-][A-Za-z0-9._@:~-]{0,255}$/;
+// Opaque IDs/names: letters, digits, `_`, `-`, `.`, `:`, `@`, `~` (leading
+// dots allowed, e.g. Forgejo `.profile`); the `.`/`..` dot-segments are
+// rejected separately.
+const PATH_SEGMENT = /^[A-Za-z0-9._@:~-]{1,256}$/;
+const DOT_SEGMENT = /^\.{1,2}$/;
 // Home Assistant entity IDs: `<domain>.<object_id>`.
 const ENTITY_ID = /^[a-z0-9_]+\.[a-z0-9_]+$/i;
 // ISO 8601 timestamps (and similar date strings): digits first, then only
 // date/time characters.
 const TIMESTAMP = /^[0-9][0-9A-Za-z:.+-]{0,63}$/;
-const MAC_ADDRESS = /^[0-9a-f]{2}([:-]?[0-9a-f]{2}){5}$/i;
+// MAC addresses: colon/dash separated, unseparated, or Cisco dotted form.
+const MAC_ADDRESS = /^(?:[0-9a-f]{2}([:-])[0-9a-f]{2}(?:\1[0-9a-f]{2}){4}|[0-9a-f]{12}|[0-9a-f]{4}\.[0-9a-f]{4}\.[0-9a-f]{4})$/i;
 // InfluxDB bucket names (including system buckets like `_monitoring`):
 // letters, digits, space, `_`, `-`, `.`. No quotes, backslashes, `$`, or
 // control characters, so the value cannot escape a Flux string literal.
@@ -34,7 +37,9 @@ function check(pattern: RegExp, value: unknown, label: string): string {
 
 /** A single URL path segment (opaque ID, owner/repo name, integer). */
 export function safePathSegment(value: unknown, label: string): string {
-  return encodeURIComponent(check(PATH_SEGMENT, value, label));
+  const segment = check(PATH_SEGMENT, value, label);
+  if (DOT_SEGMENT.test(segment)) throw new UnsafeParameterError(label);
+  return encodeURIComponent(segment);
 }
 
 /** A Home Assistant entity ID, for use as a URL path segment. */
@@ -42,14 +47,21 @@ export function safeEntityId(value: unknown, label = 'entity_id'): string {
   return encodeURIComponent(check(ENTITY_ID, value, label));
 }
 
-/** A timestamp, for use as a URL path segment. */
+/**
+ * A timestamp, for use as a URL path segment. A single space between the date
+ * and time (`2026-01-01 12:00:00`) is normalised to ISO 8601 `T`.
+ */
 export function safeTimestamp(value: unknown, label = 'timestamp'): string {
-  return encodeURIComponent(check(TIMESTAMP, value, label));
+  const normalized = typeof value === 'string'
+    ? value.replace(/^(\d{4}-\d{2}-\d{2}) (\d)/, '$1T$2')
+    : value;
+  return encodeURIComponent(check(TIMESTAMP, normalized, label));
 }
 
-/** A MAC address, for use as a URL path segment. */
+/** A MAC address, normalised to lowercase colon form (aa:bb:cc:dd:ee:ff). */
 export function safeMacAddress(value: unknown, label = 'MAC address'): string {
-  return check(MAC_ADDRESS, value, label).toLowerCase();
+  const hex = check(MAC_ADDRESS, value, label).replace(/[:.-]/g, '').toLowerCase();
+  return hex.match(/../g)!.join(':');
 }
 
 /** One of a fixed set of values. */
