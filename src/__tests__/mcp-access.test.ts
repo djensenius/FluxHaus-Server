@@ -372,6 +372,16 @@ describe('read access secret isolation', () => {
     expect(encoded).not.toMatch(/\bs[1-6]\b/);
     expect(encoded).toContain('width=640&amp;token=[REDACTED]"');
     expect(encoded).toContain('&keep=ok');
+    expect(redactSensitive('/a?w=1\\u0026token=js1')).toBe('/a?w=1\\u0026token=[REDACTED]');
+    expect(redactSensitive('/a\\u003Ftoken\\u003Djs2&w=1')).toBe('/a\\u003Ftoken\\u003D[REDACTED]&w=1');
+    expect(redactSensitive('/a?u=x%2526token%253Ddbl1')).toBe('/a?u=x%2526token%253D[REDACTED]');
+    expect(redactSensitive('/a?u=x%253Fsig%253Ddbl2')).toBe('/a?u=x%253Fsig%253D[REDACTED]');
+    expect(redactSensitive('/a?w=1&#38token=e1')).toBe('/a?w=1&#38token=[REDACTED]');
+    expect(redactSensitive('/a?w=1&#x26token=e2')).toBe('/a?w=1&#x26token=[REDACTED]');
+    expect(redactSensitive('/a?w=1&#X0026Token=e3')).toBe('/a?w=1&#X0026Token=[REDACTED]');
+    expect(redactSensitive('/a?w=1&amptoken=e4')).toBe('/a?w=1&amptoken=[REDACTED]');
+    // other entities that merely start with the same digits/hex are not separators
+    expect(redactSensitive('x &#381token=k1 &#x26atoken=k2')).toBe('x &#381token=k1 &#x26atoken=k2');
     expect(urls[2]).toBe('https://user@host/path');
     expect(['x_vwirekey', 'x_authkey', 'db_password', 'passphrase', 'credential'].every(isSensitiveKey)).toBe(true);
     expect(['accessToken', 'refreshToken', 'authToken', 'clientSecret', 'authKey', 'apiKey', 'AuthKey',

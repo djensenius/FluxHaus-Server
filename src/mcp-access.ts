@@ -202,13 +202,20 @@ const REDACTED = '[REDACTED]';
 const SENSITIVE_KEY = /(^|_)(token|secret|password|passphrase|authkey|api_?key|private_?key|credentials?)$|^x_.*key$/i;
 const SENSITIVE_CAMEL_KEY = /[a-z0-9](Token|Secret|Password|Passphrase|AuthKey|ApiKey|PrivateKey|Credentials?)$/;
 // Credential URL parameters, incl. S3/Azure-style signed URLs and Zoom `pwd`.
-// Separators include `;` and HTML/URL-encoded forms (`&amp;`, `&#38;`,
-// `&#x26;`, `%26`, `%3F`), and `=` may be URL-encoded (`%3D`), so escaped
-// links in HTML bodies or nested URL parameters cannot slip through.
-const SENSITIVE_QUERY_PARAM = new RegExp(`((?:[?&;]|&amp;|&#0*38;|&#x0*26;|%26|%3F)(?:${[
+// Separators include `;`, HTML entities with or without `;` (`&amp;`, `&#38;`,
+// `&#x26;`), JS escapes (`\u0026`, `\u003f`), and single/double URL encoding
+// (`%26`, `%3F`, `%2526`, `%253F`); `=` may be `%3D`, `%253D` or `\u003d`.
+// Escaped links in HTML/JS bodies or nested URL parameters cannot slip through.
+// No nested quantifiers, so matching stays linear.
+const QUERY_SEPARATOR = [
+  '[?&;]', '&amp;?', '&#0*38;?(?![0-9])', '&#x0*26;?(?![0-9a-f])',
+  '\\\\u0026', '\\\\u003f', '%26', '%3F', '%2526', '%253F',
+].join('|');
+const QUERY_EQUALS = ['=', '%3D', '%253D', '\\\\u003d'].join('|');
+const SENSITIVE_QUERY_PARAM = new RegExp(`((?:${QUERY_SEPARATOR})(?:${[
   'token', 'access_token', 'apikey', 'api_key', 'key', 'auth', 'authSig', 'password', 'secret', 'x-plex-token',
   'x-amz-signature', 'x-amz-credential', 'x-amz-security-token', 'signature', 'sig', 'pwd',
-].join('|')})(?:=|%3D))[^&#;"'<>\\s\\\\]+`, 'gi');
+].join('|')})(?:${QUERY_EQUALS}))[^&#;"'<>\\s\\\\]+`, 'gi');
 // user:pass@, :pass@ (password-only, e.g. redis://:secret@host) and user:@.
 const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/?#@\s"'\\:]*:[^/?#@\s"'\\]*@/gi;
 // Calendar subscription feeds are capability URLs (the secret is often in the
