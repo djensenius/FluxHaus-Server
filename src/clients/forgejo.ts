@@ -1,10 +1,17 @@
 import logger from '../logger';
+import { safeEnum, safePathSegment } from './safe-params';
 
 const forgejoLogger = logger.child({ subsystem: 'forgejo' });
 
 export interface ForgejoConfig {
   url: string;
   token: string;
+}
+
+const ISSUE_STATES = ['open', 'closed', 'all'] as const;
+
+function repoPath(owner: string, repo: string): string {
+  return `${safePathSegment(owner, 'owner')}/${safePathSegment(repo, 'repo')}`;
 }
 
 export class ForgejoClient {
@@ -51,14 +58,14 @@ export class ForgejoClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async listRepos(owner?: string): Promise<any> {
     if (owner) {
-      return this.request(`/api/v1/users/${owner}/repos`);
+      return this.request(`/api/v1/users/${safePathSegment(owner, 'owner')}/repos`);
     }
     return this.request('/api/v1/repos/search');
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getRepo(owner: string, repo: string): Promise<any> {
-    return this.request(`/api/v1/repos/${owner}/${repo}`);
+    return this.request(`/api/v1/repos/${repoPath(owner, repo)}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -68,9 +75,9 @@ export class ForgejoClient {
     state?: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
-    const s = state || 'open';
+    const s = safeEnum(state || 'open', ISSUE_STATES, 'state');
     return this.request(
-      `/api/v1/repos/${owner}/${repo}/issues?state=${s}`,
+      `/api/v1/repos/${repoPath(owner, repo)}/issues?state=${s}`,
     );
   }
 
@@ -82,7 +89,7 @@ export class ForgejoClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     return this.request(
-      `/api/v1/repos/${owner}/${repo}/issues/${index}`,
+      `/api/v1/repos/${repoPath(owner, repo)}/issues/${safePathSegment(index, 'issue number')}`,
     );
   }
 
@@ -93,9 +100,9 @@ export class ForgejoClient {
     state?: string,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
-    const s = state || 'open';
+    const s = safeEnum(state || 'open', ISSUE_STATES, 'state');
     return this.request(
-      `/api/v1/repos/${owner}/${repo}/pulls?state=${s}`,
+      `/api/v1/repos/${repoPath(owner, repo)}/pulls?state=${s}`,
     );
   }
 
@@ -107,7 +114,7 @@ export class ForgejoClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     return this.request(
-      `/api/v1/repos/${owner}/${repo}/pulls/${index}`,
+      `/api/v1/repos/${repoPath(owner, repo)}/pulls/${safePathSegment(index, 'pull request number')}`,
     );
   }
 

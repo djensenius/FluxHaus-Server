@@ -198,4 +198,12 @@ describe('UniFiClient', () => {
       );
     });
   });
+
+  describe('getDevice input validation', () => {
+    it('rejects non-MAC device IDs before logging in or fetching', async () => {
+      await expect(client.getDevice('aa:bb:cc:dd:ee:ff/../../../rest/user')).rejects.toThrow('Invalid MAC address');
+      await expect(client.getDevice('../self')).rejects.toThrow('Invalid MAC address');
+      expect(fetch).not.toHaveBeenCalled();
+    });
+  });
 });

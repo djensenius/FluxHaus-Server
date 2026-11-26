@@ -3,6 +3,23 @@ import { generateKeyPair, SignJWT } from 'jose';
 import { authMiddleware, requireOidcForMutations, requireRole } from '../auth.middleware';
 import { validateBearerToken } from '../oidc.middleware';
 import { getMcpAuthConfig, McpScopeError, mcpResource, verifyMcpToken } from '../../mcp-auth';
+import { validateMcpApiKey } from '../../mcp-api-keys';
+
+const authLog = vi.hoisted(() => ({
+  debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+}));
+
+vi.mock('../../logger', () => ({
+  __esModule: true,
+  default: { child: () => authLog },
+}));
+
+vi.mock('../../mcp-api-keys', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../mcp-api-keys')>();
+  return { ...actual, validateMcpApiKey: vi.fn().mockResolvedValue(null) };
+});
+
+const API_KEY = `fhmcp_0123456789abcdef_${'a'.repeat(64)}`;
 
 vi.mock('../oidc.middleware', () => ({
   validateBearerToken: vi.fn(),
@@ -39,6 +56,8 @@ describe('authMiddleware', () => {
     vi.clearAllMocks();
     (verifyMcpToken as vi.Mock).mockResolvedValue(null);
     (validateBearerToken as vi.Mock).mockResolvedValue(null);
+    (validateMcpApiKey as vi.Mock).mockResolvedValue(null);
+    delete process.env.MCP_API_KEYS_ENABLED;
     process.env.BASIC_AUTH_PASSWORD = 'adminpass';
     process.env.RHIZOME_PASSWORD = 'rhizomepass';
     process.env.DEMO_PASSWORD = 'demopass';
@@ -154,6 +173,123 @@ describe('authMiddleware', () => {
     expect(res.status).toHaveBeenCalledWith(401);
     expect(validateBearerToken).not.toHaveBeenCalled();
     expect(next).not.toHaveBeenCalled();
+  });
+
+  describe('MCP API keys', () => {
+    const keyRecord = {
+      id: 'key-uuid', public_id: '0123456789abcdef', owner_sub: 'user-1', owner_issuer: 'https://idp/',
+      owner_username: 'alice', scope: 'read',
+    };
+
+    function expectNoSecretLogged() {
+      const logged = JSON.stringify([...authLog.warn.mock.calls, ...authLog.debug.mock.calls]);
+      expect(logged).not.toContain(API_KEY);
+      expect(logged).not.toContain('a'.repeat(64));
+      expect(logged).not.toContain('tokenHashPrefix');
+    }
+
+    it('authenticates /mcp with a valid key when enabled, without JWT/userinfo', async () => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord);
+      const req = mockReq({ authorization: `Bearer ${API_KEY}` }, '/mcp') as Request;
+      await authMiddleware(req, mockRes() as Response, next);
+      expect(req.user).toEqual({
+        role: 'admin', username: 'alice', sub: 'user-1', issuer: 'https://idp/',
+        authMethod: 'mcp_api_key', mcpAccess: 'read', mcpKeyId: 'key-uuid',
+      });
+      expect(validateMcpApiKey).toHaveBeenCalledWith(API_KEY);
+      expect(verifyMcpToken).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).toHaveBeenCalled();
+      expectNoSecretLogged();
+    });
+
+    it('returns 401 with the MCP challenge for an invalid key', async () => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      const res = mockRes() as Response;
+      await authMiddleware(mockReq({ authorization: `Bearer ${API_KEY}` }, '/mcp') as Request, res, next);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'WWW-Authenticate',
+        'Bearer resource_metadata="http://localhost:8888/.well-known/oauth-protected-resource/mcp"',
+      );
+      expect(verifyMcpToken).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+      expect(authLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ publicId: '0123456789abcdef' }),
+        'MCP API key rejected',
+      );
+      expectNoSecretLogged();
+    });
+
+    it('returns 401 without validating when the kill switch is off', async () => {
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord);
+      const res = mockRes() as Response;
+      await authMiddleware(mockReq({ authorization: `Bearer ${API_KEY}` }, '/mcp') as Request, res, next);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(validateMcpApiKey).not.toHaveBeenCalled();
+      expect(verifyMcpToken).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('denies key-prefixed bearers on REST before any validator, even when enabled', async () => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord);
+      (validateBearerToken as vi.Mock).mockResolvedValue({ sub: 'user-1' });
+      for (const token of [API_KEY, 'fhmcp_malformed']) {
+        const res = mockRes() as Response;
+        // eslint-disable-next-line no-await-in-loop
+        await authMiddleware(mockReq({ authorization: `Bearer ${token}` }, '/mcp-keys') as Request, res, next);
+        expect(res.status).toHaveBeenCalledWith(401);
+      }
+      expect(validateMcpApiKey).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    const variants = [
+      ['double space', `Bearer  ${API_KEY}`],
+      ['uppercase prefix', `Bearer ${API_KEY.replace('fhmcp_', 'FHMCP_')}`],
+      ['tab separator', `Bearer\t${API_KEY}`],
+      ['lowercase scheme', `bearer ${API_KEY}`],
+      ['non-Bearer scheme', `Token ${API_KEY}`],
+    ];
+
+    it.each(variants)('denies a %s key variant on REST before cookies or validators', async (_label, header) => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord);
+      (validateBearerToken as vi.Mock).mockResolvedValue({ sub: 'user-1' });
+      const req = mockReq({ authorization: header }, '/mcp-keys') as Request;
+      (req as Request & { signedCookies: unknown }).signedCookies = {
+        auth_user: JSON.stringify({ username: 'alice', role: 'admin', sub: 'user-1' }),
+      };
+      const res = mockRes() as Response;
+      await authMiddleware(req, res, next);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(req.user).toBeUndefined();
+      expect(validateMcpApiKey).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it.each(variants)('rejects a %s key variant on /mcp as an invalid key', async (_label, header) => {
+      process.env.MCP_API_KEYS_ENABLED = 'true';
+      (validateMcpApiKey as vi.Mock).mockResolvedValue(keyRecord);
+      const res = mockRes() as Response;
+      await authMiddleware(mockReq({ authorization: header }, '/mcp') as Request, res, next);
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(res.setHeader).toHaveBeenCalledWith(
+        'WWW-Authenticate',
+        'Bearer resource_metadata="http://localhost:8888/.well-known/oauth-protected-resource/mcp"',
+      );
+      expect(validateMcpApiKey).not.toHaveBeenCalled();
+      expect(verifyMcpToken).not.toHaveBeenCalled();
+      expect(validateBearerToken).not.toHaveBeenCalled();
+      expect(next).not.toHaveBeenCalled();
+      expectNoSecretLogged();
+    });
   });
 
   it('should return 401 when no auth provided', async () => {

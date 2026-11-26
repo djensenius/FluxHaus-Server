@@ -6,6 +6,9 @@ import {
   getMcpAuthConfig, isDedicatedMcpToken, MCP_SCOPE, McpScopeError,
   mcpResource, serverOrigin, verifyMcpToken,
 } from '../mcp-auth';
+import {
+  containsMcpApiKeyMarker, isMcpApiKeysEnabled, mcpApiKeyPublicId, validateMcpApiKey,
+} from '../mcp-api-keys';
 import { logEvent } from '../audit';
 import { writePoint } from '../influx';
 import logger from '../logger';
@@ -75,6 +78,42 @@ export async function authMiddleware(
     const origin = config.mode === 'oidc' ? new URL(config.resource).origin : serverOrigin(req);
     const challenge = `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`;
     const authHeader = req.headers.authorization || '';
+    if (containsMcpApiKeyMarker(authHeader)) {
+      // Scoped MCP API keys (and any malformed case/whitespace variant) never
+      // reach JWT/userinfo validation; only the exact format can validate.
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+      const publicId = mcpApiKeyPublicId(token);
+      const enabled = isMcpApiKeysEnabled();
+      const key = enabled && publicId ? await validateMcpApiKey(token) : null;
+      if (key) {
+        req.user = {
+          role: 'admin',
+          username: key.owner_username,
+          sub: key.owner_sub,
+          issuer: key.owner_issuer ?? undefined,
+          authMethod: 'mcp_api_key',
+          mcpAccess: key.scope,
+          mcpKeyId: key.id,
+        };
+        authLogger.debug({ publicId, scope: key.scope }, 'MCP API key auth success');
+        next();
+        return;
+      }
+      authLogger.warn(
+        {
+          route: req.path,
+          method: req.method,
+          userAgent: req.headers['user-agent'],
+          clientIP: req.ip,
+          publicId,
+          reason: !enabled ? 'mcp_api_keys_disabled' : (publicId ? 'invalid_key' : 'malformed_key'),
+        },
+        'MCP API key rejected',
+      );
+      res.setHeader('WWW-Authenticate', challenge);
+      res.status(401).json({ message: 'Unauthorized' });
+      return;
+    }
     if (authHeader.startsWith('Bearer ')) {
       const token = authHeader.slice(7);
       let mcpClaims;
@@ -122,10 +161,12 @@ export async function authMiddleware(
     return;
   }
 
-  // Never let the legacy REST validator's userinfo fallback accept MCP JWTs.
-  // This is rejection only, including unsigned/malformed-signature JWTs.
+  // Never let the legacy REST validator's userinfo fallback accept MCP JWTs
+  // or MCP API keys (which must never be sent to the IdP). This is rejection
+  // only, including unsigned/malformed-signature JWTs, regardless of config.
   const bearer = req.headers.authorization;
-  if (bearer?.startsWith('Bearer ') && isDedicatedMcpToken(bearer.slice(7))) {
+  if (containsMcpApiKeyMarker(bearer)
+    || (bearer?.startsWith('Bearer ') && isDedicatedMcpToken(bearer.slice(7)))) {
     res.status(401).json({ message: 'Unauthorized' });
     return;
   }

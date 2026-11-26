@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { safePathSegment } from './safe-params';
 
 const bookloreLogger = logger.child({ subsystem: 'booklore' });
 
@@ -61,14 +62,14 @@ export class BookloreClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async listBooks(shelfId?: string): Promise<any> {
     if (shelfId) {
-      return this.request(`/api/shelves/${shelfId}/books`);
+      return this.request(`/api/shelves/${safePathSegment(shelfId, 'shelf ID')}/books`);
     }
     return this.request('/api/books');
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getBook(bookId: string): Promise<any> {
-    return this.request(`/api/books/${bookId}`);
+    return this.request(`/api/books/${safePathSegment(bookId, 'book ID')}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

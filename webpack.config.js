@@ -13,6 +13,7 @@ module.exports = {
   entry: {
     server: './src/server.ts',
     mcp: './src/mcp.ts',
+    'mcp-keys': './src/mcp-keys-cli-main.ts',
   },
   devtool: 'source-map',
   mode: 'development',

@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { safePathSegment } from './safe-params';
 
 const grafanaLogger = logger.child({ subsystem: 'grafana' });
 
@@ -62,7 +63,7 @@ export class GrafanaClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getDashboard(uid: string): Promise<any> {
     return this.request(
-      `/api/dashboards/uid/${encodeURIComponent(uid)}`,
+      `/api/dashboards/uid/${safePathSegment(uid, 'dashboard UID')}`,
     );
   }
 

@@ -123,4 +123,25 @@ describe('InfluxDBClient', () => {
     const callBody = (global.fetch as vi.Mock).mock.calls[0][1].body;
     expect(callBody).toContain('test-bucket');
   });
+
+  describe('listMeasurements injection', () => {
+    it('quotes a safe bucket name in the Flux query', async () => {
+      (global.fetch as vi.Mock).mockResolvedValue({ ok: true, text: async () => '' });
+      const client = new InfluxDBClient(mockConfig);
+      await client.listMeasurements('home_assistant');
+      expect((global.fetch as vi.Mock).mock.calls[0][1].body)
+        .toBe('import "influxdata/influxdb/schema" schema.measurements(bucket: "home_assistant")');
+    });
+
+    it.each([
+      'x") from(bucket: "secrets") |> range(start: -1y) |> yield(name: "x',
+      'x"\nimport "experimental/http"',
+      'x\\',
+      'x${1}',
+    ])('rejects %j without sending a query', async (bucket) => {
+      const client = new InfluxDBClient(mockConfig);
+      await expect(client.listMeasurements(bucket)).rejects.toThrow('Invalid bucket name');
+      expect(global.fetch).not.toHaveBeenCalled();
+    });
+  });
 });

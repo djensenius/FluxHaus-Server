@@ -9,6 +9,9 @@ import { parseHTML } from 'linkedom';
 import { z } from 'zod';
 import { FluxHausServices } from './services';
 import type { ThermostatControlResult, ThermostatControls } from './indoor-climate';
+import {
+  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess, omitKeysDeep, redactMcpResult, redactSensitive,
+} from './mcp-access';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { version } = require('../package.json');
@@ -234,8 +237,15 @@ async function fetchPublicHttpUrl(rawUrl: string | URL, init: RequestInit, maxRe
   throw new Error('Too many redirects');
 }
 
+function readOnlyDenied(kind: string, name: string): string {
+  return `${kind} ${name} is not available with read-only MCP access`;
+}
+
 // Wraps server.tool so every handler gets try/catch, logging, and timing.
-function wrapToolHandlers(server: McpServer): McpServer['tool'] {
+// With read access, tools outside the read allowlist are disabled (hidden
+// from tools/list) and their handlers refuse to run (defense in depth), and
+// all results are redacted of embedded credentials (camera tokens etc.).
+function wrapToolHandlers(server: McpServer, access: McpAccess): McpServer['tool'] {
   const originalTool = server.tool.bind(server);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const wrapped = (...rawArgs: any[]) => {
@@ -243,12 +253,22 @@ function wrapToolHandlers(server: McpServer): McpServer['tool'] {
     const name = wrappedArgs[0] as string;
     const handlerIndex = wrappedArgs.length - 1;
     const originalHandler = wrappedArgs[handlerIndex];
+    const allowed = isMcpToolAllowed(access, name);
     if (typeof originalHandler !== 'function') {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      return (originalTool as any)(...rawArgs);
+      const registered = (originalTool as any)(...rawArgs);
+      if (!allowed) registered.disable();
+      return registered;
     }
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const finish = <T>(result: T): T => (access === 'read' ? redactMcpResult(result) : result);
     wrappedArgs[handlerIndex] = async (...handlerArgs: any[]) => {
+      if (!allowed) {
+        return {
+          isError: true,
+          content: [{ type: 'text' as const, text: readOnlyDenied('Tool', name) }],
+        };
+      }
       const start = Date.now();
       try {
         const result = await originalHandler(...handlerArgs);
@@ -256,21 +276,55 @@ function wrapToolHandlers(server: McpServer): McpServer['tool'] {
         if (elapsed > 5000) {
           console.warn(`[MCP] ${name} completed in ${elapsed}ms (slow)`);
         }
-        return addStructuredContentIfJsonText(result);
+        return finish(addStructuredContentIfJsonText(result));
       } catch (err) {
         const elapsed = Date.now() - start;
         const message = err instanceof Error ? err.message : String(err);
         console.error(`[MCP] ${name} failed after ${elapsed}ms: ${message}`);
-        return {
+        return finish({
           isError: true,
           content: [{ type: 'text' as const, text: `Error in ${name}: ${message}` }],
-        };
+        });
       }
     };
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    return (originalTool as any)(...wrappedArgs);
+    const registered = (originalTool as any)(...wrappedArgs);
+    if (!allowed) registered.disable();
+    return registered;
   };
   return wrapped as McpServer['tool'];
+}
+
+// Wraps server.resource / server.prompt so registrations outside the read
+// allowlists are disabled for read access and their callbacks refuse to run;
+// allowed callbacks have their results redacted for read access.
+function wrapAccessControlled<T extends (...args: never[]) => unknown>(
+  original: T,
+  kind: 'Resource' | 'Prompt',
+  access: McpAccess,
+  isAllowed: (name: string) => boolean,
+): T {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const wrapped = (...rawArgs: any[]) => {
+    const name = String(rawArgs[0]);
+    const allowed = isAllowed(name);
+    const args = [...rawArgs];
+    const callbackIndex = args.length - 1;
+    const callback = args[callbackIndex];
+    if (!allowed && typeof callback === 'function') {
+      args[callbackIndex] = async () => {
+        throw new Error(readOnlyDenied(kind, name));
+      };
+    } else if (access === 'read' && typeof callback === 'function') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      args[callbackIndex] = async (...callbackArgs: any[]) => redactMcpResult(await callback(...callbackArgs));
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const registered = (original as any)(...args);
+    if (!allowed) registered.disable();
+    return registered;
+  };
+  return wrapped as unknown as T;
 }
 
 // Dangerous Jinja2 patterns that could access the HA host system.
@@ -291,7 +345,7 @@ const MAX_TEMPLATE_LENGTH = 4000;
 
 export default function createMcpServer(
   services: FluxHausServices,
-  options: { userSub?: string } = {},
+  options: { userSub?: string; access?: McpAccess } = {},
 ): McpServer {
   const {
     homeAssistantClient,
@@ -300,6 +354,10 @@ export default function createMcpServer(
     cameraURL,
   } = services;
   const { userSub } = options;
+  const access: McpAccess = options.access ?? 'full';
+  // Prompts embed JSON inside prose, where text-level redaction is weaker:
+  // redact the source objects before interpolation for read access.
+  const promptData = <T>(value: T): T => (access === 'read' ? redactSensitive(value) : value);
   const calendarUnavailable = () => ({
     isError: true,
     content: [{
@@ -320,7 +378,19 @@ export default function createMcpServer(
   );
 
   // Wrap all tool handlers with error handling and logging
-  server.tool = wrapToolHandlers(server);
+  server.tool = wrapToolHandlers(server, access);
+  server.resource = wrapAccessControlled(
+    server.resource.bind(server),
+    'Resource',
+    access,
+    (name) => isMcpResourceAllowed(access, name),
+  );
+  server.prompt = wrapAccessControlled(
+    server.prompt.bind(server),
+    'Prompt',
+    access,
+    (name) => isMcpPromptAllowed(access, name),
+  );
 
   // ── Resources ────────────────────────────────────────────────────────────────
 
@@ -728,7 +798,13 @@ export default function createMcpServer(
     READ_ONLY_CLOSED,
     async () => {
       const calendars = await services.calendar?.listCalendars(userSub) || [];
-      return jsonResult({ calendars });
+      // ICS descriptions hold the subscription URL, a capability URL; never
+      // expose it to read access.
+      const shown = access === 'read'
+        ? calendars.map((calendar) => (
+          calendar.provider === 'ics' ? { ...calendar, description: undefined } : calendar))
+        : calendars;
+      return jsonResult({ calendars: shown });
     },
   );
 
@@ -1418,7 +1494,9 @@ export default function createMcpServer(
         return { content: [{ type: 'text' as const, text: 'Portainer is not configured' }] };
       }
       const data = await services.portainer.listContainers(endpointId);
-      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+      // Command lines and labels can carry credentials; read access omits them.
+      const shown = access === 'read' ? omitKeysDeep(data, new Set(['Command', 'Labels'])) : data;
+      return { content: [{ type: 'text' as const, text: JSON.stringify(shown, null, 2) }] };
     },
   );
 
@@ -1510,7 +1588,10 @@ export default function createMcpServer(
         return { content: [{ type: 'text' as const, text: 'Prometheus is not configured' }] };
       }
       const data = await services.prometheus.getTargets();
-      return { content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }] };
+      // Pre-relabel discovered labels expose service-discovery metadata
+      // (e.g. container env/labels); read access omits them.
+      const shown = access === 'read' ? omitKeysDeep(data, new Set(['discoveredLabels'])) : data;
+      return { content: [{ type: 'text' as const, text: JSON.stringify(shown, null, 2) }] };
     },
   );
 
@@ -2432,7 +2513,7 @@ export default function createMcpServer(
       if (fs.existsSync('cache/homeconnect.json')) {
         homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
       }
-      const applianceData = JSON.stringify({ miele, homeConnect }, null, 2);
+      const applianceData = JSON.stringify(promptData({ miele, homeConnect }), null, 2);
       const promptText = 'Here is the current appliance data from FluxHaus:\n\n'
         + `${applianceData}\n\n`
         + 'Please provide a concise, friendly summary of what appliances are running, '
@@ -2453,10 +2534,10 @@ export default function createMcpServer(
     'leaving_home',
     'Checklist and actions to perform when leaving home',
     async () => {
-      const carData = JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
-      const robotData = JSON.stringify({
+      const carData = JSON.stringify(promptData({ status: car.status, odometer: car.odometer }), null, 2);
+      const robotData = JSON.stringify(promptData({
         cleanbot: cleanbot.cachedStatus,
-      }, null, 2);
+      }), null, 2);
       const leavingText = 'I am leaving home. Here is the current FluxHaus status:\n\n'
         + `Car:\n${carData}\n\n`
         + `Robots:\n${robotData}\n\n`
@@ -2478,10 +2559,10 @@ export default function createMcpServer(
     'goodnight',
     'Evening checklist for winding down the home',
     async () => {
-      const carData = JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
-      const robotData = JSON.stringify({
+      const carData = JSON.stringify(promptData({ status: car.status, odometer: car.odometer }), null, 2);
+      const robotData = JSON.stringify(promptData({
         cleanbot: cleanbot.cachedStatus,
-      }, null, 2);
+      }), null, 2);
       let miele = null;
       if (fs.existsSync('cache/miele.json')) {
         miele = JSON.parse(fs.readFileSync('cache/miele.json', 'utf8'));
@@ -2490,7 +2571,7 @@ export default function createMcpServer(
       if (fs.existsSync('cache/homeconnect.json')) {
         homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
       }
-      const appliancesData = JSON.stringify({ miele, homeConnect }, null, 2);
+      const appliancesData = JSON.stringify(promptData({ miele, homeConnect }), null, 2);
       const goodnightText = 'It is time for bed. Here is the current FluxHaus status:\n\n'
         + `Car:\n${carData}\n\n`
         + `Robots:\n${robotData}\n\n`

@@ -735,6 +735,62 @@ Security notes:
 - In proxy mode, MCP OAuth dynamic client registration only accepts redirect URI origins listed in `MCP_ALLOWED_REDIRECT_ORIGINS`. Loopback redirects (`localhost`, `127.0.0.1`, `[::1]`, any port) are always accepted for local clients such as Copilot CLI; GitHub/Copilot web origins are included in the defaults/examples.
 - Web/image fetching tools reject localhost, `.local`, loopback, link-local, and private-network URLs to reduce SSRF risk from model-controlled URL fetches.
 
+#### Scoped MCP API keys (`read` / `full`)
+
+For MCP clients that cannot run an OAuth flow (or where a narrower grant is wanted), `/mcp` also accepts per-client API keys. They are **off by default**; enable them with `MCP_API_KEYS_ENABLED=true`. Keys look like `fhmcp_<publicId>_<secret>` and are sent as `Authorization: Bearer fhmcp_...`.
+
+- **Storage:** only a SHA-256 hash is stored (`mcp_api_keys` table, created automatically). The raw key is shown once at creation. Each key has an owner (OIDC `sub`, issuer and username copied from the creator), a label, a scope, an optional expiry, `last_used_at`, and can be revoked.
+- **Scopes:** `full` exposes every tool, resource and prompt. `read` exposes only an explicit allowlist (`MCP_READ_TOOLS` in `src/mcp-access.ts`); everything else is hidden from `tools/list`/`resources/list` and refused if called. `read` **excludes** all state-changing tools (car, robot, Home Assistant services/scenes, thermostat, calendar writes, Overseerr requests/approvals, Portainer container actions), tools whose output can contain secrets (`portainer_list_stacks` and `portainer_get_container` return stack/container environment variables such as database passwords; `portainer_list_endpoints` returns endpoint credentials/config), the arbitrary query tools `influxdb_query`, `grafana_query_datasource` and `render_template` (which can read any Home Assistant attribute, including camera tokens), the paid/outbound tools `web_search`, `fetch_webpage`, `summarize_url`, `view_image` and `generate_image`, and the `camera-url` resource. Prompts remain available. Tools added later are denied to `read` until they are classified.
+- **Read redaction:** with `read` access every tool, resource and prompt result is scrubbed of embedded credentials, so a read key cannot obtain camera access or device secrets. The whole value (including objects/arrays) under credential-like keys — names ending in `token`, `secret`, `password`, `passphrase`, `authkey`, `api_key`/`apikey`, `private_key`/`privatekey` or `credential(s)` (snake_case or camelCase, e.g. `accessToken`, `clientSecret`), and UniFi `x_*key` fields such as `x_authkey`/`x_vwirekey` — becomes `[REDACTED]`, as do the URL parameters `token`, `access_token`, `apikey`, `api_key`, `key`, `auth`, `authSig`, `password`, `secret`, `X-Plex-Token`, signed-URL parameters (`X-Amz-Signature`, `X-Amz-Credential`, `X-Amz-Security-Token`, `Signature`, `sig`) and Zoom `pwd` — including encoded forms such as `&amp;token=`, `&#38;`/`&#x26;` (with or without `;`), `\u0026`/`\u003f`, `%26token%3D`, double-encoded `%2526token%253D` and `;` separators — (e.g. Home Assistant camera `entity_picture` proxy links), URL credentials (`user:pass@`, password-only `:pass@`, `user:@`, and token-like usernames such as `ghp_…@`/`glpat-…@` or any 20+ character token; short names like `git@` stay), and calendar feed links (any `webcal://`/`webcals://` URL, iCloud `…icloud.com/published/…` link, or `http(s)` link to an `.ics` file). `list_calendars` omits the description of ICS subscription calendars (it holds the feed URL); ids and names stay. `portainer_list_containers` also omits container `Command` and `Labels`, and `prometheus_get_targets` omits `discoveredLabels`. Prompts redact their source data before embedding it in prose.
+- **Input validation:** tool arguments that are interpolated into upstream URLs or Flux (IDs, entity IDs, timestamps, MAC addresses, repository names, state filters, InfluxDB bucket names) must match a strict format, so path traversal, query-parameter or Flux injection cannot reach endpoints outside a tool's purpose.
+- **Isolation:** keys only work on `/mcp`. Any `Authorization` header containing `fhmcp_` (any case or whitespace, any scheme) on another route is rejected with 401 before any JWT or IdP userinfo validation, so keys are never sent to the identity provider — this holds even when `MCP_API_KEYS_ENABLED` is off. On `/mcp`, such headers never fall through to MCP JWT validation; malformed, invalid, revoked, expired or disabled keys (or an unavailable database) get 401. Logs record only the key's public id, and request audit records include the key id and scope.
+- **Lifetime:** keys are independent of the identity provider — a key keeps working after its owner is deactivated or loses access in the IdP until it is revoked or expires. Always set an expiry (`expiresAt` / `--expires`) and revoke keys when access is removed; there is no enforced maximum lifetime.
+- **Kill switch:** set `MCP_API_KEYS_ENABLED=false` (or unset it) and restart to reject every key immediately; existing keys stay stored and work again when re-enabled.
+
+Self-service management (OIDC-signed-in users only — not Basic auth, MCP tokens or API keys; each user sees and revokes only their own keys, matched by OIDC `sub` and issuer (trailing slashes ignored; a login without an issuer matches only keys without one); create/revoke are audit-logged):
+
+```bash
+GET    /mcp-keys                       # { enabled, keys: [...] } — never returns hashes or secrets
+POST   /mcp-keys   {"label":"Copilot CLI","scope":"read","expiresAt":"2027-01-01T00:00:00Z"}
+                                       # 201 with the record plus "key" (shown once); expiresAt optional
+DELETE /mcp-keys/<id>                  # revoke
+```
+
+Admin CLI (bundled as `dist/mcp-keys.js`; reads `POSTGRES_URL` from the environment or `/app/.env`). `--issuer` (for `create` and `list --sub`) defaults to `OIDC_ISSUER_URL`; it must match the owner's login issuer for the key to appear in their self-service list, so users who sign in through another trusted issuer (e.g. a separate MCP OIDC issuer) need an explicit `--issuer`. In the production container:
+
+```bash
+docker exec -it fluxhaus node dist/mcp-keys.js --help
+docker exec -it fluxhaus node dist/mcp-keys.js create --sub <oidc-sub> --username <name> \
+  [--issuer <issuer-url>] --scope read --label "Copilot CLI" [--expires 2027-01-01T00:00:00Z]
+docker exec -it fluxhaus node dist/mcp-keys.js list [--sub <oidc-sub> [--issuer <issuer-url>]]
+docker exec -it fluxhaus node dist/mcp-keys.js revoke <id-or-public-id>
+```
+
+Client setup examples:
+
+```bash
+# GitHub Copilot CLI
+copilot mcp add --transport http --header "Authorization: Bearer fhmcp_..." fluxhaus https://api.fluxhaus.io/mcp
+```
+
+```jsonc
+// VS Code .vscode/mcp.json — prompts for the key instead of storing it in the file
+{
+  "inputs": [{ "type": "promptString", "id": "fluxhaus-mcp-key", "description": "FluxHaus MCP API key", "password": true }],
+  "servers": {
+    "fluxhaus": {
+      "type": "http",
+      "url": "https://api.fluxhaus.io/mcp",
+      "headers": { "Authorization": "Bearer ${input:fluxhaus-mcp-key}" }
+    }
+  }
+}
+```
+
+Copilot Studio: add an MCP tool with server URL `https://api.fluxhaus.io/mcp` and authentication type **API key**, sent as a **header** named `Authorization`; enter the value as `Bearer fhmcp_...` (including the `Bearer ` prefix).
+
+Prefer `read` keys for assistants that only need status; issue `full` keys sparingly, give each client its own key, set an expiry, and revoke keys you no longer use.
+
 The MCP server exposes FluxHaus home, car, calendar, media, infrastructure, web, and image tools. Several high-value read tools return `structuredContent` in addition to text for modern MCP clients, and sensitive/state-changing tools are annotated with MCP tool hints.
 
 ## Breaking Changes

@@ -70,4 +70,23 @@ describe('HomeAssistantClient', () => {
     expect(inits[2].signal).toBe(signal);
     expect(inits[3]).not.toHaveProperty('signal');
   });
+
+  it('rejects path/query injection in entity IDs, timestamps, and calendar IDs before fetching', async () => {
+    const client = new HomeAssistantClient(mockConfig);
+    await expect(client.getState('../error_log')).rejects.toThrow('Invalid entity_id');
+    await expect(client.getState('camera.x/../../camera_proxy/camera.x')).rejects.toThrow('Invalid entity_id');
+    await expect(client.getHistory('sensor.x', '2026-01-01/../../config')).rejects.toThrow('Invalid start');
+    await expect(client.getLogbook('../../states')).rejects.toThrow('Invalid start');
+    await expect(client.getCalendarEvents('homeassistant:../../error_log', '2026-01-01', '2026-01-02'))
+      .rejects.toThrow('Invalid calendar ID');
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it('encodes valid timestamps in history paths', async () => {
+    (global.fetch as vi.Mock).mockResolvedValueOnce({ ok: true, json: async () => [] });
+    const client = new HomeAssistantClient(mockConfig);
+    await client.getHistory('sensor.x', '2026-01-01T00:00:00Z');
+    expect((global.fetch as vi.Mock).mock.calls[0][0])
+      .toBe('http://homeassistant.local:8123/api/history/period/2026-01-01T00%3A00%3A00Z?filter_entity_id=sensor.x');
+  });
 });

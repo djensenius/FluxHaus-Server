@@ -1,3 +1,5 @@
+import { safeEntityId, safeTimestamp } from './clients/safe-params';
+
 export interface HomeAssistantConfig {
   url: string;
   token: string;
@@ -58,7 +60,7 @@ export class HomeAssistantClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public async getState(entityId: string, options: HomeAssistantRequestOptions = {}): Promise<any> {
-    const path = entityId ? `/api/states/${entityId}` : '/api/states';
+    const path = entityId ? `/api/states/${safeEntityId(entityId)}` : '/api/states';
     return this.request(path, signalInit(options));
   }
 
@@ -80,7 +82,7 @@ export class HomeAssistantClient {
   public async getHistory(entityId: string, start: string, end?: string): Promise<any> {
     const params = new URLSearchParams({ filter_entity_id: entityId });
     if (end) params.set('end_time', end);
-    return this.request(`/api/history/period/${start}?${params}`);
+    return this.request(`/api/history/period/${safeTimestamp(start, 'start')}?${params}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -89,7 +91,7 @@ export class HomeAssistantClient {
     if (end) params.set('end_time', end);
     if (entityId) params.set('entity', entityId);
     const qs = params.toString();
-    return this.request(`/api/logbook/${start}${qs ? `?${qs}` : ''}`);
+    return this.request(`/api/logbook/${safeTimestamp(start, 'start')}${qs ? `?${qs}` : ''}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -100,7 +102,7 @@ export class HomeAssistantClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   public async getCalendarEvents(calendarId: string, start: string, end: string): Promise<any> {
     const params = new URLSearchParams({ start, end });
-    return this.request(`/api/calendars/${calendarId}?${params}`);
+    return this.request(`/api/calendars/${safeEntityId(calendarId, 'calendar ID')}?${params}`);
   }
 
   public async renderTemplate(template: string, options: HomeAssistantRequestOptions = {}): Promise<string> {
