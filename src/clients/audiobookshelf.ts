@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { safePathSegment } from './safe-params';
 
 const absLogger = logger.child({ subsystem: 'audiobookshelf' });
 
@@ -56,12 +57,12 @@ export class AudiobookshelfClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async listItems(libraryId: string): Promise<any> {
-    return this.request(`/api/libraries/${libraryId}/items`);
+    return this.request(`/api/libraries/${safePathSegment(libraryId, 'library ID')}/items`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getItem(itemId: string): Promise<any> {
-    return this.request(`/api/items/${itemId}?expanded=1`);
+    return this.request(`/api/items/${safePathSegment(itemId, 'item ID')}?expanded=1`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,7 +79,7 @@ export class AudiobookshelfClient {
   async search(libraryId: string, query: string): Promise<any> {
     const encoded = encodeURIComponent(query);
     return this.request(
-      `/api/libraries/${libraryId}/search?q=${encoded}`,
+      `/api/libraries/${safePathSegment(libraryId, 'library ID')}/search?q=${encoded}`,
     );
   }
 }

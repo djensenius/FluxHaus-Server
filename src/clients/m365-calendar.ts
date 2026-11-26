@@ -223,10 +223,12 @@ export class M365CalendarClient implements CalendarProvider {
   }
 
   private extractCalendarId(calendarId: string): string {
-    if (calendarId.startsWith(`${this.sourceId}:`)) {
-      return calendarId.slice(this.sourceId.length + 1);
-    }
-    return calendarId;
+    const raw = calendarId.startsWith(`${this.sourceId}:`)
+      ? calendarId.slice(this.sourceId.length + 1)
+      : calendarId;
+    // encodeURIComponent leaves `.`/`..` intact; never allow dot-segments.
+    if (!raw || /^\.{1,2}$/.test(raw)) throw new Error('Invalid Microsoft 365 calendar ID');
+    return raw;
   }
 
   private parseEventId(eventId: string): { calendarId: string; rawEventId: string } {

@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { fluxBucketLiteral } from './safe-params';
 
 const influxdbLogger = logger.child({ subsystem: 'influxdb' });
 
@@ -111,7 +112,7 @@ export class InfluxDBClient {
   async listMeasurements(bucket?: string): Promise<any> {
     const targetBucket = bucket || this.config.bucket;
     const flux = 'import "influxdata/influxdb/schema" '
-      + `schema.measurements(bucket: "${targetBucket}")`;
+      + `schema.measurements(bucket: ${fluxBucketLiteral(targetBucket)})`;
     return this.query(flux);
   }
 }

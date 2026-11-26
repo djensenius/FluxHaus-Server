@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { safePathSegment } from './safe-params';
 
 const komgaLogger = logger.child({ subsystem: 'komga' });
 
@@ -78,12 +79,12 @@ export class KomgaClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getSeries(seriesId: string): Promise<any> {
-    return this.request(`/api/v1/series/${seriesId}`);
+    return this.request(`/api/v1/series/${safePathSegment(seriesId, 'series ID')}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async listBooks(seriesId: string): Promise<any> {
-    return this.request(`/api/v1/series/${seriesId}/books`);
+    return this.request(`/api/v1/series/${safePathSegment(seriesId, 'series ID')}/books`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { safePathSegment } from './safe-params';
 
 const portainerLogger = logger.child({ subsystem: 'portainer' });
 
@@ -57,7 +58,7 @@ export class PortainerClient {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async listContainers(endpointId: number): Promise<any> {
     return this.request(
-      `/api/endpoints/${endpointId}/docker/containers/json`
+      `/api/endpoints/${safePathSegment(endpointId, 'endpoint ID')}/docker/containers/json`
       + '?all=true',
     );
   }
@@ -74,8 +75,8 @@ export class PortainerClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     return this.request(
-      `/api/endpoints/${endpointId}/docker/containers`
-      + `/${containerId}/json`,
+      `/api/endpoints/${safePathSegment(endpointId, 'endpoint ID')}/docker/containers`
+      + `/${safePathSegment(containerId, 'container ID')}/json`,
     );
   }
 
@@ -87,8 +88,8 @@ export class PortainerClient {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   ): Promise<any> {
     return this.request(
-      `/api/endpoints/${endpointId}/docker/containers`
-      + `/${containerId}/${action}`,
+      `/api/endpoints/${safePathSegment(endpointId, 'endpoint ID')}/docker/containers`
+      + `/${safePathSegment(containerId, 'container ID')}/${safePathSegment(action, 'action')}`,
       { method: 'POST' },
     );
   }

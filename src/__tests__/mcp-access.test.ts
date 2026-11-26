@@ -11,6 +11,14 @@ import {
   isSensitiveKey, omitKeysDeep, redactMcpResult, redactSensitive,
 } from '../mcp-access';
 import { FluxHausServices } from '../services';
+import { InfluxDBClient } from '../clients/influxdb';
+import { ForgejoClient } from '../clients/forgejo';
+import { ImmichClient } from '../clients/immich';
+import { KomgaClient } from '../clients/komga';
+import { AudiobookshelfClient } from '../clients/audiobookshelf';
+import { BookloreClient } from '../clients/booklore';
+import { GrafanaClient } from '../clients/grafana';
+import { HomeAssistantClient } from '../homeassistant-client';
 
 vi.mock('fs');
 
@@ -100,9 +108,9 @@ const registeredNames = (server: any) => ({
 });
 /* eslint-enable @typescript-eslint/no-explicit-any */
 
-async function connect(access: McpAccess) {
+async function connect(access: McpAccess, overrides: Partial<FluxHausServices> = {}) {
   const { services, car, portainer } = mockServices();
-  const server = createMcpServer(services, { userSub: 'user-1', access });
+  const server = createMcpServer({ ...services, ...overrides } as FluxHausServices, { userSub: 'user-1', access });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'test', version: '1.0.0' });
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -345,6 +353,71 @@ describe('read access secret isolation', () => {
       messages: [{ content: { type: 'text', text: 'Data:\n{\n  "access_token": "abc"\n} see /x?token=abc' } }],
     });
     expect(JSON.stringify(prompt)).not.toContain('abc');
+  });
+});
+
+describe('read access input injection', () => {
+  let fetchSpy: vi.SpyInstance;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(new Response('[]', {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    }));
+  });
+
+  afterEach(() => fetchSpy.mockRestore());
+
+  const realClients = (): Partial<FluxHausServices> => ({
+    influxdb: new InfluxDBClient({ url: 'http://influx', token: 't', org: 'o', bucket: 'b' }),
+    forgejo: new ForgejoClient({ url: 'http://forgejo', token: 't' }),
+    immich: new ImmichClient({ url: 'http://immich', apiKey: 'k' }),
+    komga: new KomgaClient({ url: 'http://komga', user: 'u', password: 'p' }),
+    audiobookshelf: new AudiobookshelfClient({ url: 'http://abs', apiKey: 'k' }),
+    booklore: new BookloreClient({ url: 'http://booklore', user: 'u', password: 'p' }),
+    grafana: new GrafanaClient({ url: 'http://grafana', user: 'u', password: 'p' }),
+    homeAssistantClient: new HomeAssistantClient({ url: 'http://ha', token: 't' }),
+  } as unknown as Partial<FluxHausServices>);
+
+  const attacks: [string, Record<string, unknown>][] = [
+    ['influxdb_list_measurements', { bucket: 'b") from(bucket: "secrets") |> range(start: -1y) |> yield(name: "x' }],
+    ['influxdb_list_measurements', { bucket: 'b"\nimport "experimental/http"' }],
+    ['get_entity_state', { entity_id: '../error_log' }],
+    ['get_entity_state', { entity_id: 'camera.x/../../camera_proxy/camera.x' }],
+    ['get_entity_history', { entity_id: 'sensor.x', start: '2026-01-01/../../../config' }],
+    ['get_logbook', { start: '../../states' }],
+    ['forgejo_get_repo', { owner: '..', repo: 'admin' }],
+    ['forgejo_get_repo', { owner: 'me', repo: 'r/../../../admin/users' }],
+    ['forgejo_list_issues', { owner: 'me', repo: 'r', state: 'open&type=pulls' }],
+    ['forgejo_list_repos', { owner: '../user/applications/oauth2?' }],
+    ['immich_get_album', { albumId: '../system-config' }],
+    ['immich_get_person_assets', { personId: '..%2F..%2Fapi-keys' }],
+    ['komga_get_series', { seriesId: '../../settings' }],
+    ['audiobookshelf_get_item', { itemId: '../../authorize?x=' }],
+    ['audiobookshelf_list_items', { libraryId: '../../users' }],
+    ['booklore_get_book', { bookId: '../settings' }],
+    ['grafana_get_dashboard', { uid: '..' }],
+  ];
+
+  it.each(attacks)('%s rejects injected input %j before any request', async (name, args) => {
+    const { client, close } = await connect('read', realClients());
+    const result = await client.callTool({ name, arguments: args });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/Invalid|not found/);
+    const urls = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(urls).toEqual([]);
+    await close();
+  });
+
+  it('still serves valid read inputs', async () => {
+    const { client, close } = await connect('read', realClients());
+    await client.callTool({ name: 'influxdb_list_measurements', arguments: { bucket: 'home_assistant' } });
+    await client.callTool({ name: 'forgejo_get_repo', arguments: { owner: 'me', repo: 'site.github.io' } });
+    await client.callTool({ name: 'get_entity_state', arguments: { entity_id: 'sensor.temp' } });
+    const urls = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(urls).toContain('http://forgejo/api/v1/repos/me/site.github.io');
+    expect(urls).toContain('http://ha/api/states/sensor.temp');
+    expect(String(fetchSpy.mock.calls[0][1]?.body)).toContain('bucket: "home_assistant"');
+    await close();
   });
 });
 

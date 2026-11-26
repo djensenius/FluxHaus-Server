@@ -1,4 +1,5 @@
 import logger from '../logger';
+import { safePathSegment } from './safe-params';
 
 const immichLogger = logger.child({ subsystem: 'immich' });
 
@@ -55,7 +56,7 @@ export class ImmichClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getAlbum(albumId: string): Promise<any> {
-    return this.request(`/api/albums/${albumId}`);
+    return this.request(`/api/albums/${safePathSegment(albumId, 'album ID')}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -78,7 +79,7 @@ export class ImmichClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getPersonAssets(personId: string): Promise<any> {
-    return this.request(`/api/people/${personId}`);
+    return this.request(`/api/people/${safePathSegment(personId, 'person ID')}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

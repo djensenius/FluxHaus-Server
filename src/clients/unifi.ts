@@ -1,5 +1,6 @@
 import { Agent } from 'undici';
 import logger from '../logger';
+import { safeMacAddress } from './safe-params';
 
 const unifiLogger = logger.child({ subsystem: 'unifi' });
 
@@ -145,7 +146,7 @@ export class UniFiClient {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   async getDevice(mac: string): Promise<any> {
-    return this.request(`/stat/device/${mac}`);
+    return this.request(`/stat/device/${safeMacAddress(mac)}`);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
