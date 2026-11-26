@@ -336,6 +336,35 @@ describe('read access secret isolation', () => {
     expect(redactSensitive('redis://:redispw@cache:6379/0')).toBe('redis://[REDACTED]@cache:6379/0');
     expect(redactSensitive('amqp://guest:@mq:5672')).toBe('amqp://[REDACTED]@mq:5672');
     expect(redactSensitive('https://host:8443/path@x')).toBe('https://host:8443/path@x');
+    expect(redactSensitive([
+      'https://ghp_abc123@github.com/o/r.git',
+      'https://github_pat_11AAAA@github.com/o/r',
+      'https://glpat-xyz@gitlab.com/o/r',
+      'https://fhmcp_pub_sec@api.example.com/mcp',
+      'https://sbk_abcd@host/x',
+      'https://abcdefghijklmnopqrstuvwxyz012345@host/x',
+      'ssh://git@github.com/o/r.git',
+      'https://user@host/path',
+      'https://first.last@host/path',
+    ])).toEqual([
+      'https://[REDACTED]@github.com/o/r.git',
+      'https://[REDACTED]@github.com/o/r',
+      'https://[REDACTED]@gitlab.com/o/r',
+      'https://[REDACTED]@api.example.com/mcp',
+      'https://[REDACTED]@host/x',
+      'https://[REDACTED]@host/x',
+      'ssh://git@github.com/o/r.git',
+      'https://user@host/path',
+      'https://first.last@host/path',
+    ]);
+    const signed = redactSensitive(
+      'https://b.s3.amazonaws.com/o?X-Amz-Credential=AKIAcred&X-Amz-Security-Token=stoken'
+      + '&X-Amz-Signature=asig&x-amz-date=20260101 https://blob/x?sv=1&SIG=azsig https://cdn/x?Signature=cfsig'
+      + ' https://zoom.us/j/1?pwd=zoompw&uname=a',
+    );
+    expect(signed).not.toMatch(/AKIAcred|stoken|asig|azsig|cfsig|zoompw/);
+    expect(signed).toContain('x-amz-date=20260101');
+    expect(signed).toContain('&uname=a');
     expect(urls[2]).toBe('https://user@host/path');
     expect(['x_vwirekey', 'x_authkey', 'db_password', 'passphrase', 'credential'].every(isSensitiveKey)).toBe(true);
     expect(['accessToken', 'refreshToken', 'authToken', 'clientSecret', 'authKey', 'apiKey', 'AuthKey',
@@ -485,9 +514,10 @@ describe('read access calendar feed isolation', () => {
       id: 'e1', title: 'Sync', description: 'Subscribe: webcal://p01-caldav.icloud.com/published/2/feedsecret2',
       url: 'http://example.com/cal/feedsecret3.ics?x=1', location: 'Room 1',
     }]),
-    getTodayAgenda: vi.fn().mockResolvedValue([{
-      id: 'e2', title: 'Standup', description: `See ${FEED.replace('https', 'webcals')}`,
-    }]),
+    getTodayAgenda: vi.fn().mockResolvedValue([
+      { id: 'e2', title: 'Standup', description: `See ${FEED.replace('https', 'webcals')}` },
+      { id: 'e3', title: 'Shared', description: 'Feed https://p42-caldav.icloud.com/published/2/feedsecret4 here' },
+    ]),
   };
 
   it('strips ICS subscription URLs from read calendar outputs', async () => {
@@ -540,6 +570,13 @@ describe('read access redaction preserves dates', () => {
     expect(out.holder).toEqual({ secret_token: '[REDACTED]', at: when });
     expect(omitKeysDeep({ at: when }, new Set(['x'])).at).toBe(when);
     expect(redactMcpResult({ structuredContent: { at: when } }).structuredContent.at).toBe(when);
+    class Loop { toJSON() { return new Loop(); } }
+    class Wrapper { constructor(public inner: unknown) {} toJSON() { return new Wrapper(this.inner); } }
+    expect(redactSensitive({ loop: new Loop() })).toEqual({ loop: {} });
+    expect(redactSensitive(new Wrapper({ api_key: 'k' }))).toEqual({ inner: { api_key: '[REDACTED]' } });
+    expect(omitKeysDeep({ loop: new Loop() }, new Set(['x']))).toEqual({ loop: {} });
+    expect(redactMcpResult({ structuredContent: { loop: new Loop() }, other: new Loop() }))
+      .toEqual({ structuredContent: { loop: {} }, other: {} });
   });
 
   it.each([

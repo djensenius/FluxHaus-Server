@@ -201,12 +201,28 @@ const REDACTED = '[REDACTED]';
 // (case-sensitive) covers camelCase names: accessToken, clientSecret, ...
 const SENSITIVE_KEY = /(^|_)(token|secret|password|passphrase|authkey|api_?key|private_?key|credentials?)$|^x_.*key$/i;
 const SENSITIVE_CAMEL_KEY = /[a-z0-9](Token|Secret|Password|Passphrase|AuthKey|ApiKey|PrivateKey|Credentials?)$/;
-const SENSITIVE_QUERY_PARAM = /([?&](?:token|access_token|apikey|api_key|key|auth|authSig|password|secret|x-plex-token)=)[^&#"'\s\\]+/gi;
+// Credential URL parameters, incl. S3/Azure-style signed URLs and Zoom `pwd`.
+const SENSITIVE_QUERY_PARAM = new RegExp(`([?&](?:${[
+  'token', 'access_token', 'apikey', 'api_key', 'key', 'auth', 'authSig', 'password', 'secret', 'x-plex-token',
+  'x-amz-signature', 'x-amz-credential', 'x-amz-security-token', 'signature', 'sig', 'pwd',
+].join('|')})=)[^&#"'\\s\\\\]+`, 'gi');
 // user:pass@, :pass@ (password-only, e.g. redis://:secret@host) and user:@.
 const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/?#@\s"'\\:]*:[^/?#@\s"'\\]*@/gi;
 // Calendar subscription feeds are capability URLs (the secret is often in the
 // path): any webcal(s):// link and any http(s) link to an .ics file.
-const CALENDAR_FEED_URL = /\bwebcals?:\/\/[^\s"'<>\\]+|\bhttps?:\/\/[^\s"'<>\\]+?\.ics\b[^\s"'<>\\]*/gi;
+// iCloud shared calendars are also published as https://pNN-caldav.icloud.com/published/...
+const CALENDAR_FEED_URL = new RegExp([
+  /\bwebcals?:\/\/[^\s"'<>\\]+/.source,
+  /\bhttps?:\/\/[^\s"'<>\\/]*icloud\.com\/published\/[^\s"'<>\\]*/.source,
+  /\bhttps?:\/\/[^\s"'<>\\]+?\.ics\b[^\s"'<>\\]*/.source,
+].join('|'), 'gi');
+// Token-looking usernames with no password (https://ghp_xxx@github.com):
+// known token prefixes, or 20+ token characters. Short names (git@, user@) stay.
+const URL_TOKEN_USER = new RegExp(
+  `(\\b[a-z][a-z0-9+.-]*:\\/\\/)(?:(?:ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|glpat-|fhmcp_|sbk_)`
+  + `[^/?#@\\s"'\\\\:]*|[A-Za-z0-9_-]{20,})@`,
+  'gi',
+);
 const SENSITIVE_JSON_STRING = /("([^"\\]+)"\s*:\s*)("(?:[^"\\]|\\.)*"|-?\d[\d.eE+-]*)/g;
 
 export function isSensitiveKey(key: string): boolean {
@@ -267,6 +283,7 @@ function redactString(value: string): string {
     .replace(SENSITIVE_QUERY_PARAM, `$1${REDACTED}`)
     .replace(CALENDAR_FEED_URL, REDACTED)
     .replace(URL_USERINFO, `$1${REDACTED}@`)
+    .replace(URL_TOKEN_USER, `$1${REDACTED}@`)
     .replace(SENSITIVE_JSON_STRING, (match, prefix: string, key: string) => (
       isSensitiveKey(key) ? `${prefix}"${REDACTED}"` : match
     ));
@@ -281,10 +298,13 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 // Non-plain objects: Dates are kept as-is (they serialise to ISO strings);
 // anything else with toJSON is traversed as its JSON form; other instances
 // are traversed by their own enumerable properties, as JSON.stringify would.
+// toJSON is called at most once per value: a non-plain result is flattened to
+// its own properties rather than re-entering toJSON, so it cannot recurse.
 function jsonForm(value: object): unknown {
   const { toJSON } = value as { toJSON?: unknown };
   const json = typeof toJSON === 'function' ? toJSON.call(value) : value;
-  return json === value ? { ...value } : json;
+  if (json instanceof Date || Array.isArray(json) || isPlainObject(json)) return json;
+  return json && typeof json === 'object' ? { ...json } : json;
 }
 
 /**
