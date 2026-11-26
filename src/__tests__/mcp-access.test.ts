@@ -333,6 +333,9 @@ describe('read access secret isolation', () => {
     expect(urls[0]).not.toMatch(/a[1-8]\b/);
     expect(urls[0]).toContain('keep=ok');
     expect(urls[1]).toBe('postgres://[REDACTED]@db:5432/app');
+    expect(redactSensitive('redis://:redispw@cache:6379/0')).toBe('redis://[REDACTED]@cache:6379/0');
+    expect(redactSensitive('amqp://guest:@mq:5672')).toBe('amqp://[REDACTED]@mq:5672');
+    expect(redactSensitive('https://host:8443/path@x')).toBe('https://host:8443/path@x');
     expect(urls[2]).toBe('https://user@host/path');
     expect(['x_vwirekey', 'x_authkey', 'db_password', 'passphrase', 'credential'].every(isSensitiveKey)).toBe(true);
     expect(['accessToken', 'refreshToken', 'authToken', 'clientSecret', 'authKey', 'apiKey', 'AuthKey',
@@ -461,6 +464,102 @@ describe('read access input injection', () => {
     expect(urls).toContain('http://forgejo/api/v1/repos/me/site.github.io');
     expect(urls).toContain('http://ha/api/states/sensor.temp');
     expect(String(fetchSpy.mock.calls[0][1]?.body)).toContain('bucket: "home_assistant"');
+    await close();
+  });
+});
+
+describe('read access calendar feed isolation', () => {
+  const FEED = 'https://calendar.example.com/private-feedsecret/basic.ics';
+  const calendar = {
+    listCalendars: vi.fn().mockResolvedValue([
+      {
+        id: 'ics:team', provider: 'ics', sourceId: 'ics:team', name: 'Team', writable: false,
+        externalId: 'team', description: FEED,
+      },
+      {
+        id: 'icloud:home', provider: 'icloud', sourceId: 'icloud', name: 'Home', writable: true,
+        externalId: 'home', description: 'Family calendar',
+      },
+    ]),
+    listEvents: vi.fn().mockResolvedValue([{
+      id: 'e1', title: 'Sync', description: 'Subscribe: webcal://p01-caldav.icloud.com/published/2/feedsecret2',
+      url: 'http://example.com/cal/feedsecret3.ics?x=1', location: 'Room 1',
+    }]),
+    getTodayAgenda: vi.fn().mockResolvedValue([{
+      id: 'e2', title: 'Standup', description: `See ${FEED.replace('https', 'webcals')}`,
+    }]),
+  };
+
+  it('strips ICS subscription URLs from read calendar outputs', async () => {
+    const { client, close } = await connect('read', { calendar } as never);
+    const calendars = await client.callTool({ name: 'list_calendars', arguments: {} });
+    const listed = JSON.stringify(calendars);
+    expect(listed).not.toContain('feedsecret');
+    expect(listed).toContain('ics:team');
+    expect(listed).toContain('Team');
+    expect(listed).toContain('Family calendar');
+    const events = JSON.stringify([
+      await client.callTool({ name: 'list_events', arguments: { start: '2026-01-01', end: '2026-01-02' } }),
+      await client.callTool({
+        name: 'get_calendar_events', arguments: { calendar_id: 'ics:team', start: '2026-01-01', end: '2026-01-02' },
+      }),
+      await client.callTool({ name: 'get_today_agenda', arguments: {} }),
+    ]);
+    expect(events).not.toContain('feedsecret');
+    expect(events).toContain('Room 1');
+    await close();
+  });
+
+  it('keeps ICS descriptions for full access', async () => {
+    const { client, close } = await connect('full', { calendar } as never);
+    expect(JSON.stringify(await client.callTool({ name: 'list_calendars', arguments: {} }))).toContain(FEED);
+    await close();
+  });
+});
+
+describe('read access redaction preserves dates', () => {
+  const when = new Date('2026-11-25T12:34:56.000Z');
+  const iso = when.toISOString();
+  const overrides = {
+    car: { status: { doorLock: true, timestamp: when, accessToken: 'cartoken' }, odometer: 1 },
+    cleanbot: { cachedStatus: { docked: true, updatedAt: when } },
+    indoorClimate: { cachedStatus: { timestamp: when, thermostat: null, sensors: [], unit: null } },
+  } as never;
+
+  beforeEach(() => {
+    (fs.existsSync as vi.Mock).mockReturnValue(false);
+  });
+
+  it('redactSensitive keeps Date instances and JSON forms of other objects', () => {
+    class Holder { secret_token = 's'; at = when; }
+    const out = redactSensitive({ at: when, nested: [when], holder: new Holder() }) as never as {
+      at: Date; nested: Date[]; holder: Record<string, unknown>;
+    };
+    expect(out.at).toBe(when);
+    expect(out.nested[0]).toBe(when);
+    expect(out.holder).toEqual({ secret_token: '[REDACTED]', at: when });
+    expect(omitKeysDeep({ at: when }, new Set(['x'])).at).toBe(when);
+    expect(redactMcpResult({ structuredContent: { at: when } }).structuredContent.at).toBe(when);
+  });
+
+  it.each([
+    ['get_car_status', (sc: any) => sc.status.timestamp],
+    ['get_robot_status', (sc: any) => sc.cleanbot.updatedAt],
+    ['get_home_summary', (sc: any) => [sc.car.status.timestamp, sc.robots.cleanbot.updatedAt, sc.indoorClimate.timestamp]],
+  ])('keeps dates in %s structuredContent for read access', async (name, pick) => {
+    const { client, close } = await connect('read', overrides);
+    const result = await client.callTool({ name, arguments: {} });
+    const structured = JSON.parse(JSON.stringify(result.structuredContent));
+    expect([pick(structured)].flat()).toEqual([pick(structured)].flat().map(() => iso));
+    expect(JSON.stringify(result)).not.toContain('cartoken');
+    await close();
+  });
+
+  it.each(['leaving_home', 'goodnight'])('keeps dates in the %s prompt for read access', async (name) => {
+    const { client, close } = await connect('read', overrides);
+    const prompt = JSON.stringify(await client.getPrompt({ name }));
+    expect(prompt.split(iso).length - 1).toBeGreaterThanOrEqual(2);
+    expect(prompt).not.toContain('cartoken');
     await close();
   });
 });

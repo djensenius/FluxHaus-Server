@@ -798,7 +798,13 @@ export default function createMcpServer(
     READ_ONLY_CLOSED,
     async () => {
       const calendars = await services.calendar?.listCalendars(userSub) || [];
-      return jsonResult({ calendars });
+      // ICS descriptions hold the subscription URL, a capability URL; never
+      // expose it to read access.
+      const shown = access === 'read'
+        ? calendars.map((calendar) => (
+          calendar.provider === 'ics' ? { ...calendar, description: undefined } : calendar))
+        : calendars;
+      return jsonResult({ calendars: shown });
     },
   );
 

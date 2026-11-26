@@ -202,7 +202,11 @@ const REDACTED = '[REDACTED]';
 const SENSITIVE_KEY = /(^|_)(token|secret|password|passphrase|authkey|api_?key|private_?key|credentials?)$|^x_.*key$/i;
 const SENSITIVE_CAMEL_KEY = /[a-z0-9](Token|Secret|Password|Passphrase|AuthKey|ApiKey|PrivateKey|Credentials?)$/;
 const SENSITIVE_QUERY_PARAM = /([?&](?:token|access_token|apikey|api_key|key|auth|authSig|password|secret|x-plex-token)=)[^&#"'\s\\]+/gi;
-const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/?#@\s"'\\:]+:[^/?#@\s"'\\]+@/gi;
+// user:pass@, :pass@ (password-only, e.g. redis://:secret@host) and user:@.
+const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/?#@\s"'\\:]*:[^/?#@\s"'\\]*@/gi;
+// Calendar subscription feeds are capability URLs (the secret is often in the
+// path): any webcal(s):// link and any http(s) link to an .ics file.
+const CALENDAR_FEED_URL = /\bwebcals?:\/\/[^\s"'<>\\]+|\bhttps?:\/\/[^\s"'<>\\]+?\.ics\b[^\s"'<>\\]*/gi;
 const SENSITIVE_JSON_STRING = /("([^"\\]+)"\s*:\s*)("(?:[^"\\]|\\.)*"|-?\d[\d.eE+-]*)/g;
 
 export function isSensitiveKey(key: string): boolean {
@@ -261,10 +265,26 @@ function redactEmbeddedContainers(text: string): string {
 function redactString(value: string): string {
   return redactEmbeddedContainers(value)
     .replace(SENSITIVE_QUERY_PARAM, `$1${REDACTED}`)
+    .replace(CALENDAR_FEED_URL, REDACTED)
     .replace(URL_USERINFO, `$1${REDACTED}@`)
     .replace(SENSITIVE_JSON_STRING, (match, prefix: string, key: string) => (
       isSensitiveKey(key) ? `${prefix}"${REDACTED}"` : match
     ));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+// Non-plain objects: Dates are kept as-is (they serialise to ISO strings);
+// anything else with toJSON is traversed as its JSON form; other instances
+// are traversed by their own enumerable properties, as JSON.stringify would.
+function jsonForm(value: object): unknown {
+  const { toJSON } = value as { toJSON?: unknown };
+  const json = typeof toJSON === 'function' ? toJSON.call(value) : value;
+  return json === value ? { ...value } : json;
 }
 
 /**
@@ -276,7 +296,9 @@ function redactString(value: string): string {
 export function redactSensitive<T>(value: T): T {
   if (typeof value === 'string') return redactString(value) as T;
   if (Array.isArray(value)) return value.map((item) => redactSensitive(item)) as T;
-  if (value && typeof value === 'object') {
+  if (value instanceof Date) return value;
+  if (value && typeof value === 'object' && !isPlainObject(value)) return redactSensitive(jsonForm(value)) as T;
+  if (isPlainObject(value)) {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, item]) => [
       key,
       isSensitiveKey(key) && item !== null && item !== undefined ? REDACTED : redactSensitive(item),
@@ -288,7 +310,9 @@ export function redactSensitive<T>(value: T): T {
 /** Removes the named keys at any depth (used to trim noisy/secret-prone fields). */
 export function omitKeysDeep<T>(value: T, keys: ReadonlySet<string>): T {
   if (Array.isArray(value)) return value.map((item) => omitKeysDeep(item, keys)) as T;
-  if (value && typeof value === 'object') {
+  if (value instanceof Date) return value;
+  if (value && typeof value === 'object' && !isPlainObject(value)) return omitKeysDeep(jsonForm(value), keys) as T;
+  if (isPlainObject(value)) {
     return Object.fromEntries(Object.entries(value as Record<string, unknown>)
       .filter(([key]) => !keys.has(key))
       .map(([key, item]) => [key, omitKeysDeep(item, keys)])) as T;
@@ -317,7 +341,9 @@ export function redactMcpResult<T>(result: T): T {
   const walk = (value: unknown, key?: string): unknown => {
     if (typeof value === 'string') return key === 'text' ? redactSensitiveText(value) : redactString(value);
     if (Array.isArray(value)) return value.map((item) => walk(item));
-    if (value && typeof value === 'object') {
+    if (value instanceof Date) return value;
+    if (value && typeof value === 'object' && !isPlainObject(value)) return walk(jsonForm(value), key);
+    if (isPlainObject(value)) {
       return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, item]) => (
         k === 'structuredContent' ? [k, redactSensitive(item)] : [k, walk(item, k)]
       )));
