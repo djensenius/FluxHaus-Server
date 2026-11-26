@@ -210,6 +210,10 @@ describe('Server', () => {
     await request(app).get('/').expect(401);
   });
 
+  it('requires auth for sensor placement insights', async () => {
+    await request(app).get('/climate/placement-insights').expect(401);
+  });
+
   it.each(['/mcp', '/MCP', '/mcp/'])('exposes canonical direct auth challenges through MCP CORS at %s', async (path) => {
     process.env.MCP_AUTH_MODE = 'oidc';
     process.env.MCP_ISSUER_URL = 'https://auth.example.com/application/o/fluxhaus-mcp/';
