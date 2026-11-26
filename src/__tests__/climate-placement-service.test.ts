@@ -213,6 +213,28 @@ describe('temperature units', () => {
     });
   });
 
+  it('drops a window split across same-unit series rather than averaging their means unweighted', () => {
+    // `climate` (°C recorded with the reading) holds nine 20 °C readings and
+    // `°C` one 30 °C reading; their counts aren't queried, so the 25 °C
+    // unweighted mean would be wrong. The window is dropped instead.
+    const rows = [
+      {
+        _time: '2026-01-11T06:00:00Z', _value: '20', _measurement: 'climate', unit_field: '°C', entity_id: 'office_temperature',
+      },
+      {
+        _time: '2026-01-11T06:00:00Z', _value: '30', _measurement: '°C', unit_field: '', entity_id: 'office_temperature',
+      },
+      {
+        _time: '2026-01-11T06:15:00Z', _value: '20', _measurement: '°C', unit_field: '', entity_id: 'office_temperature',
+      },
+    ];
+    [rows, [...rows].reverse()].forEach((ordered) => {
+      const { series, unknownUnitWindows } = rowsToSeries(ordered, sensors);
+      expect(series[0].points).toEqual([{ t: Date.parse('2026-01-11T06:15:00Z'), v: 20 }]);
+      expect(unknownUnitWindows).toBe(1);
+    });
+  });
+
   it('prefers the unit_of_measurement tag over the field', () => {
     const { series } = rowsToSeries([
       {

@@ -35,7 +35,7 @@ export const MIN_SAMPLES = 12;
 export const MIN_EVENT_SAMPLES = 2;
 // Sensors needed for a house mean.
 export const MIN_SENSORS_FOR_MEAN = 2;
-// A room rising this far above the set point counts as overshooting.
+// A room peaking this far above the set point counts as overshooting.
 export const OVERSHOOT_THRESHOLD = 1.0;
 // Overshoot is measured after the thermostat stops heating (reported
 // hvac_action), for up to this long, ending early when heating restarts, at
@@ -199,11 +199,11 @@ function canHeat(sample: HvacSample): boolean {
 }
 
 // Whether heating is reported between samples[index] and `limit` ms later,
-// without a gap in history first.
+// without a gap in history, or the preset leaving home/comfort, first.
 function heatingReportedWithin(samples: HvacSample[], index: number, limit: number): boolean {
   const from = samples[index].t;
   for (let j = index; j < samples.length && samples[j].t <= from + limit; j += 1) {
-    if (samples[j].gap) return false;
+    if (samples[j].gap || !isHomePreset(samples[j].presetMode)) return false;
     if (isHeating(samples[j].hvacAction)) return true;
   }
   return false;
@@ -214,7 +214,8 @@ function heatingReportedWithin(samples: HvacSample[], index: number, limit: numb
 // a gap. A morning warm-up is a reported heating start (from a reported
 // non-heating action) in the morning window, once per local day. A return is
 // an explicit preset change from Away to home/comfort, in a mode that can heat,
-// with heating reported within RETURN_HEAT_LIMIT_MS.
+// with heating reported within RETURN_HEAT_LIMIT_MS while the preset stays
+// home/comfort.
 export function detectHvacEvents(samples: HvacSample[], timeZone: string): PlacementEvent[] {
   const clock = localClock(timeZone);
   const sorted = [...samples].sort((a, b) => a.t - b.t);
@@ -307,11 +308,14 @@ function stateIndexAt(samples: HvacSample[], t: number): number {
   return found;
 }
 
+// Only a recorded mode that can't heat (off, cool, …) rules heating out. A
+// reported idle action doesn't: some integrations (e.g. an ecobee through
+// homekit_controller) report idle for hours after a set point increase.
 function rulesOutHeating(sample: HvacSample): boolean {
-  return !sample.gap && (!canHeat(sample) || (sample.hvacAction !== null && !isHeating(sample.hvacAction)));
+  return !sample.gap && !!sample.hvacMode && !canHeat(sample);
 }
 
-// Whether recorded thermostat states show it wasn't heating throughout
+// Whether recorded thermostat modes show it couldn't heat throughout
 // [from, to]. The earliest returned state may be a snapshot from before the
 // recorder's retention, so it is never evidence on its own.
 function heatingRuledOut(samples: HvacSample[], from: number, to: number): boolean {
@@ -322,7 +326,7 @@ function heatingRuledOut(samples: HvacSample[], from: number, to: number): boole
 
 // Morning warm-ups inferred from the house mean rising in the morning window,
 // one per local day, on days without an observed morning warm-up and not near
-// another observed event, unless recorded thermostat states rule out heating.
+// another observed event, unless a recorded mode that can't heat rules it out.
 export function inferMorningEvents(
   sensors: SensorSeriesInput[],
   timeZone: string,
@@ -371,8 +375,9 @@ interface HeatUpEnd {
   at: number | null;
   // True only when the thermostat was satisfied: it went from heating to a
   // reported non-heating action in a mode that can heat, with the mode, set
-  // point and preset unchanged. Anything else (off/cool, a set point or preset
-  // change at the same moment, a gap) is an interruption.
+  // point and preset unchanged since the event. Anything else (off/cool, any
+  // set point, preset or mode change during the heat-up, a gap) is an
+  // interruption.
   satisfied: boolean;
 }
 
@@ -387,12 +392,14 @@ function heatUpEnd(samples: HvacSample[], event: PlacementEvent): HeatUpEnd {
     const sample = samples[i];
     if (sample.t > event.t + SATISFACTION_LIMIT_MS) return unknown;
     if (sample.gap) return { at: sample.t, satisfied: false };
+    if (sample.hvacMode !== prev.hvacMode || sample.setpoint !== prev.setpoint
+      || sample.presetMode !== prev.presetMode) {
+      return { at: sample.t, satisfied: false };
+    }
     if (isHeating(sample.hvacAction)) {
       heating = true;
     } else if (heating && (sample.hvacAction !== null || !canHeat(sample))) {
-      const unchanged = canHeat(sample) && sample.hvacMode === prev.hvacMode
-        && sample.setpoint === prev.setpoint && sample.presetMode === prev.presetMode;
-      return { at: sample.t, satisfied: unchanged && sample.hvacAction !== null };
+      return { at: sample.t, satisfied: canHeat(sample) && sample.hvacAction !== null };
     }
   }
   return unknown;
@@ -535,7 +542,7 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
       const { text, magnitude } = biasSummary(a, 'below');
       const warmer = overshooting.find((o) => o.out.id !== s.id && o.out.classification !== 'cold');
       const effect = warmer
-        ? `while warmer rooms such as the ${warmer.out.name} rose ${fmt(warmer.out.overshoot!)} °C above the set point after heating stopped`
+        ? `while warmer rooms such as the ${warmer.out.name} peaked ${fmt(warmer.out.overshoot!)} °C above the set point on average after heating stopped`
         : 'after other rooms are already warm';
       const severity: RecommendationSeverity = warmer && magnitude >= STRONG_OFFSET ? 'high' : 'medium';
       if (s.isThermostat) {
@@ -579,7 +586,7 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
           sensorId: s.id,
           action: 'include_in_comfort',
           title: `Consider the ${s.name} sensor for comfort`,
-          detail: `${s.name} rose ${fmt(s.overshoot)} °C above the set point on average after the thermostat stopped heating${tracks}. `
+          detail: `${s.name} peaked ${fmt(s.overshoot)} °C above the set point on average after the thermostat stopped heating${tracks}. `
             + 'If it isn\'t already in the active comfort setting, adding it may help the thermostat stop heating sooner.',
         },
       });
@@ -609,7 +616,7 @@ function noChanges(analyzed: Analyzed[], events: PlacementEvent[]): PlacementRec
   const overshootKnown = assessed.every((a) => a.out.overshoot !== null);
   const parts = ['No sensor with enough data read consistently above or below the house average during heat-ups.'];
   parts.push(overshootKnown
-    ? `None of them rose ${OVERSHOOT_THRESHOLD.toFixed(1)} °C or more above the set point on average.`
+    ? `None of them peaked ${OVERSHOOT_THRESHOLD.toFixed(1)} °C or more above the set point on average after heating stopped.`
     : 'Thermostat history didn\'t show when heating stopped, so overshoot wasn\'t checked for every room.');
   if (missing.length > 0) parts.push(`Not enough data for ${missing.join(', ')}.`);
   const inferred = events.filter((e) => e.inferred).length;

@@ -399,9 +399,11 @@ inferred rather than guessed.
   Home Assistant recorded with each reading counts — the `unit_of_measurement`
   tag if it is configured as one, else the `unit_of_measurement_str` field —
   never the sensor's current unit. Readings in different units are averaged
-  separately; a sensor's 15-minute window with an unknown unit, or with
-  readings in more than one unit, is dropped and counted in
-  `coverage.unknownUnitWindows` (windows, not individual readings).
+  separately; a sensor's 15-minute window with an unknown unit, or split
+  across more than one series (different units or measurements, whose
+  per-series reading counts aren't queried, so their means can't be weighted),
+  is dropped and counted in `coverage.unknownUnitWindows` (windows, not
+  individual readings).
   Outdoor-looking sensors (`outdoor`, `outside`, `patio`, `exterior`,
   `environment_canada`) are skipped.
 - **Alignment:** readings are placed on a 15-minute grid. A 15-minute average
@@ -423,12 +425,16 @@ inferred rather than guessed.
     is `TZ`, else the system time zone, else UTC.
   - A *return from Away* is only an explicit preset change from `away` to
     home/comfort, in a mode that can heat, with heating reported within 30
-    minutes. Without presets in the history, `coverage.returnHistoryAvailable`
+    minutes while the preset stays home/comfort (a switch back to Away, or any
+    other preset, first cancels it). Without presets in the history, `coverage.returnHistoryAvailable`
     is `false` and no returns are reported.
   - On days without an observed morning warm-up (e.g. the recorder keeps fewer
     days than requested, or there's no thermostat history at all), a morning
     warm-up is *inferred* when the house average rises 0.5 °C within an hour,
-    unless recorded thermostat states show it wasn't heating then. The earliest
+    unless the recorded thermostat mode couldn't heat then (off, cool). A
+    reported `idle` action doesn't rule heating out: some integrations (e.g. an
+    ecobee through `homekit_controller`) report idle for hours after a morning
+    set point increase while the rooms warm. The earliest
     recorded (non-gap) state Home Assistant returned is reported, with its
     timestamp as returned, as `coverage.hvacEarliestStateAt`; it may just be a
     snapshot of the state in force at the start of the window, so it is never
@@ -436,15 +442,16 @@ inferred rather than guessed.
     recommendation text says how many of a sensor's heat-ups were inferred.
 - **Heating stopped:** the thermostat is *satisfied* only when it goes from
   heating to a reported non-heating action in a mode that can heat, with the
-  mode, set point and preset unchanged. Switching to `off`/`cool`, or a set
-  point or preset change at the same moment, is an *interruption*: it ends the
-  heat-up, and no overshoot is measured for it.
+  mode, set point and preset unchanged since the event. Switching to
+  `off`/`cool`, or any set point, preset or mode change during the heat-up
+  (even while heating continues), is an *interruption*: it ends the heat-up,
+  and no overshoot is measured for it.
 - **Offsets:** each sensor's offset from the house average is measured from the
   event until heating is satisfied or interrupted (at most 2 hours, and not
   past a gap in thermostat history). A sensor is `cold`/`warm` when it is at least 1.0 °C below/above
   the average in 60% of its events, `insufficient` with fewer than 3 events or
   12 samples, and `representative` otherwise.
-- **`overshoot`** is how far a room's 15-minute averages rose above the set
+- **`overshoot`** is how far a room's highest 15-minute average was above the set
   point after the thermostat was satisfied, for up to 2 hours,
   ending early when heating restarts, at the next set point, preset or mode
   change, at a gap in history, or at the next event. Only averages wholly inside
@@ -452,7 +459,9 @@ inferred rather than guessed.
   15-minute windows. It's `0` when the room stayed at or below the set point and
   `null` when that can't be established: inferred events, unknown set points,
   heating that was interrupted or wasn't reported to stop within 4 hours, or
-  too few readings.
+  too few readings. It is the peak above the set point, not the rise after
+  heating stopped: a room already above the set point when heating stopped
+  counts even if it didn't warm further.
 - **Recommendations** (`high`, `medium`, `low`): `move` suggests checking a cold
   or warm sensor's placement and whether it's in the comfort setting;
   `exclude_from_comfort` suggests reviewing a cold thermostat sensor;
@@ -474,7 +483,7 @@ inferred rather than guessed.
     "sampleCount": 120, "classification": "cold"}],
   "recommendations": [{"id": "move-office", "severity": "high", "sensorId": "office_temperature",
     "action": "move", "title": "Check the Office sensor placement",
-    "detail": "Office read at least 1.0 °C below the house average in 10 of 12 heat-ups (2.1 °C below on average during morning heat-ups). 2 of these 12 heat-ups were inferred from room temperatures, not thermostat history. If it is in the active comfort setting, it may be keeping the heat on while warmer rooms such as the Kitchen rose 1.6 °C above the set point after heating stopped; check the comfort setting, and whether the sensor sits near an exterior wall, window, draft or cold floor."}]
+    "detail": "Office read at least 1.0 °C below the house average in 10 of 12 heat-ups (2.1 °C below on average during morning heat-ups). 2 of these 12 heat-ups were inferred from room temperatures, not thermostat history. If it is in the active comfort setting, it may be keeping the heat on while warmer rooms such as the Kitchen peaked 1.6 °C above the set point on average after heating stopped; check the comfort setting, and whether the sensor sits near an exterior wall, window, draft or cold floor."}]
 }
 ```
 

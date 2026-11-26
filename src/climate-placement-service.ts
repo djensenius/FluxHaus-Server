@@ -129,7 +129,7 @@ export function resolveTimeZone(preferred?: string): string {
 // Each reading is paired with the unit Home Assistant recorded alongside it
 // (the `unit_of_measurement` tag, or the `unit_of_measurement_str` field when
 // the measurement is overridden; both kept as `unit_tag`/`unit_field` so the
-// server decides), readings are averaged per unit (so a unit change never
+// server decides), readings are averaged per series (so a unit change never
 // mixes values) and
 // stamped with the start of their window (`timeSrc: "_start"`), the earliest
 // time any of them could have been read.
@@ -185,9 +185,11 @@ export function parseClimateHistory(history: unknown, unit: string | null | unde
 }
 
 // InfluxDB rows → per-sensor °C series, one point per 15-minute window. A
-// window whose rows all have the same known unit keeps their mean; a window
-// with an unknown unit, or rows in different units, is dropped and counted
-// (in windows, not readings) rather than guessed, whatever order rows arrive in.
+// window is kept only when it comes from a single series with a known unit.
+// A window with an unknown unit, or split across series (different units, or
+// measurements whose reading counts aren't known, so their means can't be
+// weighted), is dropped and counted (in windows, not readings) rather than
+// guessed, whatever order rows arrive in.
 export function rowsToSeries(
   rows: Record<string, string>[],
   sensors: IndoorSensor[],
@@ -209,18 +211,16 @@ export function rowsToSeries(
   windows.forEach((byTime, id) => {
     const kept: { t: number; v: number }[] = [];
     byTime.forEach((entries, t) => {
-      const units = new Set(entries.map((e) => e.unit));
-      const [unit] = [...units];
-      if (units.size !== 1 || unit === null) {
+      const [{ unit, raw }] = entries;
+      if (entries.length !== 1 || unit === null) {
         dropped += 1;
         return;
       }
-      const values = entries.map((e) => toCelsius(e.raw, unit)!);
-      kept.push({ t, v: values.reduce((sum, v) => sum + v, 0) / values.length });
+      kept.push({ t, v: toCelsius(raw, unit)! });
     });
     points.set(id, kept.sort((a, b) => a.t - b.t));
   });
-  if (dropped > 0) placementLogger.warn({ dropped }, 'Dropped temperature windows with an unknown or conflicting unit');
+  if (dropped > 0) placementLogger.warn({ dropped }, 'Dropped temperature windows with an unknown unit or split across series');
   return {
     series: sensors.map((s) => ({
       id: s.id, name: s.name, isThermostat: s.isThermostat, points: points.get(s.id) ?? [],

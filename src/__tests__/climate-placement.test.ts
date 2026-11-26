@@ -102,6 +102,21 @@ function mornings(after: (day: number) => HvacSample[]): HvacSample[] {
   ]).flat();
 }
 
+// hvac(5) with the thermostat off through the morning (05:00–09:30) from
+// `fromDay` on, so no morning warm-up is observed or inferred on those days.
+function offMornings(fromDay: number): HvacSample[] {
+  const hour = (t: number) => ((t - START) % DAY) / HOUR;
+  const kept = hvac(5).filter((s) => s.t < START + fromDay * DAY || ![6, 8.5, 9].includes(hour(s.t)));
+  const extra = [];
+  for (let d = fromDay; d < 5; d += 1) {
+    extra.push(
+      state(at(d, 5), 'off', { presetMode: 'sleep', setpoint: null, hvacMode: 'off' }),
+      state(at(d, 9.5), 'idle', { presetMode: 'away', setpoint: 17 }),
+    );
+  }
+  return [...kept, ...extra].sort((a, b) => a.t - b.t);
+}
+
 const BIASES = {
   home_current_temperature: 0.3,
   office_temperature: -2.1,
@@ -198,6 +213,16 @@ describe('detectHvacEvents', () => {
     expect(events).toEqual([{ type: 'return', t: at(0, 17), inferred: false }]);
   });
 
+  it('cancels a return when the preset goes back to Away before heating starts', () => {
+    const events = detectHvacEvents([
+      state(at(0, 12), 'idle', { presetMode: 'away', setpoint: 17 }),
+      state(at(0, 17), 'idle'),
+      state(at(0, 17.1), 'idle', { presetMode: 'away', setpoint: 17 }),
+      state(at(0, 17.25), 'heating', { presetMode: 'away', setpoint: 17 }),
+    ], 'UTC');
+    expect(events).toEqual([]);
+  });
+
   it('uses the local time zone for the morning window', () => {
     // 06:00 UTC is 01:00 in Toronto, outside the morning window.
     const events = detectHvacEvents(hvac(2, { presets: false }), 'America/Toronto');
@@ -245,7 +270,7 @@ describe('analyzePlacement', () => {
     });
     expect(result.recommendations[0].detail).toBe(
       'Office read at least 1.0 °C below the house average in 10 of 10 heat-ups (2.1 °C below on average during morning heat-ups). '
-      + 'If it is in the active comfort setting, it may be keeping the heat on while warmer rooms such as the Kitchen rose 1.5 °C above the set point after heating stopped; '
+      + 'If it is in the active comfort setting, it may be keeping the heat on while warmer rooms such as the Kitchen peaked 1.5 °C above the set point on average after heating stopped; '
       + 'check the comfort setting, and whether the sensor sits near an exterior wall, window, draft or cold floor.',
     );
     result.recommendations.forEach((rec) => {
@@ -271,7 +296,7 @@ describe('analyzePlacement', () => {
     }));
     expect(result.sensors.every((s) => s.classification === 'representative')).toBe(true);
     expect(result.recommendations.map((r) => r.action)).toEqual(['include_in_comfort', 'include_in_comfort']);
-    expect(result.recommendations[0].detail).toContain('rose 1.5 °C above the set point on average');
+    expect(result.recommendations[0].detail).toContain('peaked 1.5 °C above the set point on average');
   });
 
   it('says so when every sensor is representative and nothing overshoots', () => {
@@ -279,7 +304,7 @@ describe('analyzePlacement', () => {
     expect(result.recommendations).toEqual([expect.objectContaining({
       id: 'no-changes', action: 'none', sensorId: null, title: 'No placement issues found',
     })]);
-    expect(result.recommendations[0].detail).toContain('None of them rose 1.0 °C or more above the set point');
+    expect(result.recommendations[0].detail).toContain('None of them peaked 1.0 °C or more above the set point');
   });
 
   it('does not claim rooms stayed below the set point without set points', () => {
@@ -289,7 +314,7 @@ describe('analyzePlacement', () => {
     }));
     const [summary] = result.recommendations;
     expect(summary).toMatchObject({ id: 'no-changes', title: 'No placement issues found in the available data' });
-    expect(summary.detail).not.toContain('None of them rose');
+    expect(summary.detail).not.toContain('None of them peaked');
     expect(summary.detail).toContain('overshoot wasn\'t checked');
   });
 
@@ -313,8 +338,7 @@ describe('analyzePlacement', () => {
       bedroom_temperature: 0,
       kitchen_temperature: 0,
     }, 5);
-    const samples = hvac(5).filter((s) => s.t < START + 2 * DAY || ![6, 8.5].includes(((s.t - START) % DAY) / HOUR));
-    const result = analyzePlacement(input({ sensors, hvac: samples }));
+    const result = analyzePlacement(input({ sensors, hvac: offMornings(2) }));
     const office = result.sensors.find((s) => s.id === 'office_temperature')!;
     expect(result.coverage).toMatchObject({ morningEvents: 2, returnEvents: 5 });
     expect(office.classification).toBe('cold');
@@ -479,13 +503,28 @@ describe('analyzePlacement', () => {
     expect(office.detail).toContain('2 of these 8 heat-ups were inferred from room temperatures, not thermostat history');
   });
 
-  it('does not infer a morning already observed or ruled out by recorded idle states', () => {
-    // Days 0–2 heat from 06:00; days 3–4 the thermostat records idle states
-    // through the morning while the rooms still warm (sun, cooking).
-    const samples = hvac(5).filter((s) => s.t < START + 3 * DAY || ![6, 8.5].includes(((s.t - START) % DAY) / HOUR));
-    const extra = [3, 4].map((d) => state(at(d, 5), 'idle', { presetMode: 'sleep', setpoint: 17 }));
-    const result = analyzePlacement(input({ hvac: [...samples, ...extra].sort((a, b) => a.t - b.t) }));
+  it('does not infer a morning already observed or while the thermostat is off', () => {
+    // Days 0–2 heat from 06:00; days 3–4 the thermostat is off through the
+    // morning while the rooms still warm (sun, cooking).
+    const result = analyzePlacement(input({ hvac: offMornings(3) }));
     expect(result.coverage).toMatchObject({ morningEvents: 3, inferredMorningEvents: 0 });
+  });
+
+  it('infers mornings when the thermostat reports idle through a set point increase', () => {
+    // As with an ecobee through homekit_controller: the 06:00 set point rise
+    // is reported with hvac_action idle throughout, yet the rooms warm. Reported
+    // idle is not evidence against heating, so the warm-ups are inferred.
+    const samples = Array.from({ length: 5 }, (_, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 18.3 }),
+      state(at(d, 1), 'idle', { presetMode: null, setpoint: 18.3 }),
+      state(at(d, 6), 'idle', { presetMode: null, setpoint: 20.3 }),
+      state(at(d, 22), 'idle', { presetMode: null, setpoint: 18.3 }),
+    ]).flat();
+    const result = analyzePlacement(input({ hvac: samples }));
+    expect(result.coverage).toMatchObject({
+      hvacHistoryAvailable: true, morningEvents: 5, inferredMorningEvents: 5, returnEvents: 0,
+    });
+    expect(result.sensors.find((s) => s.id === 'office_temperature')).toMatchObject({ classification: 'cold', overshoot: null });
   });
 
   it('ends the overshoot window when heating restarts', () => {
@@ -542,6 +581,38 @@ describe('analyzePlacement', () => {
       const result = analyzePlacement(input({ sensors: flatRooms(() => 21), hvac: samples }));
       expect(result.sensors.map((s) => s.overshoot)).toEqual([null, null]);
     });
+  });
+
+  it('treats a set point, preset or mode change while heating continues as an interruption', () => {
+    // A 21 → 18 °C setback at 06:30 while heating continues, then idle at
+    // 07:00: rooms at 20 °C would read as a false 2 °C overshoot of 18 °C.
+    const setback = mornings((d) => [
+      state(at(d, 6.5), 'heating', { setpoint: 18 }), state(at(d, 7), 'idle', { setpoint: 18 }),
+    ]);
+    const preset = mornings((d) => [
+      state(at(d, 6.5), 'heating', { presetMode: 'sleep' }), state(at(d, 7), 'idle', { presetMode: 'sleep' }),
+    ]);
+    const mode = mornings((d) => [
+      state(at(d, 6.5), 'heating', { hvacMode: 'heat_cool' }), state(at(d, 7), 'idle', { hvacMode: 'heat_cool' }),
+    ]);
+    [setback, preset, mode].forEach((samples) => {
+      const result = analyzePlacement(input({ sensors: flatRooms(() => 20), hvac: samples }));
+      expect(result.coverage.morningEvents).toBe(5);
+      expect(result.sensors.map((s) => s.overshoot)).toEqual([null, null]);
+    });
+  });
+
+  it('describes overshoot as the peak above the set point, not a rise', () => {
+    // Rooms sit flat at 22 °C, already above the 21 °C set point when heating
+    // stops: the metric is their peak above the set point, so the text must
+    // not say they rose.
+    const samples = mornings((d) => [state(at(d, 7), 'idle')]);
+    const result = analyzePlacement(input({ sensors: flatRooms(() => 22), hvac: samples }));
+    expect(result.sensors.map((s) => s.overshoot)).toEqual([1, 1]);
+    const [rec] = result.recommendations;
+    expect(rec.action).toBe('include_in_comfort');
+    expect(rec.detail).toContain('peaked 1.0 °C above the set point on average after the thermostat stopped heating');
+    expect(result.recommendations.every((r) => !/\brose\b/.test(r.detail))).toBe(true);
   });
 
   it('treats history with only unavailable or unknown states as unavailable', () => {
