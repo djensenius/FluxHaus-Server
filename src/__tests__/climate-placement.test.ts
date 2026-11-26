@@ -221,7 +221,7 @@ describe('analyzePlacement', () => {
         morningEvents: 5,
         inferredMorningEvents: 0,
         returnEvents: 5,
-        unknownUnitReadings: 0,
+        unknownUnitWindows: 0,
       },
     });
     expect(Object.keys(result.sensors[0]).sort()).toEqual([
@@ -523,6 +523,57 @@ describe('analyzePlacement', () => {
     const sensors = flatRooms((h) => (h > 7 && h < 9 ? null : 21));
     const result = analyzePlacement(input({ sensors, hvac: samples }));
     expect(result.sensors.map((s) => s.overshoot)).toEqual([null, null]);
+  });
+
+  it('treats a switch to off or cool as an interruption, not the thermostat being satisfied', () => {
+    const offAt7 = mornings((d) => [state(at(d, 7), 'off', { hvacMode: 'off' })]);
+    const coolAt7 = mornings((d) => [state(at(d, 7), 'idle', { hvacMode: 'cool' })]);
+    [offAt7, coolAt7].forEach((samples) => {
+      const result = analyzePlacement(input({ sensors: flatRooms(() => 23), hvac: samples }));
+      expect(result.coverage.morningEvents).toBe(5);
+      expect(result.sensors.map((s) => s.overshoot)).toEqual([null, null]);
+    });
+  });
+
+  it('does not treat heating stopping with a simultaneous set point or preset change as satisfied', () => {
+    const setback = mornings((d) => [state(at(d, 7), 'idle', { setpoint: 18 })]);
+    const preset = mornings((d) => [state(at(d, 7), 'idle', { presetMode: 'away' })]);
+    [setback, preset].forEach((samples) => {
+      const result = analyzePlacement(input({ sensors: flatRooms(() => 21), hvac: samples }));
+      expect(result.sensors.map((s) => s.overshoot)).toEqual([null, null]);
+    });
+  });
+
+  it('treats history with only unavailable or unknown states as unavailable', () => {
+    const result = analyzePlacement(input({ hvac: [gap(at(0, 1)), gap(at(2, 1))] }));
+    expect(result.coverage).toMatchObject({
+      hvacHistoryAvailable: false, hvacEarliestStateAt: null, returnHistoryAvailable: false,
+    });
+  });
+
+  it('reports the earliest recorded state as returned, even before the window', () => {
+    const early = state(START - 3 * HOUR, 'idle', { presetMode: 'sleep', setpoint: 17 });
+    const result = analyzePlacement(input({ hvac: [gap(START - 4 * HOUR), early, ...hvac(5)] }));
+    expect(result.coverage.hvacEarliestStateAt).toBe('2026-01-04T21:00:00.000Z');
+  });
+
+  it('describes how closely a representative sensor tracks the house with the mean absolute difference', () => {
+    // Living reads 2 °C warm in the mornings and 2 °C cold after returns; its
+    // signed average is about 0 but it is about 1.3 °C off the house average.
+    const hours = (t: number) => ((t - START) % DAY) / HOUR;
+    const result = analyzePlacement(input({
+      sensors: series({
+        living_temperature: (t) => (hours(t) < 12 ? 2 : -2),
+        bedroom_temperature: 0,
+        kitchen_temperature: 0,
+      }, 5),
+      hvac: hvac(5, { setpoint: 19.5 }),
+    }));
+    const living = result.sensors.find((s) => s.id === 'living_temperature')!;
+    expect(living).toMatchObject({ classification: 'representative', averageOffset: 0 });
+    const rec = result.recommendations.find((r) => r.sensorId === 'living_temperature')!;
+    expect(rec.detail).toContain('while reading 1.3 °C from the house average on average during heat-ups');
+    expect(rec.detail).not.toContain('0.0 °C');
   });
 });
 

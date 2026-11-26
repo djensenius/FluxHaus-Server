@@ -396,11 +396,14 @@ inferred rather than guessed.
   and stamped with the start of each 15-minute window (the earliest time any
   reading in it could have been taken). The unit comes from the measurement
   (`°C`/`°F`); for an overridden measurement such as `climate`, only the unit
-  Home Assistant recorded with each reading (`unit_of_measurement_str`)
-  counts, never the sensor's current unit, and readings in different units are
-  averaged separately. Readings whose unit can't be established are dropped
-  and counted in `coverage.unknownUnitReadings`. Outdoor-looking sensors
-  (`outdoor`, `outside`, `patio`, `exterior`, `environment_canada`) are skipped.
+  Home Assistant recorded with each reading counts — the `unit_of_measurement`
+  tag if it is configured as one, else the `unit_of_measurement_str` field —
+  never the sensor's current unit. Readings in different units are averaged
+  separately; a sensor's 15-minute window with an unknown unit, or with
+  readings in more than one unit, is dropped and counted in
+  `coverage.unknownUnitWindows` (windows, not individual readings).
+  Outdoor-looking sensors (`outdoor`, `outside`, `patio`, `exterior`,
+  `environment_canada`) are skipped.
 - **Alignment:** readings are placed on a 15-minute grid. A 15-minute average
   is used only once its window has ended, and for at most 30 minutes after the
   window started, so stale readings are never compared. A sensor joins an
@@ -411,7 +414,8 @@ inferred rather than guessed.
   thermostat (mode, `hvac_action`, `preset_mode`, set points in its
   `temperatureUnit`, converted to °C; dropped if the unit is unknown or the
   result is outside 5–35 °C). `unavailable`/`unknown` states are gaps: no
-  transition is read across one.
+  transition is read across one, and history with nothing but gaps counts as
+  unavailable (`hvacHistoryAvailable: false`, retried after 1 minute).
   - A *morning warm-up* is a reported heating start (`hvac_action` changing
     from a reported non-heating action to heating, in a mode that can heat)
     between 04:00 and 10:00 server time, once per day. Set point or preset
@@ -425,28 +429,36 @@ inferred rather than guessed.
     days than requested, or there's no thermostat history at all), a morning
     warm-up is *inferred* when the house average rises 0.5 °C within an hour,
     unless recorded thermostat states show it wasn't heating then. The earliest
-    returned state may just be a snapshot from the start of the window, so it is
-    reported as `coverage.hvacEarliestStateAt` and never used on its own to rule
-    heating out. `inferredMorningEvents` counts inferred events, and
+    recorded (non-gap) state Home Assistant returned is reported, with its
+    timestamp as returned, as `coverage.hvacEarliestStateAt`; it may just be a
+    snapshot of the state in force at the start of the window, so it is never
+    used on its own to rule heating out. `inferredMorningEvents` counts inferred events, and
     recommendation text says how many of a sensor's heat-ups were inferred.
+- **Heating stopped:** the thermostat is *satisfied* only when it goes from
+  heating to a reported non-heating action in a mode that can heat, with the
+  mode, set point and preset unchanged. Switching to `off`/`cool`, or a set
+  point or preset change at the same moment, is an *interruption*: it ends the
+  heat-up, and no overshoot is measured for it.
 - **Offsets:** each sensor's offset from the house average is measured from the
-  event until heating stops (at most 2 hours, and not past a gap in thermostat
-  history). A sensor is `cold`/`warm` when it is at least 1.0 °C below/above
+  event until heating is satisfied or interrupted (at most 2 hours, and not
+  past a gap in thermostat history). A sensor is `cold`/`warm` when it is at least 1.0 °C below/above
   the average in 60% of its events, `insufficient` with fewer than 3 events or
   12 samples, and `representative` otherwise.
 - **`overshoot`** is how far a room's 15-minute averages rose above the set
-  point after the thermostat reported it stopped heating, for up to 2 hours,
+  point after the thermostat was satisfied, for up to 2 hours,
   ending early when heating restarts, at the next set point, preset or mode
   change, at a gap in history, or at the next event. Only averages wholly inside
   that window count, and they must cover at least 75% of at least two
   15-minute windows. It's `0` when the room stayed at or below the set point and
   `null` when that can't be established: inferred events, unknown set points,
-  heating that wasn't reported to stop within 4 hours, or too few readings.
+  heating that was interrupted or wasn't reported to stop within 4 hours, or
+  too few readings.
 - **Recommendations** (`high`, `medium`, `low`): `move` suggests checking a cold
   or warm sensor's placement and whether it's in the comfort setting;
   `exclude_from_comfort` suggests reviewing a cold thermostat sensor;
   `include_in_comfort` suggests considering a representative or warm room that
-  overshoots by 1.0 °C or more; `none` summarizes what the data did cover (it
+  overshoots by 1.0 °C or more (for a representative sensor it quotes the mean
+  absolute difference from the house average, so opposite offsets don't cancel); `none` summarizes what the data did cover (it
   only mentions overshoot when it was measured, and names sensors without
   enough data and inferred heat-ups).
 
@@ -456,7 +468,7 @@ inferred rather than guessed.
   "coverage": {"start": "ISO", "end": "ISO", "hvacHistoryAvailable": true,
     "hvacEarliestStateAt": "ISO", "returnHistoryAvailable": true,
     "morningEvents": 9, "inferredMorningEvents": 2, "returnEvents": 3,
-    "unknownUnitReadings": 0},
+    "unknownUnitWindows": 0},
   "sensors": [{"id": "office_temperature", "name": "Office", "isThermostat": false,
     "averageOffset": -1.8, "morningOffset": -2.1, "returnOffset": -1.4, "overshoot": 0,
     "sampleCount": 120, "classification": "cold"}],
@@ -467,7 +479,7 @@ inferred rather than guessed.
 ```
 
 `hvacEarliestStateAt`, `returnHistoryAvailable`, `inferredMorningEvents` and
-`unknownUnitReadings` extend the issue's original contract. Offsets and
+`unknownUnitWindows` extend the issue's original contract. Offsets and
 `overshoot` are `null` without data; `sensorId` is `null` for the `none`
 recommendation. InfluxDB or Home Assistant failures return an empty or partial
 analysis rather than an error; `503` means InfluxDB isn't configured.

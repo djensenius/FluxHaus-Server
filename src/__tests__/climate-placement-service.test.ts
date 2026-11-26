@@ -154,44 +154,72 @@ describe('temperature units', () => {
   ];
 
   it('converts by measurement unit, else the unit recorded with the reading, and drops unknown units', () => {
-    const { series, unknownUnitReadings } = rowsToSeries([
+    const { series, unknownUnitWindows } = rowsToSeries([
       {
-        _time: '2026-01-19T06:00:00Z', _value: '68', _measurement: '°F', unit: '', entity_id: 'office_temperature',
+        _time: '2026-01-19T06:00:00Z', _value: '68', _measurement: '°F', unit_field: '', entity_id: 'office_temperature',
       },
       {
-        _time: '2026-01-19T06:00:00Z', _value: '20', _measurement: 'climate', unit: '', entity_id: 'den_temperature',
+        _time: '2026-01-19T06:00:00Z', _value: '20', _measurement: 'climate', unit_field: '', entity_id: 'den_temperature',
       },
       {
-        _time: '2026-01-19T06:15:00Z', _value: '20', _measurement: '°C', unit: '', entity_id: 'den_temperature',
+        _time: '2026-01-19T06:15:00Z', _value: '20', _measurement: '°C', unit_field: '', entity_id: 'den_temperature',
       },
       {
-        _time: '2026-01-19T06:30:00Z', _value: '20', _measurement: 'climate', unit: 'K', entity_id: 'den_temperature',
+        _time: '2026-01-19T06:30:00Z', _value: '20', _measurement: 'climate', unit_field: 'K', entity_id: 'den_temperature',
       },
     ], sensors);
     expect(series.map((s) => s.points.map((p) => p.v))).toEqual([[20], [20]]);
-    expect(unknownUnitReadings).toBe(2);
+    expect(unknownUnitWindows).toBe(2);
   });
 
   it('converts each reading by its own recorded unit across a unit change', () => {
     // The sensor switched from °F to °C; the overridden `climate` measurement
     // keeps both, each tagged with the unit Home Assistant recorded then.
-    const { series, unknownUnitReadings } = rowsToSeries([
+    const { series, unknownUnitWindows } = rowsToSeries([
       {
-        _time: '2026-01-10T06:00:00Z', _value: '68', _measurement: 'climate', unit: '°F', entity_id: 'office_temperature',
+        _time: '2026-01-10T06:00:00Z', _value: '68', _measurement: 'climate', unit_field: '°F', entity_id: 'office_temperature',
       },
-      // A window spanning the change is averaged per unit, so it yields two points.
+      // A window spanning the change has readings in both units: dropped, not guessed.
       {
-        _time: '2026-01-11T06:00:00Z', _value: '69.8', _measurement: 'climate', unit: '°F', entity_id: 'office_temperature',
-      },
-      {
-        _time: '2026-01-11T06:00:00Z', _value: '21', _measurement: 'climate', unit: '°C', entity_id: 'office_temperature',
+        _time: '2026-01-11T06:00:00Z', _value: '69.8', _measurement: 'climate', unit_field: '°F', entity_id: 'office_temperature',
       },
       {
-        _time: '2026-01-12T06:00:00Z', _value: '22', _measurement: 'climate', unit: '°C', entity_id: 'office_temperature',
+        _time: '2026-01-11T06:00:00Z', _value: '21', _measurement: 'climate', unit_field: '°C', entity_id: 'office_temperature',
+      },
+      {
+        _time: '2026-01-12T06:00:00Z', _value: '22', _measurement: 'climate', unit_field: '°C', entity_id: 'office_temperature',
       },
     ], sensors);
-    expect(series[0].points.map((p) => Math.round(p.v * 10) / 10)).toEqual([20, 21, 21, 22]);
-    expect(unknownUnitReadings).toBe(0);
+    expect(series[0].points.map((p) => Math.round(p.v * 10) / 10)).toEqual([20, 22]);
+    expect(unknownUnitWindows).toBe(1);
+  });
+
+  it('drops a window with conflicting units whatever order its rows arrive in', () => {
+    const rows = [
+      {
+        _time: '2026-01-11T06:00:00Z', _value: '69.8', _measurement: 'climate', unit_field: '°F', entity_id: 'office_temperature',
+      },
+      {
+        _time: '2026-01-11T06:00:00Z', _value: '21', _measurement: '°C', unit_field: '', entity_id: 'office_temperature',
+      },
+      {
+        _time: '2026-01-11T05:45:00Z', _value: '20', _measurement: '°C', unit_field: '', entity_id: 'office_temperature',
+      },
+    ];
+    [rows, [...rows].reverse()].forEach((ordered) => {
+      const { series, unknownUnitWindows } = rowsToSeries(ordered, sensors);
+      expect(series[0].points).toEqual([{ t: Date.parse('2026-01-11T05:45:00Z'), v: 20 }]);
+      expect(unknownUnitWindows).toBe(1);
+    });
+  });
+
+  it('prefers the unit_of_measurement tag over the field', () => {
+    const { series } = rowsToSeries([
+      {
+        _time: '2026-01-11T06:00:00Z', _value: '68', _measurement: 'climate', unit_tag: '°F', unit_field: '°C', entity_id: 'office_temperature',
+      },
+    ], sensors);
+    expect(series[0].points.map((p) => p.v)).toEqual([20]);
   });
 
   it('only converts known units', () => {
@@ -293,12 +321,42 @@ describe('ClimatePlacementService', () => {
     const { service, influxdb } = makeDeps();
     influxdb.query.mockResolvedValue([
       {
-        _time: '2026-01-19T06:00:00Z', _value: '18.5', _measurement: 'climate', unit: '', entity_id: 'office_temperature',
+        _time: '2026-01-19T06:00:00Z', _value: '18.5', _measurement: 'climate', unit_field: '', entity_id: 'office_temperature',
       },
     ]);
     const result = await service.getInsights('14');
-    expect(result.coverage.unknownUnitReadings).toBe(1);
+    expect(result.coverage.unknownUnitWindows).toBe(1);
     expect(result.sensors.every((s) => s.sampleCount === 0)).toBe(true);
+  });
+
+  it.each([
+    ['tag', { unit_tag: '°F', unit_field: '' }],
+    ['field', { unit_tag: '', unit_field: '°F' }],
+  ])('reads the unit from a unit_of_measurement %s in query results', async (_schema, unit) => {
+    const { service, influxdb } = makeDeps();
+    influxdb.query.mockResolvedValue([
+      {
+        _time: '2026-01-19T06:00:00Z', _value: '68', _measurement: 'climate', entity_id: 'office_temperature', ...unit,
+      },
+      {
+        _time: '2026-01-19T06:00:00Z', _value: '70', _measurement: 'climate', entity_id: 'kitchen_temperature',
+      },
+    ]);
+    const result = await service.getInsights('14');
+    // Only the kitchen row, which has no unit at all, is dropped.
+    expect(result.coverage.unknownUnitWindows).toBe(1);
+  });
+
+  it('treats thermostat history with only unavailable states as degraded', async () => {
+    const { service, homeAssistant, advance } = makeDeps();
+    homeAssistant.getHistory.mockResolvedValue([[
+      { state: 'unavailable', attributes: {}, last_updated: '2026-01-19T06:00:00Z' },
+    ]]);
+    const result = await service.getInsights('14');
+    expect(result.coverage).toMatchObject({ hvacHistoryAvailable: false, hvacEarliestStateAt: null });
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('14');
+    expect(homeAssistant.getHistory).toHaveBeenCalledTimes(2);
   });
 
   it('degrades to empty analysis when InfluxDB fails', async () => {
@@ -316,7 +374,9 @@ describe('ClimatePlacementService', () => {
     expect(flux).toContain('r._measurement == "°F"');
     expect(flux).toContain('r._field == "value" or r._field == "unit_of_measurement_str"');
     expect(flux).toContain('pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")');
-    expect(flux).toContain('group(columns: ["domain", "entity_id", "_measurement", "unit"])');
+    expect(flux).toContain('unit_tag: if exists r.unit_of_measurement then r.unit_of_measurement else ""');
+    expect(flux).toContain('unit_field: if exists r.unit_of_measurement_str then r.unit_of_measurement_str else ""');
+    expect(flux).toContain('group(columns: ["domain", "entity_id", "_measurement", "unit_tag", "unit_field"])');
     expect(flux).toContain('aggregateWindow(every: 15m, fn: mean, createEmpty: false, timeSrc: "_start")');
   });
 });
