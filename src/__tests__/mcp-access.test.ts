@@ -365,6 +365,13 @@ describe('read access secret isolation', () => {
     expect(signed).not.toMatch(/AKIAcred|stoken|asig|azsig|cfsig|zoompw/);
     expect(signed).toContain('x-amz-date=20260101');
     expect(signed).toContain('&uname=a');
+    const encoded = redactSensitive(
+      '<img src="/cam?width=640&amp;token=s1"> /a?w=1&#38;token=s2 /b?w=1&#X26;Token=s3 /c?w=1;key=s4'
+      + ' /d?url=https%3A%2F%2Fh%2Fx%3Fw%3D1%26token%3Ds5 /e?url=x%3Ftoken%3Ds6&keep=ok',
+    );
+    expect(encoded).not.toMatch(/\bs[1-6]\b/);
+    expect(encoded).toContain('width=640&amp;token=[REDACTED]"');
+    expect(encoded).toContain('&keep=ok');
     expect(urls[2]).toBe('https://user@host/path');
     expect(['x_vwirekey', 'x_authkey', 'db_password', 'passphrase', 'credential'].every(isSensitiveKey)).toBe(true);
     expect(['accessToken', 'refreshToken', 'authToken', 'clientSecret', 'authKey', 'apiKey', 'AuthKey',
@@ -495,6 +502,20 @@ describe('read access input injection', () => {
     expect(String(fetchSpy.mock.calls[0][1]?.body)).toContain('bucket: "home_assistant"');
     await close();
   });
+});
+
+it('redacts HTML-escaped credential params from read results', async () => {
+  const html = {
+    entity_id: 'sensor.html', state: 'ok',
+    attributes: { summary: '<img src="/api/camera_proxy/camera.x?width=640&amp;token=htmlsecret&#38;sig=sigsecret">' },
+  };
+  const { client, close } = await connect('read', {
+    homeAssistantClient: { getState: vi.fn().mockResolvedValue(html) },
+  } as never);
+  const result = JSON.stringify(await client.callTool({ name: 'get_entity_state', arguments: { entity_id: 'sensor.html' } }));
+  expect(result).not.toMatch(/htmlsecret|sigsecret/);
+  expect(result).toContain('width=640');
+  await close();
 });
 
 describe('read access calendar feed isolation', () => {

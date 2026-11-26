@@ -202,10 +202,13 @@ const REDACTED = '[REDACTED]';
 const SENSITIVE_KEY = /(^|_)(token|secret|password|passphrase|authkey|api_?key|private_?key|credentials?)$|^x_.*key$/i;
 const SENSITIVE_CAMEL_KEY = /[a-z0-9](Token|Secret|Password|Passphrase|AuthKey|ApiKey|PrivateKey|Credentials?)$/;
 // Credential URL parameters, incl. S3/Azure-style signed URLs and Zoom `pwd`.
-const SENSITIVE_QUERY_PARAM = new RegExp(`([?&](?:${[
+// Separators include `;` and HTML/URL-encoded forms (`&amp;`, `&#38;`,
+// `&#x26;`, `%26`, `%3F`), and `=` may be URL-encoded (`%3D`), so escaped
+// links in HTML bodies or nested URL parameters cannot slip through.
+const SENSITIVE_QUERY_PARAM = new RegExp(`((?:[?&;]|&amp;|&#0*38;|&#x0*26;|%26|%3F)(?:${[
   'token', 'access_token', 'apikey', 'api_key', 'key', 'auth', 'authSig', 'password', 'secret', 'x-plex-token',
   'x-amz-signature', 'x-amz-credential', 'x-amz-security-token', 'signature', 'sig', 'pwd',
-].join('|')})=)[^&#"'\\s\\\\]+`, 'gi');
+].join('|')})(?:=|%3D))[^&#;"'<>\\s\\\\]+`, 'gi');
 // user:pass@, :pass@ (password-only, e.g. redis://:secret@host) and user:@.
 const URL_USERINFO = /(\b[a-z][a-z0-9+.-]*:\/\/)[^/?#@\s"'\\:]*:[^/?#@\s"'\\]*@/gi;
 // Calendar subscription feeds are capability URLs (the secret is often in the
