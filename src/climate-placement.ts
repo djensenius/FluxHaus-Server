@@ -10,10 +10,13 @@ export const MORNING_END_HOUR = 10;
 // Longest heat-up measured after an event (shorter if the thermostat stops
 // heating sooner).
 export const EVENT_WINDOW_MS = 2 * 60 * 60 * 1000;
-// Readings are compared on a grid with this spacing.
+// Sensor points are averages over BUCKET_MS windows stamped with the window
+// start, so a point's readings may be anywhere in [t, t + BUCKET_MS). Readings
+// are compared on a grid with the same spacing.
 export const BUCKET_MS = 15 * 60 * 1000;
-// A sensor's latest reading is carried forward onto the grid for at most this
-// long; older readings are stale and never compared.
+// A point is carried forward onto the grid only once its whole window has
+// passed, and for at most this long after the window's start (its earliest
+// possible reading); older points are stale and never compared.
 export const MAX_READING_AGE_MS = 30 * 60 * 1000;
 // Share of a heat-up's grid points a sensor needs fresh readings for to join
 // that heat-up's house average. The average is only taken at points where
@@ -35,14 +38,19 @@ export const MIN_SENSORS_FOR_MEAN = 2;
 // A room rising this far above the set point counts as overshooting.
 export const OVERSHOOT_THRESHOLD = 1.0;
 // Overshoot is measured after the thermostat stops heating (reported
-// hvac_action), for up to this long, ending early at the next set point or
-// preset change or event. Heat-ups that don't stop within the limit aren't measured.
+// hvac_action), for up to this long, ending early when heating restarts, at
+// the next set point, preset or mode change, at a gap in thermostat history or
+// at the next event. Heat-ups that don't stop within the limit aren't measured.
 export const OVERSHOOT_WINDOW_MS = 2 * 60 * 60 * 1000;
 export const SATISFACTION_LIMIT_MS = 4 * 60 * 60 * 1000;
-// A set point increase of at least this much is a heat-up trigger.
-export const SETPOINT_STEP = 0.5;
+// An overshoot window needs at least this many whole sensor windows, and a
+// sensor needs points in this share of them, for it to count.
+export const MIN_OVERSHOOT_BUCKETS = 2;
+export const OVERSHOOT_COVERAGE = 0.75;
+// A return from Away is only a heat-up if heating is reported this soon.
+export const RETURN_HEAT_LIMIT_MS = 30 * 60 * 1000;
 // Rise of the house mean within an hour that marks an inferred morning warm-up
-// for periods without thermostat history.
+// on days without one observed in thermostat history.
 export const INFERRED_RISE = 0.5;
 const INFERRED_RISE_WINDOW_MS = 60 * 60 * 1000;
 
@@ -55,12 +63,16 @@ export interface SensorSeriesInput {
   id: string;
   name: string;
   isThermostat: boolean;
-  // Epoch milliseconds and °C.
+  // °C averages over [t, t + BUCKET_MS), t in epoch milliseconds.
   points: { t: number; v: number }[];
 }
 
 export interface HvacSample {
   t: number;
+  // Home Assistant was unavailable/unknown: a discontinuity in history, not a state.
+  gap: boolean;
+  // The entity state (heat, cool, heat_cool, auto, off, …).
+  hvacMode: string | null;
   hvacAction: string | null;
   presetMode: string | null;
   // Heating set point in °C (`temperature`, else `target_temp_low`).
@@ -75,13 +87,16 @@ export interface PlacementInput {
   sensors: SensorSeriesInput[];
   // null when Home Assistant history could not be read.
   hvac: HvacSample[] | null;
+  // Sensor points dropped because their unit couldn't be established.
+  unknownUnitReadings?: number;
   generatedAt?: Date;
 }
 
 export interface PlacementEvent {
   type: PlacementEventType;
   t: number;
-  // True for morning warm-ups inferred from room temperatures.
+  // True for morning warm-ups inferred from room temperatures rather than
+  // observed in thermostat history.
   inferred: boolean;
 }
 
@@ -114,15 +129,18 @@ export interface PlacementInsights {
     start: string;
     end: string;
     hvacHistoryAvailable: boolean;
-    // Start of the thermostat history actually read (null without any). Before
-    // it, morning warm-ups are inferred from room temperatures.
-    hvacHistoryStart: string | null;
+    // Time of the earliest thermostat state returned (null without any). It
+    // may be a snapshot of the state at the start of the window, so it doesn't
+    // prove the recorder kept history continuously from then.
+    hvacEarliestStateAt: string | null;
     // Whether the history reports presets; returns from Away need them.
     returnHistoryAvailable: boolean;
     morningEvents: number;
     // How many of morningEvents were inferred from room temperatures.
     inferredMorningEvents: number;
     returnEvents: number;
+    // Sensor points dropped because their unit couldn't be established.
+    unknownUnitReadings: number;
   };
   sensors: PlacementSensor[];
   recommendations: PlacementRecommendation[];
@@ -172,10 +190,28 @@ function isHeating(action: string | null): boolean {
   return !!action && /heat/i.test(action);
 }
 
-// Morning warm-ups and returns from Away found in thermostat history. A return
-// is only an explicit preset change from Away to home/comfort; a morning
-// warm-up is the earliest heating start, set point rise or preset change to
-// home/comfort in the morning window, once per local day.
+// Modes in which the thermostat can heat; an unknown mode isn't ruled out.
+function canHeat(sample: HvacSample): boolean {
+  return !sample.hvacMode || /^(heat|heat_cool|auto)$/i.test(sample.hvacMode);
+}
+
+// Whether heating is reported between samples[index] and `limit` ms later,
+// without a gap in history first.
+function heatingReportedWithin(samples: HvacSample[], index: number, limit: number): boolean {
+  const from = samples[index].t;
+  for (let j = index; j < samples.length && samples[j].t <= from + limit; j += 1) {
+    if (samples[j].gap) return false;
+    if (isHeating(samples[j].hvacAction)) return true;
+  }
+  return false;
+}
+
+// Morning warm-ups and returns from Away observed in thermostat history.
+// Transitions are only read between consecutive recorded states, never across
+// a gap. A morning warm-up is a reported heating start (from a reported
+// non-heating action) in the morning window, once per local day. A return is
+// an explicit preset change from Away to home/comfort, in a mode that can heat,
+// with heating reported within RETURN_HEAT_LIMIT_MS.
 export function detectHvacEvents(samples: HvacSample[], timeZone: string): PlacementEvent[] {
   const clock = localClock(timeZone);
   const sorted = [...samples].sort((a, b) => a.t - b.t);
@@ -185,20 +221,19 @@ export function detectHvacEvents(samples: HvacSample[], timeZone: string): Place
   for (let i = 1; i < sorted.length; i += 1) {
     const prev = sorted[i - 1];
     const cur = sorted[i];
+    if (prev.gap || cur.gap) continue;
     const { day, hour } = clock(cur.t);
     const inMorning = hour >= MORNING_START_HOUR && hour < MORNING_END_HOUR;
-    const setpointRise = prev.setpoint !== null && cur.setpoint !== null
-      ? cur.setpoint - prev.setpoint : 0;
 
     if (isAway(prev.presetMode) && isHomePreset(cur.presetMode)) {
       const last = returns[returns.length - 1];
-      if (!last || cur.t - last.t >= EVENT_WINDOW_MS) returns.push({ type: 'return', t: cur.t, inferred: false });
-    } else if (inMorning && !mornings.has(day) && !isAway(cur.presetMode)) {
-      const presetToHome = isHomePreset(cur.presetMode) && !isHomePreset(prev.presetMode);
-      const heatingStart = isHeating(cur.hvacAction) && !isHeating(prev.hvacAction);
-      if (setpointRise >= SETPOINT_STEP || presetToHome || heatingStart) {
-        mornings.set(day, { type: 'morning', t: cur.t, inferred: false });
+      if (canHeat(cur) && heatingReportedWithin(sorted, i, RETURN_HEAT_LIMIT_MS)
+        && (!last || cur.t - last.t >= EVENT_WINDOW_MS)) {
+        returns.push({ type: 'return', t: cur.t, inferred: false });
       }
+    } else if (inMorning && !mornings.has(day) && !isAway(cur.presetMode) && canHeat(cur)
+      && isHeating(cur.hvacAction) && prev.hvacAction !== null && !isHeating(prev.hvacAction)) {
+      mornings.set(day, { type: 'morning', t: cur.t, inferred: false });
     }
   }
 
@@ -208,19 +243,21 @@ export function detectHvacEvents(samples: HvacSample[], timeZone: string): Place
   return [...morningEvents, ...returns].sort((a, b) => a.t - b.t);
 }
 
-// Sensor readings carried forward onto a shared grid for at most
-// MAX_READING_AGE_MS, so staggered sensors are compared at the same instants
-// and stale readings are never used.
-interface Grid {
+// Sensor points carried forward onto a shared grid, so staggered sensors are
+// compared at the same instants. A point is used at grid time g only once its
+// window has ended (t + BUCKET_MS <= g) and while g - t <= MAX_READING_AGE_MS,
+// so every value used at g was read in [g - MAX_READING_AGE_MS, g].
+export interface Grid {
   times: number[];
   values: Map<string, Map<number, number>>;
 }
 
-function align(sensors: SensorSeriesInput[]): Grid {
-  const cleaned = sensors.map((sensor) => ({
-    id: sensor.id,
-    points: sensor.points.filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v)).sort((a, b) => a.t - b.t),
-  }));
+function cleanPoints(points: SensorSeriesInput['points']): SensorSeriesInput['points'] {
+  return points.filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v)).sort((a, b) => a.t - b.t);
+}
+
+export function alignSensors(sensors: SensorSeriesInput[]): Grid {
+  const cleaned = sensors.map((sensor) => ({ id: sensor.id, points: cleanPoints(sensor.points) }));
   let first = Number.POSITIVE_INFINITY;
   let last = Number.NEGATIVE_INFINITY;
   cleaned.forEach(({ points }) => {
@@ -230,7 +267,7 @@ function align(sensors: SensorSeriesInput[]): Grid {
   });
   const times: number[] = [];
   if (Number.isFinite(first)) {
-    for (let t = Math.ceil(first / BUCKET_MS) * BUCKET_MS; t <= last + MAX_READING_AGE_MS; t += BUCKET_MS) {
+    for (let t = Math.ceil((first + BUCKET_MS) / BUCKET_MS) * BUCKET_MS; t <= last + MAX_READING_AGE_MS; t += BUCKET_MS) {
       times.push(t);
     }
   }
@@ -239,7 +276,7 @@ function align(sensors: SensorSeriesInput[]): Grid {
     const filled = new Map<number, number>();
     let index = -1;
     times.forEach((t) => {
-      while (index + 1 < points.length && points[index + 1].t <= t) index += 1;
+      while (index + 1 < points.length && points[index + 1].t + BUCKET_MS <= t) index += 1;
       if (index >= 0 && t - points[index].t <= MAX_READING_AGE_MS) filled.set(t, points[index].v);
     });
     values.set(id, filled);
@@ -261,33 +298,60 @@ function cohortMean(grid: Grid, cohort: string[], t: number): number {
   return mean(cohort.map((id) => grid.values.get(id)!.get(t)!))!;
 }
 
+function stateIndexAt(samples: HvacSample[], t: number): number {
+  let found = -1;
+  for (let i = 0; i < samples.length && samples[i].t <= t; i += 1) found = i;
+  return found;
+}
+
+function rulesOutHeating(sample: HvacSample): boolean {
+  return !sample.gap && (!canHeat(sample) || (sample.hvacAction !== null && !isHeating(sample.hvacAction)));
+}
+
+// Whether recorded thermostat states show it wasn't heating throughout
+// [from, to]. The earliest returned state may be a snapshot from before the
+// recorder's retention, so it is never evidence on its own.
+function heatingRuledOut(samples: HvacSample[], from: number, to: number): boolean {
+  const index = stateIndexAt(samples, from);
+  if (index <= 0 || !rulesOutHeating(samples[index])) return false;
+  return samples.every((s) => s.t <= from || s.t > to || rulesOutHeating(s));
+}
+
 // Morning warm-ups inferred from the house mean rising in the morning window,
-// one per local day, for periods before (or without) thermostat history.
+// one per local day, on days without an observed morning warm-up and not near
+// another observed event, unless recorded thermostat states rule out heating.
 export function inferMorningEvents(
   sensors: SensorSeriesInput[],
   timeZone: string,
-  before = Number.POSITIVE_INFINITY,
+  samples: HvacSample[] = [],
+  observed: PlacementEvent[] = [],
 ): PlacementEvent[] {
   const clock = localClock(timeZone);
-  const grid = align(sensors);
+  const grid = alignSensors(sensors);
   const events: PlacementEvent[] = [];
-  const seenDays = new Set<string>();
+  const seenDays = new Set(observed.filter((e) => e.type === 'morning').map((e) => clock(e.t).day));
   grid.times.forEach((t) => {
-    if (t >= before) return;
     const { day, hour } = clock(t);
     if (seenDays.has(day) || hour < MORNING_START_HOUR || hour >= MORNING_END_HOUR) return;
+    if (observed.some((e) => Math.abs(e.t - t) < EVENT_WINDOW_MS)) return;
     const later = t + INFERRED_RISE_WINDOW_MS;
     // Same sensors at both instants, so membership can't fake a rise.
     const cohort = [...grid.values.entries()]
       .filter(([, filled]) => filled.has(t) && filled.has(later))
       .map(([id]) => id);
     if (cohort.length < MIN_SENSORS_FOR_MEAN) return;
-    if (cohortMean(grid, cohort, later) - cohortMean(grid, cohort, t) >= INFERRED_RISE) {
-      seenDays.add(day);
-      events.push({ type: 'morning', t, inferred: true });
-    }
+    if (cohortMean(grid, cohort, later) - cohortMean(grid, cohort, t) < INFERRED_RISE) return;
+    if (heatingRuledOut(samples, t, later)) return;
+    seenDays.add(day);
+    events.push({ type: 'morning', t, inferred: true });
   });
   return events;
+}
+
+interface OvershootWindow {
+  from: number;
+  to: number;
+  setpoint: number;
 }
 
 interface EventContext {
@@ -296,25 +360,19 @@ interface EventContext {
   times: number[];
   // Post-satisfaction window and the set point in force; null when the
   // thermostat history can't establish it.
-  overshoot: { times: number[]; setpoint: number } | null;
+  overshoot: OvershootWindow | null;
 }
 
-function stateAt(samples: HvacSample[], t: number): HvacSample | null {
-  let found: HvacSample | null = null;
-  for (const sample of samples) {
-    if (sample.t > t) break;
-    found = sample;
-  }
-  return found;
-}
-
-// When the thermostat stopped heating after the event, if it reported heating
-// and then a non-heating action within SATISFACTION_LIMIT_MS.
+// When the thermostat stopped heating after the event: heating reported, then
+// a reported non-heating action within SATISFACTION_LIMIT_MS, with no gap in
+// history in between.
 function satisfiedAt(samples: HvacSample[], event: PlacementEvent): number | null {
-  let heating = isHeating(stateAt(samples, event.t)?.hvacAction ?? null);
-  for (const sample of samples) {
-    if (sample.t <= event.t) continue;
-    if (sample.t > event.t + SATISFACTION_LIMIT_MS) break;
+  const index = stateIndexAt(samples, event.t);
+  if (index < 0 || samples[index].gap) return null;
+  let heating = isHeating(samples[index].hvacAction);
+  for (let i = index + 1; i < samples.length; i += 1) {
+    const sample = samples[i];
+    if (sample.t > event.t + SATISFACTION_LIMIT_MS || sample.gap) return null;
     if (isHeating(sample.hvacAction)) heating = true;
     else if (heating && sample.hvacAction !== null) return sample.t;
   }
@@ -322,37 +380,49 @@ function satisfiedAt(samples: HvacSample[], event: PlacementEvent): number | nul
 }
 
 function overshootWindow(
-  grid: Grid,
   samples: HvacSample[],
   event: PlacementEvent,
   nextEvent: number,
-): { times: number[]; setpoint: number } | null {
+): OvershootWindow | null {
   if (event.inferred) return null;
   const from = satisfiedAt(samples, event);
   if (from === null) return null;
-  const state = stateAt(samples, from);
-  if (!state || state.setpoint === null) return null;
-  const change = samples.find((s) => s.t > from
-    && (s.setpoint !== state.setpoint || s.presetMode !== state.presetMode));
+  const state = samples[stateIndexAt(samples, from)];
+  if (state.setpoint === null) return null;
+  const change = samples.find((s) => s.t > from && (s.gap || isHeating(s.hvacAction)
+    || s.setpoint !== state.setpoint || s.presetMode !== state.presetMode || s.hvacMode !== state.hvacMode));
   const to = Math.min(from + OVERSHOOT_WINDOW_MS, nextEvent, change?.t ?? Number.POSITIVE_INFINITY);
-  return { times: grid.times.filter((t) => t >= from && t < to), setpoint: state.setpoint };
+  return { from, to, setpoint: state.setpoint };
 }
 
 function eventContexts(grid: Grid, events: PlacementEvent[], samples: HvacSample[]): EventContext[] {
   return events.map((event, index) => {
     const satisfied = event.inferred ? null : satisfiedAt(samples, event);
-    const end = Math.min(event.t + EVENT_WINDOW_MS, satisfied ?? Number.POSITIVE_INFINITY);
+    const gap = event.inferred ? undefined : samples.find((s) => s.t > event.t && s.gap)?.t;
+    const end = Math.min(event.t + EVENT_WINDOW_MS, satisfied ?? Number.POSITIVE_INFINITY, gap ?? Number.POSITIVE_INFINITY);
     const { cohort, times } = cohortAt(grid, grid.times.filter((t) => t >= event.t && t <= end));
     const nextEvent = events[index + 1]?.t ?? Number.POSITIVE_INFINITY;
     return {
-      event, cohort: new Set(cohort), times, overshoot: overshootWindow(grid, samples, event, nextEvent),
+      event, cohort: new Set(cohort), times, overshoot: overshootWindow(samples, event, nextEvent),
     };
   });
 }
 
+// Peak above the set point from the sensor's own points that lie wholly inside
+// the window; null unless they cover enough of it.
+function overshootIn(points: SensorSeriesInput['points'], window: OvershootWindow): number | null {
+  const firstSlot = Math.ceil(window.from / BUCKET_MS);
+  const slots = Math.floor(window.to / BUCKET_MS) - firstSlot;
+  if (slots < MIN_OVERSHOOT_BUCKETS) return null;
+  const inside = points.filter((p) => p.t >= window.from && p.t + BUCKET_MS <= window.to);
+  const covered = new Set(inside.map((p) => Math.floor(p.t / BUCKET_MS))).size;
+  if (covered < OVERSHOOT_COVERAGE * slots) return null;
+  return Math.max(0, Math.max(...inside.map((p) => p.v)) - window.setpoint);
+}
+
 interface SensorStats {
   sensor: SensorSeriesInput;
-  eventOffsets: { type: PlacementEventType; offset: number }[];
+  eventOffsets: { type: PlacementEventType; offset: number; inferred: boolean }[];
   overshoots: number[];
   sampleCount: number;
 }
@@ -362,17 +432,16 @@ function measure(sensor: SensorSeriesInput, contexts: EventContext[], grid: Grid
     sensor, eventOffsets: [], overshoots: [], sampleCount: 0,
   };
   const filled = grid.values.get(sensor.id)!;
+  const points = cleanPoints(sensor.points);
   contexts.forEach((ctx) => {
     if (ctx.cohort.has(sensor.id) && ctx.times.length >= MIN_EVENT_SAMPLES) {
       const members = [...ctx.cohort];
       const offsets = ctx.times.map((t) => filled.get(t)! - cohortMean(grid, members, t));
       stats.sampleCount += offsets.length;
-      stats.eventOffsets.push({ type: ctx.event.type, offset: mean(offsets)! });
+      stats.eventOffsets.push({ type: ctx.event.type, offset: mean(offsets)!, inferred: ctx.event.inferred });
     }
-    if (ctx.overshoot) {
-      const readings = ctx.overshoot.times.filter((t) => filled.has(t)).map((t) => filled.get(t)!);
-      if (readings.length > 0) stats.overshoots.push(Math.max(0, Math.max(...readings) - ctx.overshoot.setpoint));
-    }
+    const overshoot = ctx.overshoot ? overshootIn(points, ctx.overshoot) : null;
+    if (overshoot !== null) stats.overshoots.push(overshoot);
   });
   return stats;
 }
@@ -416,9 +485,16 @@ function biasSummary(a: Analyzed, direction: BiasDirection): { text: string; mag
   const match = periods.find(([offset]) => offset !== null && sign * offset >= OFFSET_THRESHOLD);
   const counted = `${s.name} read at least ${OFFSET_THRESHOLD.toFixed(1)} °C ${direction} the house average `
     + `in ${biased} of ${events.length} heat-ups`;
-  if (!match) return { text: counted, magnitude: Math.abs(s.averageOffset ?? 0) };
+  const inferred = events.filter((e) => e.inferred).length;
+  const provenance = inferred > 0
+    ? `. ${inferred} of these ${events.length} heat-ups were inferred from room temperatures, not thermostat history`
+    : '';
+  if (!match) return { text: `${counted}${provenance}`, magnitude: Math.abs(s.averageOffset ?? 0) };
   const offset = match[0]!;
-  return { text: `${counted} (${fmt(offset)} °C ${direction} on average ${match[1]})`, magnitude: Math.abs(offset) };
+  return {
+    text: `${counted} (${fmt(offset)} °C ${direction} on average ${match[1]})${provenance}`,
+    magnitude: Math.abs(offset),
+  };
 }
 
 // Recommendations are hypotheses: which sensors the thermostat's comfort
@@ -502,7 +578,7 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
 }
 
 // Summary when nothing was flagged; only claims what the data covered.
-function noChanges(analyzed: Analyzed[]): PlacementRecommendation | null {
+function noChanges(analyzed: Analyzed[], events: PlacementEvent[]): PlacementRecommendation | null {
   const assessed = analyzed.filter((a) => a.out.classification !== 'insufficient');
   if (assessed.length < MIN_SENSORS_FOR_MEAN) return null;
   const missing = analyzed.filter((a) => a.out.classification === 'insufficient').map((a) => a.out.name);
@@ -512,12 +588,16 @@ function noChanges(analyzed: Analyzed[]): PlacementRecommendation | null {
     ? `None of them rose ${OVERSHOOT_THRESHOLD.toFixed(1)} °C or more above the set point on average.`
     : 'Thermostat history didn\'t show when heating stopped, so overshoot wasn\'t checked for every room.');
   if (missing.length > 0) parts.push(`Not enough data for ${missing.join(', ')}.`);
+  const inferred = events.filter((e) => e.inferred).length;
+  if (inferred > 0) {
+    parts.push(`${inferred} of the ${events.length} heat-ups were inferred from room temperatures, not thermostat history.`);
+  }
   return {
     id: 'no-changes',
     severity: 'low',
     sensorId: null,
     action: 'none',
-    title: overshootKnown && missing.length === 0
+    title: overshootKnown && missing.length === 0 && inferred === 0
       ? 'No placement issues found'
       : 'No placement issues found in the available data',
     detail: parts.join(' '),
@@ -530,14 +610,18 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const hvacAvailable = samples.length > 0;
   const startMs = input.start.getTime();
   const endMs = input.end.getTime();
-  // Recorder retention can be shorter than the window; infer mornings before it.
-  const historyStart = hvacAvailable ? samples[0].t : null;
+  const earliestState = hvacAvailable ? samples[0].t : null;
+  // Recorder retention can be shorter than the window and the earliest state
+  // may be a snapshot, so mornings are inferred for any day without an
+  // observed one rather than only before the earliest state.
+  const inWindow = (e: PlacementEvent) => e.t >= startMs && e.t <= endMs;
+  const observed = detectHvacEvents(samples, input.timeZone).filter(inWindow);
   const events = [
-    ...(hvacAvailable ? detectHvacEvents(samples, input.timeZone) : []),
-    ...inferMorningEvents(sensors, input.timeZone, historyStart ?? Number.POSITIVE_INFINITY),
-  ].filter((e) => e.t >= startMs && e.t <= endMs).sort((a, b) => a.t - b.t);
+    ...observed,
+    ...inferMorningEvents(sensors, input.timeZone, samples, observed).filter(inWindow),
+  ].sort((a, b) => a.t - b.t);
 
-  const grid = align(sensors);
+  const grid = alignSensors(sensors);
   const contexts = eventContexts(grid, events, samples);
   const analyzed: Analyzed[] = sensors.map((sensor) => {
     const stats = measure(sensor, contexts, grid);
@@ -565,7 +649,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   ));
   const recommendations = ranked.map((r) => r.rec);
   if (recommendations.length === 0) {
-    const summary = noChanges(analyzed);
+    const summary = noChanges(analyzed, events);
     if (summary) recommendations.push(summary);
   }
 
@@ -578,11 +662,12 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       start: input.start.toISOString(),
       end: input.end.toISOString(),
       hvacHistoryAvailable: hvacAvailable,
-      hvacHistoryStart: historyStart === null ? null : new Date(Math.max(historyStart, startMs)).toISOString(),
+      hvacEarliestStateAt: earliestState === null ? null : new Date(Math.max(earliestState, startMs)).toISOString(),
       returnHistoryAvailable: samples.some((sample) => sample.presetMode !== null),
       morningEvents: mornings.length,
       inferredMorningEvents: mornings.filter((e) => e.inferred).length,
       returnEvents: events.filter((e) => e.type === 'return').length,
+      unknownUnitReadings: input.unknownUnitReadings ?? 0,
     },
     sensors: analyzed.map((a) => a.out),
     recommendations,

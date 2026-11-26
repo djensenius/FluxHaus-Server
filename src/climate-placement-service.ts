@@ -24,6 +24,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 // Temperature sensors that aren't indoor rooms.
 const OUTDOOR_PATTERN = /outdoor|outside|patio|exterior|environment_canada/i;
 const SAFE_OBJECT_ID = /^[a-z0-9_]+$/;
+// Converted set points outside this °C range are treated as unknown (e.g.
+// history recorded in a different unit than the thermostat reports now).
+const MIN_PLAUSIBLE_SETPOINT_C = 5;
+const MAX_PLAUSIBLE_SETPOINT_C = 35;
 
 function namedError(name: string, message: string): Error {
   const error = new Error(message);
@@ -69,8 +73,6 @@ export interface IndoorSensor {
   id: string;
   name: string;
   isThermostat: boolean;
-  // Home Assistant's unit for the sensor; null when unknown.
-  unit: string | null;
 }
 
 function objectId(entityId: string): string {
@@ -92,11 +94,12 @@ export function toCelsius(value: number | null, unit: string | null | undefined)
 }
 
 // Unit of an InfluxDB row: Home Assistant names measurements after the unit
-// (`°C`/`°F`) unless overridden (e.g. `climate`), in which case the sensor's
-// Home Assistant unit applies.
-export function rowUnit(measurement: string | undefined, sensorUnit: string | null): string | null {
+// (`°C`/`°F`) unless overridden (e.g. `climate`); then only the unit recorded
+// with the reading itself (its `unit_of_measurement_str` field) establishes
+// it. The sensor's current unit says nothing about past readings.
+export function rowUnit(measurement: string | undefined, recordedUnit: string | undefined): string | null {
   if (measurement === '°C' || measurement === '°F') return measurement;
-  return sensorUnit;
+  return recordedUnit === '°C' || recordedUnit === '°F' ? recordedUnit : null;
 }
 
 // The server's time zone: TZ, else the system zone, else UTC.
@@ -114,48 +117,74 @@ export function resolveTimeZone(preferred?: string): string {
   return valid ?? 'UTC';
 }
 
+// Each reading is paired with the unit Home Assistant recorded alongside it
+// (written as `unit_of_measurement_str` when the measurement is overridden),
+// readings are averaged per unit (so a unit change never mixes values) and
+// stamped with the start of their window (`timeSrc: "_start"`), the earliest
+// time any of them could have been read.
 export function buildPlacementQuery(bucket: string, ids: string[], start: Date, end: Date): string {
   const set = ids.filter((id) => SAFE_OBJECT_ID.test(id)).map((id) => `"${id}"`).join(', ');
   return `from(bucket: ${fluxBucketLiteral(bucket)})
   |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
-  |> filter(fn: (r) => (r._measurement == "climate" or r._measurement == "°C" or r._measurement == "°F") and r._field == "value")
+  |> filter(fn: (r) => r._measurement == "climate" or r._measurement == "°C" or r._measurement == "°F")
+  |> filter(fn: (r) => r._field == "value" or r._field == "unit_of_measurement_str")
   |> filter(fn: (r) => r.domain == "sensor" and contains(value: r.entity_id, set: [${set}]))
-  |> group(columns: ["domain", "entity_id", "_measurement"])
-  |> aggregateWindow(every: ${BUCKET_MS / 60_000}m, fn: mean, createEmpty: false)
-  |> keep(columns: ["_time", "_value", "_measurement", "entity_id"])`;
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> filter(fn: (r) => exists r.value)
+  |> map(fn: (r) => ({ r with
+    _value: float(v: r.value),
+    unit: if exists r.unit_of_measurement_str then r.unit_of_measurement_str else "",
+  }))
+  |> group(columns: ["domain", "entity_id", "_measurement", "unit"])
+  |> aggregateWindow(every: ${BUCKET_MS / 60_000}m, fn: mean, createEmpty: false, timeSrc: "_start")
+  |> keep(columns: ["_time", "_value", "_measurement", "unit", "entity_id"])`;
 }
 
-// Home Assistant history rows for a climate entity → set point / action samples.
+function plausibleSetpoint(value: number | null): number | null {
+  return value !== null && value >= MIN_PLAUSIBLE_SETPOINT_C && value <= MAX_PLAUSIBLE_SETPOINT_C ? value : null;
+}
+
+// Home Assistant history rows for a climate entity → mode / set point / action
+// samples. Unavailable/unknown states are kept as gaps so no transition is
+// read across them.
 export function parseClimateHistory(history: unknown, unit: string | null | undefined): HvacSample[] {
   const rows = Array.isArray(history) && Array.isArray(history[0]) ? history[0] : [];
   return rows.flatMap((row: unknown): HvacSample[] => {
     if (!row || typeof row !== 'object') return [];
     const { state, attributes, last_updated: lastUpdated, last_changed: lastChanged } = row as Record<string, unknown>;
-    if (state === 'unavailable' || state === 'unknown') return [];
     const t = Date.parse(String(lastUpdated ?? lastChanged ?? ''));
     if (!Number.isFinite(t)) return [];
+    if (typeof state !== 'string' || state === 'unavailable' || state === 'unknown') {
+      return [{
+        t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
+      }];
+    }
     const attrs = (attributes && typeof attributes === 'object' ? attributes : {}) as Record<string, unknown>;
     const setpoint = toNumber(attrs.temperature) ?? toNumber(attrs.target_temp_low);
     return [{
       t,
+      gap: false,
+      hvacMode: state,
       hvacAction: typeof attrs.hvac_action === 'string' ? attrs.hvac_action : null,
       presetMode: typeof attrs.preset_mode === 'string' ? attrs.preset_mode : null,
-      setpoint: toCelsius(setpoint, unit),
+      setpoint: plausibleSetpoint(toCelsius(setpoint, unit)),
     }];
   });
 }
 
 // InfluxDB rows → per-sensor °C series. Rows whose unit can't be established
-// are dropped (and logged) rather than compared as °C.
-export function rowsToSeries(rows: Record<string, string>[], sensors: IndoorSensor[]): SensorSeriesInput[] {
-  const units = new Map(sensors.map((s) => [s.id, s.unit]));
+// are dropped (counted and logged) rather than compared as °C.
+export function rowsToSeries(
+  rows: Record<string, string>[],
+  sensors: IndoorSensor[],
+): { series: SensorSeriesInput[]; unknownUnitReadings: number } {
   const points = new Map<string, { t: number; v: number }[]>();
   let skipped = 0;
   rows.forEach((row) => {
     /* eslint-disable no-underscore-dangle */
     const t = Date.parse(row._time);
     const raw = Number.parseFloat(row._value);
-    const unit = rowUnit(row._measurement, units.get(row.entity_id) ?? null);
+    const unit = rowUnit(row._measurement, row.unit);
     /* eslint-enable no-underscore-dangle */
     if (!row.entity_id || !Number.isFinite(t) || !Number.isFinite(raw)) return;
     const v = toCelsius(raw, unit);
@@ -167,9 +196,12 @@ export function rowsToSeries(rows: Record<string, string>[], sensors: IndoorSens
     points.get(row.entity_id)!.push({ t, v });
   });
   if (skipped > 0) placementLogger.warn({ skipped }, 'Skipped temperature readings with an unknown unit');
-  return sensors.map((s) => ({
-    id: s.id, name: s.name, isThermostat: s.isThermostat, points: points.get(s.id) ?? [],
-  }));
+  return {
+    series: sensors.map((s) => ({
+      id: s.id, name: s.name, isThermostat: s.isThermostat, points: points.get(s.id) ?? [],
+    })),
+    unknownUnitReadings: skipped,
+  };
 }
 
 export class ClimatePlacementService {
@@ -218,20 +250,21 @@ export class ClimatePlacementService {
     }
     const status = indoorClimate.cachedStatus;
     const sensors: IndoorSensor[] = status.sensors
-      .map((s) => ({
-        id: objectId(s.entityId), name: s.name, isThermostat: s.isThermostat, unit: s.unit,
-      }))
+      .map((s) => ({ id: objectId(s.entityId), name: s.name, isThermostat: s.isThermostat }))
       .filter((s) => SAFE_OBJECT_ID.test(s.id) && !OUTDOOR_PATTERN.test(s.id) && !OUTDOOR_PATTERN.test(s.name));
 
     // Missing discovery or thermostat counts as degraded so it is retried soon.
     let degraded = sensors.length === 0 || !status.thermostat;
-    const [series, hvac] = await Promise.all([
+    const [{ series, unknownUnitReadings }, hvac] = await Promise.all([
       this.fetchSeries(sensors, start, end).catch((err) => {
         placementLogger.warn({ err }, 'Failed to read room temperatures for placement insights');
         degraded = true;
-        return sensors.map((s) => ({
-          id: s.id, name: s.name, isThermostat: s.isThermostat, points: [],
-        }));
+        return {
+          series: sensors.map((s) => ({
+            id: s.id, name: s.name, isThermostat: s.isThermostat, points: [],
+          })),
+          unknownUnitReadings: 0,
+        };
       }),
       this.fetchHvac(status, start, end).catch((err) => {
         placementLogger.warn({ err }, 'Failed to read thermostat history for placement insights');
@@ -249,13 +282,18 @@ export class ClimatePlacementService {
       timeZone: resolveTimeZone(this.deps.timeZone),
       sensors: series,
       hvac,
+      unknownUnitReadings,
       generatedAt: end,
     });
     return { insights, degraded };
   }
 
-  private async fetchSeries(sensors: IndoorSensor[], start: Date, end: Date): Promise<SensorSeriesInput[]> {
-    if (sensors.length === 0) return [];
+  private async fetchSeries(
+    sensors: IndoorSensor[],
+    start: Date,
+    end: Date,
+  ): Promise<{ series: SensorSeriesInput[]; unknownUnitReadings: number }> {
+    if (sensors.length === 0) return { series: [], unknownUnitReadings: 0 };
     const rows: Record<string, string>[] = await this.deps.influxdb.query(
       buildPlacementQuery(this.deps.bucket, sensors.map((s) => s.id), start, end),
     );
