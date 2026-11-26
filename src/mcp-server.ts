@@ -10,7 +10,7 @@ import { z } from 'zod';
 import { FluxHausServices } from './services';
 import type { ThermostatControlResult, ThermostatControls } from './indoor-climate';
 import {
-  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess, omitKeysDeep, redactMcpResult,
+  isMcpPromptAllowed, isMcpResourceAllowed, isMcpToolAllowed, McpAccess, omitKeysDeep, redactMcpResult, redactSensitive,
 } from './mcp-access';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -355,6 +355,9 @@ export default function createMcpServer(
   } = services;
   const { userSub } = options;
   const access: McpAccess = options.access ?? 'full';
+  // Prompts embed JSON inside prose, where text-level redaction is weaker:
+  // redact the source objects before interpolation for read access.
+  const promptData = <T>(value: T): T => (access === 'read' ? redactSensitive(value) : value);
   const calendarUnavailable = () => ({
     isError: true,
     content: [{
@@ -2504,7 +2507,7 @@ export default function createMcpServer(
       if (fs.existsSync('cache/homeconnect.json')) {
         homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
       }
-      const applianceData = JSON.stringify({ miele, homeConnect }, null, 2);
+      const applianceData = JSON.stringify(promptData({ miele, homeConnect }), null, 2);
       const promptText = 'Here is the current appliance data from FluxHaus:\n\n'
         + `${applianceData}\n\n`
         + 'Please provide a concise, friendly summary of what appliances are running, '
@@ -2525,10 +2528,10 @@ export default function createMcpServer(
     'leaving_home',
     'Checklist and actions to perform when leaving home',
     async () => {
-      const carData = JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
-      const robotData = JSON.stringify({
+      const carData = JSON.stringify(promptData({ status: car.status, odometer: car.odometer }), null, 2);
+      const robotData = JSON.stringify(promptData({
         cleanbot: cleanbot.cachedStatus,
-      }, null, 2);
+      }), null, 2);
       const leavingText = 'I am leaving home. Here is the current FluxHaus status:\n\n'
         + `Car:\n${carData}\n\n`
         + `Robots:\n${robotData}\n\n`
@@ -2550,10 +2553,10 @@ export default function createMcpServer(
     'goodnight',
     'Evening checklist for winding down the home',
     async () => {
-      const carData = JSON.stringify({ status: car.status, odometer: car.odometer }, null, 2);
-      const robotData = JSON.stringify({
+      const carData = JSON.stringify(promptData({ status: car.status, odometer: car.odometer }), null, 2);
+      const robotData = JSON.stringify(promptData({
         cleanbot: cleanbot.cachedStatus,
-      }, null, 2);
+      }), null, 2);
       let miele = null;
       if (fs.existsSync('cache/miele.json')) {
         miele = JSON.parse(fs.readFileSync('cache/miele.json', 'utf8'));
@@ -2562,7 +2565,7 @@ export default function createMcpServer(
       if (fs.existsSync('cache/homeconnect.json')) {
         homeConnect = JSON.parse(fs.readFileSync('cache/homeconnect.json', 'utf8'));
       }
-      const appliancesData = JSON.stringify({ miele, homeConnect }, null, 2);
+      const appliancesData = JSON.stringify(promptData({ miele, homeConnect }), null, 2);
       const goodnightText = 'It is time for bed. Here is the current FluxHaus status:\n\n'
         + `Car:\n${carData}\n\n`
         + `Robots:\n${robotData}\n\n`

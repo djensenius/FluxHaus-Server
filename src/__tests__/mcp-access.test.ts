@@ -356,6 +356,50 @@ describe('read access secret isolation', () => {
   });
 });
 
+describe('read access prompt redaction', () => {
+  const nestedSecrets = {
+    washer: { private_key: ['pkline-secret'], credentials: { user: 'u', pass: 'credpass-secret' } },
+  };
+
+  beforeEach(() => {
+    (fs.existsSync as vi.Mock).mockReturnValue(true);
+    (fs.readFileSync as vi.Mock).mockReturnValue(JSON.stringify(nestedSecrets));
+  });
+
+  it.each(['appliance_report', 'goodnight', 'leaving_home'])(
+    'redacts object/array-valued secrets embedded in %s prose for read access',
+    async (name) => {
+      const { client, close } = await connect('read');
+      const prompt = JSON.stringify(await client.getPrompt({ name }));
+      expect(prompt).not.toMatch(/pkline-secret|credpass-secret/);
+      if (name !== 'leaving_home') {
+        expect(prompt).toContain('\\"private_key\\": \\"[REDACTED]\\"');
+        expect(prompt).toContain('\\"credentials\\": \\"[REDACTED]\\"');
+      }
+      await close();
+    },
+  );
+
+  it('keeps prompt data intact for full access', async () => {
+    const { client, close } = await connect('full');
+    expect(JSON.stringify(await client.getPrompt({ name: 'appliance_report' }))).toContain('credpass-secret');
+    await close();
+  });
+
+  it('redacts container values under sensitive keys in free text', () => {
+    const redact = (text: string) => (redactMcpResult({ content: [{ type: 'text', text }] }) as {
+      content: { text: string }[];
+    }).content[0].text;
+    expect(redact('Data:\n{"private_key":["secret"]}\nDone')).toBe('Data:\n{"private_key":"[REDACTED]"}\nDone');
+    expect(redact('Data:\n{"credentials":{"user":"u","pass":"secret"}} tail'))
+      .toBe('Data:\n{"credentials":"[REDACTED]"} tail');
+    expect(redact('x {"credentials": {"nested": {"a": "}]"}, "b": [1]}, "ok": 1} y'))
+      .toBe('x {"credentials": "[REDACTED]", "ok": 1} y');
+    expect(redact('cut {"api_key": {"v": "secret"\nnext line')).toBe('cut {"api_key": "[REDACTED]"\nnext line');
+    expect(redact('Text {"settings": {"theme": "dark"}}')).toBe('Text {"settings": {"theme": "dark"}}');
+  });
+});
+
 describe('read access input injection', () => {
   let fetchSpy: vi.SpyInstance;
 

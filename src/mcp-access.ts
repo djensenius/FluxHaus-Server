@@ -209,8 +209,57 @@ export function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEY.test(key) || SENSITIVE_CAMEL_KEY.test(key);
 }
 
+const JSON_CONTAINER_START = /"([^"\\]+)"\s*:\s*[{[]/g;
+
+// Index just past the JSON object/array opening at `start`, honouring nested
+// containers and strings; -1 when it is not closed in `text`.
+function closingIndex(text: string, start: number): number {
+  let depth = 0;
+  let inString = false;
+  for (let i = start; i < text.length; i += 1) {
+    const c = text[i];
+    if (inString) {
+      if (c === '\\') i += 1;
+      else if (c === '"') inString = false;
+    } else if (c === '"') {
+      inString = true;
+    } else if (c === '{' || c === '[') {
+      depth += 1;
+    } else if (c === '}' || c === ']') {
+      depth -= 1;
+      if (depth === 0) return i + 1;
+    }
+  }
+  return -1;
+}
+
+// Redacts object/array values under sensitive keys inside free text (e.g.
+// JSON embedded in prompt prose). Unbalanced values are redacted to the end
+// of the line (or text), erring towards over-redaction.
+function redactEmbeddedContainers(text: string): string {
+  let result = '';
+  let last = 0;
+  JSON_CONTAINER_START.lastIndex = 0;
+  let match = JSON_CONTAINER_START.exec(text);
+  while (match) {
+    const valueStart = match.index + match[0].length - 1;
+    if (isSensitiveKey(match[1]) && valueStart >= last) {
+      let end = closingIndex(text, valueStart);
+      if (end < 0) {
+        const newline = text.indexOf('\n', valueStart);
+        end = newline < 0 ? text.length : newline;
+      }
+      result += `${text.slice(last, valueStart)}"${REDACTED}"`;
+      last = end;
+      JSON_CONTAINER_START.lastIndex = end;
+    }
+    match = JSON_CONTAINER_START.exec(text);
+  }
+  return result + text.slice(last);
+}
+
 function redactString(value: string): string {
-  return value
+  return redactEmbeddedContainers(value)
     .replace(SENSITIVE_QUERY_PARAM, `$1${REDACTED}`)
     .replace(URL_USERINFO, `$1${REDACTED}@`)
     .replace(SENSITIVE_JSON_STRING, (match, prefix: string, key: string) => (
