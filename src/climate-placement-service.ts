@@ -181,6 +181,26 @@ export function rowUnit(row: Record<string, string>): string | null {
   return knownUnit(row.unit_field);
 }
 
+// Unlike room sensors, an untagged climate attribute uses HA's last known
+// climate unit as an explicitly qualified historical assumption. An explicit
+// unknown/conflicting unit is never replaced with the assumption.
+function reportedRowUnit(row: Record<string, string>): string | null | undefined {
+  /* eslint-disable-next-line no-underscore-dangle */
+  const measurement = row._measurement;
+  const units = [
+    measurement === '°C' || measurement === '°F' ? measurement : '',
+    row.unit_tag ?? '',
+    row.unit_field ?? '',
+  ].filter(Boolean);
+  if (units.length === 0) return undefined;
+  if (units.some((unit) => knownUnit(unit) === null) || new Set(units).size !== 1) return null;
+  return units[0];
+}
+
+function conflictsWithAssumption(recorded: string | null | undefined, assumed: string | null): boolean {
+  return recorded === null || (recorded !== undefined && assumed !== null && recorded !== assumed);
+}
+
 // The server's time zone: TZ, else the system zone, else UTC.
 export function resolveTimeZone(preferred?: string): string {
   const candidates = [preferred, process.env.TZ, Intl.DateTimeFormat().resolvedOptions().timeZone];
@@ -265,6 +285,7 @@ export interface StateEntities {
 const CLIMATE_FIELDS = [
   'state', 'hvac_action_str', 'preset_mode', 'preset_mode_str', 'temperature', 'temperature_str',
   'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str', 'current_temperature_str',
+  'unit_of_measurement_str',
 ];
 
 function statePredicate(entities: StateEntities): string {
@@ -302,7 +323,7 @@ changes = from(bucket: ${fluxBucketLiteral(bucket)})
   |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
   |> filter(fn: (r) => ${predicate})
 union(tables: [prior, priorStateHistory, changes])
-  |> keep(columns: ["_time", "_value", "_field", "domain", "entity_id"])`;
+  |> keep(columns: ["_time", "_value", "_field", "domain", "entity_id", "_measurement", "unit_of_measurement"])`;
 }
 
 // The time of the most recent cooling reported in [start, end).
@@ -330,6 +351,8 @@ export interface ParsedStates {
   // Occupancy per occupancy entity id.
   occupancy: Map<string, OccupancySample[]>;
   reportedInvalidations: number[];
+  unitConflict: boolean;
+  targetUnitAssumed: boolean;
 }
 
 // Rows from buildStatesQuery → thermostat samples (one per state change; mode,
@@ -347,14 +370,24 @@ export function parseStates(
   const comfort: ComfortSample[] = [];
   const occupancy = new Map<string, OccupancySample[]>();
   const reportedInvalidations: number[] = [];
+  const assumedUnit = knownUnit(unit ?? undefined);
+  let unitConflict = false;
   rows.forEach((row) => {
     /* eslint-disable no-underscore-dangle */
     const t = Date.parse(row._time);
     const field = row._field;
     const value = row._value === undefined || row._value === null ? '' : String(row._value);
+    const measurement = row._measurement;
     /* eslint-enable no-underscore-dangle */
     if (!Number.isFinite(t)) return;
     if (row.domain === 'climate' && row.entity_id === entities.climate) {
+      const recorded = reportedRowUnit({
+        _measurement: measurement,
+        unit_tag: row.unit_of_measurement ?? '',
+        unit_field: field === 'unit_of_measurement_str' ? value : '',
+      });
+      unitConflict ||= conflictsWithAssumption(recorded, assumedUnit);
+      if (field === 'unit_of_measurement_str') return;
       if (field === 'current_temperature_str') {
         reportedInvalidations.push(t);
         return;
@@ -389,7 +422,9 @@ export function parseStates(
       preset = value === 'none' || unknownState(value) ? null : value;
     }
     if (SETPOINT_FIELDS.some((f) => fields.has(f))) {
-      setpoints = new Map(SETPOINT_FIELDS.map((f) => [f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unit))]));
+      setpoints = new Map(SETPOINT_FIELDS.map((f) => [
+        f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unitConflict ? null : unit)),
+      ]));
     }
     if (mode === null || mode === 'unavailable' || mode === 'unknown') {
       // An outage clears what was carried: after it, the action, preset and
@@ -419,6 +454,8 @@ export function parseStates(
     comfort: comfort.length > 0 ? comfort.sort(byTime) : null,
     occupancy,
     reportedInvalidations: reportedInvalidations.sort((a, b) => a - b),
+    unitConflict,
+    targetUnitAssumed: hvac.some((sample) => sample.setpoint !== null || (sample.coolSetpoint ?? null) !== null),
   };
 }
 
@@ -467,22 +504,6 @@ export function rowsToSeries(
   };
 }
 
-// Unlike room sensors, an untagged climate attribute uses HA's last known
-// climate unit as an explicitly qualified historical assumption. An explicit
-// unknown/conflicting unit is never replaced with the assumption.
-function reportedRowUnit(row: Record<string, string>): string | null | undefined {
-  /* eslint-disable-next-line no-underscore-dangle */
-  const measurement = row._measurement;
-  const units = [
-    measurement === '°C' || measurement === '°F' ? measurement : '',
-    row.unit_tag ?? '',
-    row.unit_field ?? '',
-  ].filter(Boolean);
-  if (units.length === 0) return undefined;
-  if (units.some((unit) => knownUnit(unit) === null) || new Set(units).size !== 1) return null;
-  return units[0];
-}
-
 export function rowsToReportedTemperature(
   rows: Record<string, string>[], climate: string, unit: string | null | undefined, start: Date, end: Date,
 ): ReportedTemperatureInput {
@@ -490,10 +511,7 @@ export function rowsToReportedTemperature(
   const assumedUnit = knownUnit(unit ?? undefined);
   // Evidence of a historical unit change makes the unit of untagged rows
   // ambiguous; do not extend today's unit over those rows.
-  const conflictingHistory = entries.some((row) => {
-    const recorded = reportedRowUnit(row);
-    return recorded === null || (recorded !== undefined && assumedUnit !== null && recorded !== assumedUnit);
-  });
+  const conflictingHistory = entries.some((row) => conflictsWithAssumption(reportedRowUnit(row), assumedUnit));
   const windows = new Map<number, { value: number; unit: string | null; assumed: boolean }[]>();
   entries.forEach((row) => {
     /* eslint-disable no-underscore-dangle */
@@ -509,6 +527,7 @@ export function rowsToReportedTemperature(
   });
   const points: SensorSeriesInput['points'] = [];
   const invalidWindows: number[] = [];
+  const assumedWindows: number[] = [];
   let usedAssumption = false;
   windows.forEach((values, t) => {
     const [entry] = values;
@@ -518,11 +537,14 @@ export function rowsToReportedTemperature(
     }
     points.push({ t, v: toCelsius(entry.value, entry.unit)! });
     usedAssumption ||= entry.assumed;
+    if (entry.assumed) assumedWindows.push(t);
   });
   return {
     points: points.sort((a, b) => a.t - b.t),
     invalidWindows: invalidWindows.sort((a, b) => a - b),
     assumedUnit: usedAssumption,
+    assumedWindows: assumedWindows.sort((a, b) => a - b),
+    unitConflict: conflictingHistory,
   };
 }
 
@@ -680,6 +702,7 @@ export class ClimatePlacementService {
         if (data.degraded) degraded = true;
         cooling = {
           start: coolStart, end: coolEnd, sensors: data.series, hvac: data.states?.hvac ?? null, comfort: data.states?.comfort ?? null,
+          targetUnitAssumed: data.states?.targetUnitAssumed ?? false,
           thermostatOccupancy: physicalOccupancy ? data.states?.occupancy.get(physicalOccupancy) ?? null : null,
           reportedTemperature: data.reported && reportedHasUsableHistory(data.reported, data.states?.hvac ?? [])
             ? data.reported : null,
@@ -705,6 +728,7 @@ export class ClimatePlacementService {
       thermostatOccupancy: physicalOccupancy ? states?.occupancy.get(physicalOccupancy) ?? null : null,
       incompleteSensorInventory,
       hvac,
+      targetUnitAssumed: states?.targetUnitAssumed ?? false,
       comfort: states?.comfort ?? null,
       participation: config,
       cooling,
@@ -748,17 +772,37 @@ export class ClimatePlacementService {
         return null;
       }) : Promise.resolve(null),
     ]);
+    // Either source can contradict HA's current unit. Reject assumed targets
+    // and untagged references, but keep explicitly unit-tagged reference rows.
+    const stateHistory = states && reference?.unitConflict ? {
+      ...states,
+      hvac: states.hvac?.map((sample) => ({ ...sample, setpoint: null, coolSetpoint: null })) ?? null,
+      unitConflict: true,
+      targetUnitAssumed: false,
+    } : states;
+    let reported = reference;
+    if (reported?.assumedUnit && states?.unitConflict) {
+      const assumed = new Set(reported.assumedWindows ?? reported.points.map((point) => point.t));
+      reported = {
+        ...reported,
+        points: reported.points.filter((point) => !assumed.has(point.t)),
+        invalidWindows: [...new Set([...(reported.invalidWindows ?? []), ...assumed])].sort((a, b) => a - b),
+        assumedUnit: false,
+        assumedWindows: [],
+        unitConflict: true,
+      };
+    }
     const withOccupancy = series.map((s) => {
       const id = sensors.find((sensor) => sensor.id === s.id)?.occupancyId;
-      const occupancy = id ? states?.occupancy.get(id) : undefined;
+      const occupancy = id ? stateHistory?.occupancy.get(id) : undefined;
       return occupancy ? { ...s, occupancy } : s;
     });
     if (unknownUnitWindows > 0 || series.some((s) => !s.isThermostat && s.points.length === 0)) degraded = true;
     return {
       series: withOccupancy,
       unknownUnitWindows,
-      states,
-      reported: reference ? { ...reference, invalidations: states?.reportedInvalidations ?? [] } : null,
+      states: stateHistory,
+      reported: reported ? { ...reported, invalidations: stateHistory?.reportedInvalidations ?? [] } : null,
       degraded,
     };
   }

@@ -284,7 +284,7 @@ describe('analyzePlacement', () => {
       'comfortScheduleAvailable', 'coolingEvents', 'coolingFrom', 'coolingTo', 'end', 'followMe',
       'hvacEarliestStateAt', 'hvacHistoryAvailable', 'inferredMorningEvents', 'morningEvents', 'occupancyAvailable',
       'participationConfigured', 'returnEvents', 'returnHistoryAvailable', 'start', 'thermostatParticipationSupported',
-      'unknownUnitWindows', 'wakeEvents',
+      'unitAssumptions', 'unknownUnitWindows', 'wakeEvents',
     ]);
     expect(Object.keys(result.sensors[0]).sort()).toEqual([
       'averageOffset', 'classification', 'consistency', 'coolingOffset', 'coolingUndershoot',
@@ -1281,6 +1281,48 @@ describe('separately sourced climate reference', () => {
     })).toBe(-2);
   });
 
+  it('discards the ambiguous recovery bucket after an unavailable reference', () => {
+    const history = [state(START - HOUR, 'idle')];
+    // Unknown just before the bucket; its numeric value may not recover until
+    // just before the bucket ends, so it cannot represent the whole bucket.
+    const invalidations = [START + quarter - 60_000];
+    const recovery = { t: START + quarter, v: 20 };
+    expect(result(START + quarter, history, { points: [recovery], invalidations })).toBeNull();
+    const points = [recovery, { t: START + 2 * quarter, v: 20 }];
+    expect(result(START + quarter, history, { points, invalidations })).toBeNull();
+    expect(result(START + 2 * quarter, history, { points, invalidations })).toBe(-2);
+
+    // At an exact boundary the ordering of unknown and numeric is ambiguous.
+    const boundary = {
+      invalidations: [START + quarter],
+      points: [
+        { t: START + quarter, v: 20 }, { t: START + 2 * quarter, v: 20 }, { t: START + 3 * quarter, v: 20 },
+      ],
+    };
+    expect(result(START + quarter, history, boundary)).toBeNull();
+    expect(result(START + 2 * quarter, history, boundary)).toBeNull();
+    expect(result(START + 3 * quarter, history, boundary)).toBe(-2);
+  });
+
+  it('reports an assumed reference unit even with one room and no recommendations', () => {
+    const analysis = analyzePlacement(input({
+      start: new Date(START),
+      end: new Date(START + HOUR),
+      sensors: [room(START)],
+      primaryThermostatId: null,
+      reportedTemperature: { points: [{ t: START, v: 20 }], assumedUnit: true },
+      hvac: [state(START - HOUR, 'idle')],
+      comfort: [{ t: START - HOUR, setting: 'home' }],
+    }));
+    expect(analysis.sensors[0].periodOffsets.home).toBe(-2);
+    expect(analysis.recommendations).toEqual([]);
+    expect(analysis.coverage).toMatchObject({
+      unitAssumptions: {
+        reportedTemperature: true, setpoints: false, coolingReportedTemperature: false, coolingSetpoints: false,
+      },
+    });
+  });
+
   it('requires both the climate and room source buckets to fit the active run and comfort setting', () => {
     const run = (referenceTime: number, comfort: ComfortSample[]) => analyzePlacement(input({
       start: new Date(START),
@@ -2144,6 +2186,63 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(coolingEvents((t) => ({ ...idle(t), hvacMode: 'heat_cool', hvacAction: 'heating' }))).toBe(10);
     expect(coolingEvents((t) => ({ ...idle(t), hvacAction: 'off' }))).toBe(10);
     expect(coolingEvents((t) => ({ ...idle(t), hvacAction: 'fan' }))).toBe(10);
+  });
+
+  it('does not score idle buckets between short cooling bursts as cooling placement evidence', () => {
+    const days = 6;
+    const flat = { kitchen_temperature: 0, living_temperature: 0, bedroom_temperature: 0 };
+    const biased = { kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 };
+    const sample = (t: number, action: string): HvacSample => ({
+      ...state(t, action, { hvacMode: 'cool', setpoint: 24 }), coolSetpoint: 24,
+    });
+    const short = Array.from({ length: days }, (_, d) => {
+      const start = SUMMER + d * DAY;
+      return [
+        sample(start, 'idle'),
+        ...Array.from({ length: 8 }, (_, i) => [
+          sample(start + 13 * HOUR + i * 15 * 60_000, 'cooling'),
+          sample(start + 13 * HOUR + (i * 15 + 5) * 60_000, 'idle'),
+        ]).flat(),
+      ];
+    }).flat();
+    const continuous = Array.from({ length: days }, (_, d) => {
+      const start = SUMMER + d * DAY;
+      return [sample(start, 'idle'), sample(start + 13 * HOUR, 'cooling'), sample(start + 15 * HOUR, 'idle')];
+    }).flat();
+    const run = (history: HvacSample[], summerSensors = rooms(biased, () => 24, { from: SUMMER, days })) => analyzePlacement(input({
+      end: new Date(START + days * DAY),
+      windowDays: days,
+      sensors: rooms(flat, () => 20, { days }),
+      primaryThermostatId: null,
+      hvac: [state(START, 'idle')],
+      comfort: [{ t: START, setting: 'home' }],
+      cooling: {
+        start: new Date(SUMMER),
+        end: new Date(SUMMER + days * DAY),
+        sensors: summerSensors,
+        hvac: history,
+        comfort: [{ t: SUMMER, setting: 'home' }],
+      },
+    }));
+    const result = run(short);
+    expect(result.coverage.coolingEvents).toBe(days);
+    expect(result.sensors.every((sensor) => sensor.coolingOffset === null && sensor.coolingUndershoot === null)).toBe(true);
+    expect(result.sensors.every((sensor) => sensor.consistency?.coolingDays === 0)).toBe(true);
+    expect(result.recommendations.filter((rec) => rec.id.startsWith('cooling-'))).toEqual([]);
+    expect(run(continuous).recommendations.some((rec) => rec.id === 'cooling-kitchen')).toBe(true);
+
+    const mixed = Array.from({ length: days }, (_, d) => {
+      const start = SUMMER + d * DAY;
+      return [
+        sample(start, 'idle'), sample(start + 13 * HOUR, 'cooling'), sample(start + 13.5 * HOUR, 'idle'),
+        sample(start + 13.75 * HOUR, 'cooling'), sample(start + 14.25 * HOUR, 'idle'),
+      ];
+    }).flat();
+    const spike = (hour: number) => rooms({
+      ...flat, kitchen_temperature: (t) => ((t - SUMMER) % DAY === hour * HOUR ? 9 : 0),
+    }, () => 24, { from: SUMMER, days });
+    expect(run(mixed, spike(13.5)).recommendations.some((rec) => rec.id === 'cooling-kitchen')).toBe(false);
+    expect(run(mixed, spike(13.25)).recommendations.some((rec) => rec.id === 'cooling-kitchen')).toBe(true);
   });
 
   it('splits a heating run interrupted by cooling, as cooling runs are', () => {
@@ -3366,6 +3465,54 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       expect(kitchen.detail).toContain('The approximated comfort reading was often above the set point in observed idle samples');
       expect(result.sensors.find((s) => s.id === 'kitchen_temperature')!.verdictSummary)
         .toContain('the approximated comfort reading was often above the set point in observed idle samples');
+    });
+
+    it('uses the cooling dataset to describe the passive cooling reference', () => {
+      const flat = { bedroom_temperature: 0, living_temperature: 0 };
+      const coolSensors = rooms(flat, () => 22, { from: SUMMER });
+      const cooling = {
+        ...coolingInput({}),
+        sensors: coolSensors,
+        hvac: [{
+          ...state(SUMMER, 'idle', { hvacMode: 'cool', setpoint: 24 }), coolSetpoint: 24,
+        }],
+      };
+      const withReportedCooling = analyzePlacement(wakeInput({
+        sensors: rooms(flat, () => 20),
+        primaryThermostatId: null,
+        participation: config(Object.keys(flat)),
+        cooling: { ...cooling, reportedTemperature: { points: coolSensors[0].points } },
+      })).recommendations.find((rec) => rec.id === 'passive-cooling')!;
+      expect(withReportedCooling.detail).toContain('the reported or approximated comfort reading');
+
+      const withApproximateCooling = analyzePlacement(wakeInput({
+        sensors: rooms({ ...flat, home_current_temperature: 0 }, () => 20),
+        participation: config(Object.keys(flat)),
+        cooling: { ...cooling, reportedTemperature: null },
+      })).recommendations.find((rec) => rec.id === 'passive-cooling')!;
+      expect(withApproximateCooling.detail).toContain('the approximated comfort reading');
+      expect(withApproximateCooling.detail).not.toContain('the reported or approximated comfort reading');
+    });
+
+    it('keeps cooling-only unit assumption notes out of heating recommendations', () => {
+      const coolSensors = rooms({ bedroom_temperature: 0, living_temperature: 0 }, () => 22, { from: SUMMER });
+      const result = analyzePlacement(wakeInput({
+        cooling: {
+          ...coolingInput({}),
+          sensors: coolSensors,
+          hvac: [{ ...state(SUMMER, 'idle', { hvacMode: 'cool', setpoint: 24 }), coolSetpoint: 24 }],
+          reportedTemperature: { points: coolSensors[0].points, assumedUnit: true },
+          targetUnitAssumed: true,
+        },
+      }));
+      const heat = result.recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      const cooling = result.recommendations.find((rec) => rec.id === 'passive-cooling')!;
+      expect(heat.detail).not.toContain('assume Home Assistant\'s last known temperature unit');
+      expect(cooling.detail).toContain('Climate-reference temperatures assume Home Assistant\'s last known temperature unit');
+      expect(cooling.detail).toContain('Historical thermostat set points assume Home Assistant\'s last known temperature unit');
+      expect(result.coverage.unitAssumptions).toEqual({
+        reportedTemperature: false, setpoints: false, coolingReportedTemperature: true, coolingSetpoints: true,
+      });
     });
 
     it.each(['a history gap', 'a set point change'])(

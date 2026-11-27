@@ -317,6 +317,21 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(parseStates(rows, entities, null).hvac![0].setpoint).toBeNull();
   });
 
+  it('rejects target assumptions contradicted by recorded climate unit tags or fields', () => {
+    const time = '2026-01-19T06:00:00Z';
+    const base = [climateRow(time, 'state', 'cool'), climateRow(time, 'temperature', '35')];
+    const tagged = base.map((row) => ({ ...row, _measurement: 'climate', unit_of_measurement: '°F' }));
+    const byField = [...base, climateRow(time, 'unit_of_measurement_str', '°F')];
+    const byMeasurement = base.map((row) => ({ ...row, _measurement: '°F' }));
+    const unknown = [...base, climateRow(time, 'unit_of_measurement_str', 'K')];
+    [tagged, byField, byMeasurement, unknown].forEach((rows) => {
+      expect(parseStates(rows, entities, '°C').hvac![0]).toMatchObject({ setpoint: null, coolSetpoint: null });
+    });
+    expect(parseStates(base, entities, '°C').hvac![0]).toMatchObject({ setpoint: 35, coolSetpoint: 35 });
+    const matching = tagged.map((row, i) => (i === 1 ? { ...row, _value: '68' } : row));
+    expect(parseStates(matching, entities, '°F').hvac![0]).toMatchObject({ setpoint: 20, coolSetpoint: 20 });
+  });
+
   it('reads comfort settings and change-driven occupancy, ignoring other entities', () => {
     const parsed = parseStates([
       {
@@ -359,14 +374,14 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(flux).not.toContain('contains(');
     expect(flux).not.toContain('bad');
     expect(flux).toContain('union(tables: [prior, priorStateHistory, changes])');
-    expect(flux).toContain('keep(columns: ["_time", "_value", "_field", "domain", "entity_id"])');
+    expect(flux).toContain('keep(columns: ["_time", "_value", "_field", "domain", "entity_id", "_measurement", "unit_of_measurement"])');
     const prior = flux.split('priorStateHistory =')[0];
     const changes = flux.split('changes =')[1].split('union(tables:')[0];
     [prior, changes].forEach((branch) => {
       const climate = branch.split('or (r.domain == "select"')[0];
       [
         'state', 'hvac_action_str', 'preset_mode', 'preset_mode_str', 'temperature', 'temperature_str',
-        'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str',
+        'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str', 'unit_of_measurement_str',
       ].forEach((field) => expect(climate).toContain(`r._field == "${field}"`));
       expect(branch).not.toContain('r._measurement');
     });
@@ -597,6 +612,142 @@ describe('ClimatePlacementService', () => {
     expect(query).not.toContain('r.domain == "sensor"');
   });
 
+  it('rejects the first aggregated reference bucket after an unavailable attribute', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.states = [
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T06:14:00Z', 'current_temperature_str', 'unknown'),
+      { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+    ];
+    // The 06:15 aggregate could contain only the numeric recovery at 06:29.
+    fixture.rows.reported = [reportedRow('2026-01-19T06:15:00Z')];
+    fixture.rows.temperatures = fixture.rows.temperatures.map((row) => (
+      row.entity_id === 'office_temperature'
+        ? { ...row, _time: '2026-01-19T06:15:00Z', _value: '18' } : row
+    ));
+    const ambiguous = await fixture.service.getInsights('7');
+    expect(ambiguous.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBeNull();
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    (fixture.rows.reported as Rows).push(reportedRow('2026-01-19T06:30:00Z'));
+    (fixture.rows.temperatures as Rows).push({
+      _time: '2026-01-19T06:30:00Z', _value: '18', _measurement: '°C', entity_id: 'office_temperature',
+    });
+    const recovered = await fixture.service.getInsights('7');
+    expect(recovered.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBe(-2);
+    expect(fixture.calls('reported')).toHaveLength(2);
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('reported')).toHaveLength(2);
+  });
+
+  it('does not convert cooling targets with today’s unit when reported history contradicts it', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.reported = [{ ...reportedRow('2026-01-19T06:00:00Z', '68'), unit_tag: '°F' }];
+    fixture.rows.cooling = [{ _time: '2026-01-19T06:00:00Z' }];
+    fixture.rows.temperatures = fixture.rows.temperatures.map((row) => (
+      row.entity_id === 'office_temperature' ? { ...row, _value: '18' } : row
+    ));
+    fixture.rows.states = [
+      climateRow('2026-01-19T06:00:00Z', 'state', 'cool'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2026-01-19T06:00:00Z', 'temperature', '35'),
+      climateRow('2026-01-19T06:30:00Z', 'hvac_action_str', 'idle'),
+      { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+    ];
+    const result = await fixture.service.getInsights('7');
+    const office = result.sensors.find((s) => s.id === 'office_temperature')!;
+    expect(office.periodOffsets.cooling).toBe(-2);
+    expect(office.coolingUndershoot).toBeNull();
+    expect(result.coverage).toMatchObject({
+      unitAssumptions: {
+        reportedTemperature: false, setpoints: false, coolingReportedTemperature: false, coolingSetpoints: false,
+      },
+    });
+  });
+
+  it('keeps current target assumptions separate from conflicts in older cooling history', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.reported = [{ ...reportedRow(), unit_tag: '°C' }];
+    fixture.rows.cooling = [{ _time: '2025-10-15T12:00:00Z' }];
+    const currentQuery = fixture.deps.influxdb.query.getMockImplementation()!;
+    fixture.deps.influxdb.query.mockImplementation(async (flux: string) => {
+      if (!flux.includes('2025-10-08T14:00:00.000Z')) return currentQuery(flux);
+      const time = '2025-10-15T12:00:00Z';
+      if (queryKind(flux) === 'reported') return [{ ...reportedRow(time, '68'), unit_tag: '°F' }];
+      if (queryKind(flux) === 'temperatures') return [
+        { _time: time, _value: '18.5', _measurement: '°C', entity_id: 'office_temperature' },
+        { _time: time, _value: '20.5', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      ];
+      return [
+        climateRow(time, 'state', 'cool'), climateRow(time, 'hvac_action_str', 'cooling'),
+        climateRow(time, 'temperature', '35'), climateRow('2025-10-15T12:30:00Z', 'hvac_action_str', 'idle'),
+        { _time: time, _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      ];
+    });
+    const result = await fixture.service.getInsights('7');
+    const office = result.sensors.find((s) => s.id === 'office_temperature')!;
+    expect(office.periodOffsets.cooling).toBe(-1.5);
+    expect(office.coolingUndershoot).toBeNull();
+    expect(result.coverage).toMatchObject({
+      unitAssumptions: {
+        reportedTemperature: false, setpoints: true, coolingReportedTemperature: false, coolingSetpoints: false,
+      },
+    });
+  });
+
+  it('does not assume reference or target units when climate state metadata conflicts', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.states = (fixture.rows.states as Rows).map((row) => (
+      row.domain === 'climate' ? { ...row, unit_of_measurement: '°F' } : row
+    ));
+    const result = await fixture.service.getInsights('7');
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBeNull();
+    expect(result.coverage).toMatchObject({
+      unitAssumptions: {
+        reportedTemperature: false, setpoints: false, coolingReportedTemperature: false, coolingSetpoints: false,
+      },
+    });
+  });
+
+  it('keeps explicitly tagged reference buckets while dropping untagged ones after a state-unit conflict', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.states = (fixture.rows.states as Rows).map((row) => (
+      row.domain === 'climate' ? { ...row, unit_of_measurement: '°F' } : row
+    ));
+    fixture.rows.reported = [
+      { ...reportedRow('2026-01-19T06:00:00Z'), unit_tag: '°C' },
+      reportedRow('2026-01-19T06:15:00Z'),
+    ];
+    (fixture.rows.temperatures as Rows).push({
+      _time: '2026-01-19T06:15:00Z', _value: '10', _measurement: '°C', entity_id: 'office_temperature',
+    });
+    const result = await fixture.service.getInsights('7');
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBe(-1.5);
+    expect(result.coverage.unitAssumptions).toEqual({
+      reportedTemperature: false, setpoints: false, coolingReportedTemperature: false, coolingSetpoints: false,
+    });
+  });
+
+  it('discloses assumed target units independently of explicitly tagged reference units', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.reported = [{ ...reportedRow(), unit_tag: '°C' }];
+    const result = await fixture.service.getInsights('7', { home: '', thermostatHome: 'false' });
+    expect(result.coverage).toMatchObject({
+      unitAssumptions: {
+        reportedTemperature: false, setpoints: true, coolingReportedTemperature: false, coolingSetpoints: false,
+      },
+    });
+    const rec = result.recommendations.find((r) => r.id === 'participation-empty-home')!;
+    expect(rec.detail).toContain('Historical thermostat set points assume Home Assistant\'s last known temperature unit applied historically');
+  });
+
   it('retains the normal TTL for an old but usable climate history', async () => {
     const fixture = makeDeps();
     useClimateReference(fixture);
@@ -662,6 +813,11 @@ describe('ClimatePlacementService', () => {
     recent.rows.cooling = [{ _time: '2026-01-19T06:00:00Z' }];
     const current = await recent.service.getInsights('7');
     expect(current.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.cooling).toBe(-1.5);
+    expect(current.coverage).toMatchObject({
+      unitAssumptions: {
+        reportedTemperature: true, setpoints: true, coolingReportedTemperature: true, coolingSetpoints: true,
+      },
+    });
     expect(recent.calls('reported')).toHaveLength(1);
 
     const older = makeDeps();
@@ -671,7 +827,7 @@ describe('ClimatePlacementService', () => {
     older.deps.influxdb.query.mockImplementation(async (flux: string) => {
       if (!flux.includes('2025-10-08T14:00:00.000Z')) return queryCurrentWindow(flux);
       const time = '2025-10-15T12:00:00Z';
-      if (queryKind(flux) === 'reported') return [reportedRow(time, '22')];
+      if (queryKind(flux) === 'reported') return [{ ...reportedRow(time, '22'), unit_tag: '°C' }];
       if (queryKind(flux) === 'temperatures') return [
         { _time: time, _value: '24', _measurement: '°C', entity_id: 'home_current_temperature' },
         { _time: time, _value: '18.5', _measurement: '°C', entity_id: 'office_temperature' },
@@ -685,6 +841,11 @@ describe('ClimatePlacementService', () => {
     });
     const separate = await older.service.getInsights('7');
     expect(separate.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.cooling).toBe(-3.5);
+    expect(separate.coverage).toMatchObject({
+      unitAssumptions: {
+        reportedTemperature: true, setpoints: true, coolingReportedTemperature: false, coolingSetpoints: true,
+      },
+    });
     expect(older.calls('reported')).toHaveLength(2);
     expect(older.calls('reported')[1]).toContain('2025-10-08T14:00:00.000Z');
 
@@ -1225,6 +1386,9 @@ describe('ClimatePlacementService', () => {
     rows.cooling = new Error('influx down');
     const result = await service.getInsights('14');
     expect(result.coverage.thermostatParticipationSupported).toBe(true);
+    expect(result.coverage.unitAssumptions).toEqual({
+      reportedTemperature: false, setpoints: false, coolingReportedTemperature: false, coolingSetpoints: false,
+    });
     expect(result.sensors.every((s) => s.sampleCount === 0 && s.classification === 'insufficient')).toBe(true);
     expect(result.recommendations).toEqual([]);
   });
@@ -1262,6 +1426,35 @@ describe('GET /climate/placement-insights', () => {
     });
     expect(Array.isArray(response.body.sensors)).toBe(true);
     expect(Array.isArray(response.body.recommendations)).toBe(true);
+  });
+
+  it('returns reference provenance over HTTP even when a single room yields no recommendations', async () => {
+    const fixture = makeDeps();
+    fixture.deps.indoorClimate.cachedStatus.sensors = [sensor('sensor.office_temperature', 'Office')];
+    fixture.deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: null,
+      thermostatOccupancyEntityId: null,
+      occupancyByTemperature: new Map(),
+      unclassifiedTemperatureIds: new Set<string>(),
+    });
+    fixture.rows.temperatures = [{
+      _time: '2026-01-19T06:00:00Z', _value: '18', _measurement: '°C', entity_id: 'office_temperature',
+    }];
+    fixture.rows.reported = [{
+      _time: '2026-01-19T06:00:00Z', _value: '20', _measurement: 'climate', domain: 'climate', entity_id: 'home',
+    }];
+    fixture.rows.states = [
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'heating'),
+      { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+    ];
+    const response = await request(buildApp(fixture.service)).get('/climate/placement-insights').expect(200);
+    expect(response.body.sensors[0].periodOffsets.home).toBe(-2);
+    expect(response.body.recommendations).toEqual([]);
+    expect(response.body.coverage.unitAssumptions).toEqual({
+      reportedTemperature: true, setpoints: false, coolingReportedTemperature: false, coolingSetpoints: false,
+    });
   });
 
   it.each(['2', '31', 'abc'])('returns 400 for days=%s', async (days) => {

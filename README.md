@@ -418,6 +418,18 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
   continues to indicate whether any room list was supplied. A thermostat-associated
   temperature entity's `participation` is `null` for each setting; it doesn't
   describe the separately configured built-in sensor.
+- `coverage.unitAssumptions` is present even without recommendations and has four
+  boolean fields: `reportedTemperature` and `setpoints` cover history fetched
+  for the requested window; `coolingReportedTemperature` and `coolingSetpoints`
+  cover the cooling window. A field is `true` when at least one retained
+  reported-temperature bucket or parsed set point, respectively, used HA's
+  last-known climate unit as a historical assumption. Set-point history can
+  include the prior snapshot. These are window-level indicators, not proof
+  that any particular sensor metric used the assumed data. `false` also means
+  no retained data (including unavailable or unchecked cooling), not proof
+  that history or units were complete. When cooling shares the requested
+  history, the corresponding flags match. Older servers omit this object;
+  treat an absent object as unknown, not as all `false`.
 - If a room list is empty and its thermostat sensor is explicitly excluded, the
   choices don't establish a sensor-free setting:
   [Ecobee uses its thermostat sensor when the last sensor is removed](https://www.ecobee.com/home/developer/api/documentation/v1/objects/Climate.shtml).
@@ -463,14 +475,18 @@ about 10 days:
   recorded unit is used where available; for untagged readings the analysis
   assumes Home Assistant's last known climate temperature unit applied
   throughout that history. HA's unit may have changed without being recorded,
-  so this assumption can be wrong and is noted in recommendations. An unknown
-  or conflicting explicit unit is not replaced by the assumption; evidence of
-  a historical unit change also prevents assuming units for untagged readings.
+  so this assumption can be wrong and is disclosed through coverage and, when
+  present, recommendations. An unknown or conflicting explicit unit is not
+  replaced by the assumption; evidence of a historical unit change in either
+  climate history or reported-temperature rows also prevents assuming units
+  for untagged readings.
   Windows split across series or with unknown units are dropped. The existing
   `coverage.unknownUnitWindows` counts room/sensor windows, not this separate
   reference. Known climate outages, unavailable attribute values and invalid
   unit windows cannot be crossed by the combined source intervals of a
-  reference and the rooms it is compared with.
+  reference and the rooms it is compared with. After an unavailable attribute,
+  the first subsequent numeric source bucket is discarded when the aggregate
+  cannot establish when recovery occurred; later complete buckets can be used.
 - **Alignment:** readings are placed on a 15-minute grid. A 15-minute average
   is used only once its window has ended, and for at most 30 minutes after the
   window started, so stale readings are never compared. A sensor joins an
@@ -483,9 +499,12 @@ about 10 days:
   `climate`): `state` (mode), `hvac_action_str`, `preset_mode_str`, and set points `temperature`
   (else `target_temp_low` for heating, `target_temp_high` for cooling; `_str`
   variants too) in its `temperatureUnit`, converted to °C and dropped if the
-  unit is unknown or the result is outside 5–35 °C. As with untagged reported
-  temperatures, set-point conversion assumes HA's last known climate unit
-  applied historically; plausible values cannot prove the unit never changed.
+  unit is unknown or the result is outside 5–35 °C. Set-point conversion assumes
+  HA's last known climate unit applied historically, independently of whether
+  the reported temperature has an explicit unit. If recorded climate-unit
+  evidence is unknown or conflicts with that assumption, set points in that
+  fetched window are discarded rather than guessed. Plausible values and
+  absent conflict evidence cannot prove the unit never changed.
   Mode, action and preset carry forward between changes; set points come from
   each change. The last value
   before the window (within 30 days) gives the state at its start.
@@ -656,7 +675,10 @@ about 10 days:
   A successful empty lookup does not prove complete coverage for the year;
   a failed lookup makes no no-cooling claim. Cooling runs merge across reported
   `idle` spells under 30 minutes (heating runs: 20 minutes), never across a
-  gap, an unknown action or any other action.
+  gap, an unknown action or any other action. Cooling event offsets and daily
+  room comparisons use complete source buckets within actual active cooling,
+  not the merged idle spells; every room in a comparison must belong to the
+  same active run.
 - **Passive warmth:** when the reported or approximated comfort reading sits at
   least 1.0 °C over the heating set point for at least half of 96 or more
   observed idle samples (excluding the 2 hours after a reported heating run),
@@ -770,7 +792,10 @@ about 10 days:
   "coverage": {"start": "ISO", "end": "ISO", "hvacHistoryAvailable": true,
     "hvacEarliestStateAt": "ISO", "returnHistoryAvailable": true,
     "morningEvents": 9, "inferredMorningEvents": 2, "returnEvents": 0,
-    "unknownUnitWindows": 0, "participationConfigured": true, "thermostatParticipationSupported": true, "followMe": false,
+    "unknownUnitWindows": 0,
+    "unitAssumptions": {"reportedTemperature": true, "setpoints": true,
+      "coolingReportedTemperature": false, "coolingSetpoints": true},
+    "participationConfigured": true, "thermostatParticipationSupported": true, "followMe": false,
     "occupancyAvailable": true, "comfortScheduleAvailable": true, "wakeEvents": 14,
     "coolingFrom": "ISO", "coolingTo": "ISO", "coolingEvents": 21},
   "sensors": [{"id": "bedroom_temperature", "name": "Bedroom", "isThermostat": false,

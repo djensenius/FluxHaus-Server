@@ -135,6 +135,9 @@ export interface ReportedTemperatureInput {
   invalidWindows?: number[];
   invalidations?: number[];
   assumedUnit?: boolean;
+  // Internal source-unit evidence used before analyzing the window.
+  assumedWindows?: number[];
+  unitConflict?: boolean;
 }
 
 // Which room sensor ids each comfort setting uses (null = unknown), Follow Me,
@@ -175,6 +178,7 @@ export interface CoolingInput {
   comfort?: ComfortSample[] | null;
   thermostatOccupancy?: OccupancySample[] | null;
   reportedTemperature?: ReportedTemperatureInput | null;
+  targetUnitAssumed?: boolean;
 }
 
 export interface PlacementInput {
@@ -196,6 +200,8 @@ export interface PlacementInput {
   incompleteSensorInventory?: boolean;
   // null when thermostat history could not be read.
   hvac: HvacSample[] | null;
+  // Set points were converted using HA's last known climate unit.
+  targetUnitAssumed?: boolean;
   // Comfort setting history; where known it takes precedence over the samples' presetMode.
   comfort?: ComfortSample[] | null;
   participation?: ParticipationConfig | null;
@@ -302,6 +308,14 @@ export interface PlacementInsights {
     // 15-minute sensor windows whose readings were dropped because their unit
     // was unknown or conflicting (windows, not individual readings).
     unknownUnitWindows: number;
+    // Whether accepted history in each window used HA's current climate
+    // unit as a historical assumption; false also includes unavailable data.
+    unitAssumptions: {
+      reportedTemperature: boolean;
+      setpoints: boolean;
+      coolingReportedTemperature: boolean;
+      coolingSetpoints: boolean;
+    };
     participationConfigured: boolean;
     thermostatParticipationSupported: true;
     followMe: boolean | null;
@@ -578,7 +592,14 @@ function referenceAvailable(
   for (let i = index + 1; i < samples.length && samples[i].t < to; i += 1) {
     if (samples[i].gap) return false;
   }
-  if (reference.invalidations?.some((t) => t >= from && t < to)) return false;
+  const invalidations = reference.invalidations ?? [];
+  if (invalidations.some((t) => t >= from && t < to)) return false;
+  // The aggregate gives only a bucket start, not the numeric recovery time.
+  // A later bucket can count only after a wholly subsequent numeric bucket.
+  const lastUnknown = invalidations.reduce((last, t) => (t < from ? Math.max(last, t) : last), Number.NEGATIVE_INFINITY);
+  if (Number.isFinite(lastUnknown) && !reference.points.some((point) => (
+    Number.isFinite(point.t) && Number.isFinite(point.v) && point.t > lastUnknown && point.t + BUCKET_MS <= from
+  ))) return false;
   return !reference.invalidWindows?.some((t) => t < to && t + BUCKET_MS > from);
 }
 
@@ -1379,8 +1400,10 @@ function scan(spec: ScanSpec): { rooms: Map<string, RoomScan>; passive: PassiveA
           && (mode === 'cooling' || model.timeline.length === 0 || settingDuring(model.timeline, source) === 'home');
       });
       const reference = sourceWindow(grid, t, referenceRooms);
-      const evidence = mode === 'cooling' || model.timeline.length === 0
-        || (!!reference && settingDuring(model.timeline, reference) === 'home');
+      const evidence = mode === 'cooling'
+        ? !!reference && spec.windows.some((window) => containsWindow(window, reference))
+          && spec.activeRuns.some((run) => containsWindow(run, reference))
+        : model.timeline.length === 0 || (!!reference && settingDuring(model.timeline, reference) === 'home');
       const house = evidence && referenceRooms.length >= MIN_SENSORS_FOR_MEAN ? cohortMean(grid, referenceRooms, t) : null;
       const day = house === null ? '' : spec.clock(reference!.to - 1).day;
       fresh.forEach((id) => {
@@ -1547,6 +1570,32 @@ interface EventContext {
   heatParts: SettingRun[] | null;
 }
 
+// Cooling event comparisons need the entire grid bucket and each contributing
+// room's actual source bucket inside the same unmerged active run.
+function activeEventGrid(grid: Grid, runs: Run[]): Grid {
+  const active = new Map<number, Run>();
+  grid.times.forEach((t) => {
+    const index = firstIndexAfter(runs, t - BUCKET_MS, (run) => run.from, true) - 1;
+    if (index >= 0 && t <= runs[index].to) active.set(t, runs[index]);
+  });
+  const values = new Map<string, Map<number, number>>();
+  const sources = new Map<string, Map<number, number>>();
+  grid.values.forEach((filled, id) => {
+    const kept = new Map<number, number>();
+    const origin = new Map<number, number>();
+    active.forEach((run, t) => {
+      const source = grid.sources.get(id)?.get(t);
+      if (source !== undefined && source >= run.from && source + BUCKET_MS <= run.to) {
+        kept.set(t, filled.get(t)!);
+        origin.set(t, source);
+      }
+    });
+    values.set(id, kept);
+    sources.set(id, origin);
+  });
+  return { times: [...active.keys()], values, sources };
+}
+
 function eventContext(
   grid: Grid,
   model: Model,
@@ -1556,9 +1605,11 @@ function eventContext(
   window: Run,
   overshoot: OvershootWindow | null,
   heatParts: SettingRun[] | null = null,
+  activeRuns: Run[] | null = null,
 ): EventContext {
   // Only readings taken within the window count.
-  const restricted = windowGrid(grid, window.from, window.to);
+  const windowed = windowGrid(grid, window.from, window.to);
+  const restricted = activeRuns ? activeEventGrid(windowed, activeRuns) : windowed;
   const { cohort, times } = cohortAt(restricted, restricted.times, model.roomSet);
   return {
     event, mode, setting, model, cohort: new Set(cohort), times, grid: restricted, overshoot, heatParts,
@@ -1801,8 +1852,9 @@ interface Env {
   followMe: boolean | null;
   // Whether any sensor has occupancy history.
   occupancy: boolean;
-  // Whether a primary thermostat temperature entity was identified.
+  // Whether each dataset has a reported-temperature reference.
   hasAverage: boolean;
+  hasCoolingAverage: boolean;
   heatingRuntimeMs: number | null;
   windowDays: number;
   heatingRare: boolean;
@@ -2016,8 +2068,9 @@ function adviceFor(a: Analyzed, direction: BiasDirection, setting: ComfortSettin
   return removable ? `${move}, or remove it from ${label}.` : `${move}.`;
 }
 
-function comfortReading(env: Env): string {
-  return env.hasAverage ? 'the reported or approximated comfort reading' : 'the approximated comfort reading';
+function comfortReading(env: Env, mode: PlacementMode = 'heating'): string {
+  const hasAverage = mode === 'cooling' ? env.hasCoolingAverage : env.hasAverage;
+  return hasAverage ? 'the reported or approximated comfort reading' : 'the approximated comfort reading';
 }
 
 function quietNote(env: Env): string {
@@ -2383,7 +2436,7 @@ function passiveRecs(env: Env, rooms: Analyzed[]): Ranked[] {
         severity: 'low',
         action: 'none',
         title: 'The comfort reading stays cool while cooling is idle',
-        detail: `With cooling idle, ${average} sat ${fmt(coolness.offset)} °C below the cool set point on average, and at least `
+        detail: `With cooling idle, ${comfortReading(env, 'cooling')} sat ${fmt(coolness.offset)} °C below the cool set point on average, and at least `
           + `${PASSIVE_THRESHOLD.toFixed(1)} °C below it ${percent(coolness.share)}% of the observed idle samples. `
           + 'This does not establish the cause; sensor placement may still affect the comfort reading. The set point, shade '
           + `or cool nights could also play a part; check sensor placement if rooms feel too cool.${coolingNote(env)}`,
@@ -2741,6 +2794,8 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       part.setting,
       part,
       null,
+      null,
+      activeCoolRuns,
     );
     const byPart = new Map(parts.map((part) => [part, contextOf(part)]));
     coolContexts = [...byPart.values()];
@@ -2766,6 +2821,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     followMe: config?.followMe ?? null,
     occupancy: model.occupancy.size > 0 || !!model.thermostatOccupancy?.length,
     hasAverage: model.thermostatId !== null,
+    hasCoolingAverage: !!cool && cool.model.thermostatId !== null,
     heatingRuntimeMs: runtime,
     windowDays: input.windowDays,
     heatingRare: runtime !== null && runtime < RARE_RUNTIME_SHARE * (endMs - startMs),
@@ -2968,11 +3024,29 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     });
     if (summary) recommendations.push(summary);
   }
-  if (model.reportedUnitAssumed || cool?.model.reportedUnitAssumed) {
-    recommendations.forEach((rec) => {
-      rec.detail += ' Comparisons using climate history assume Home Assistant\'s last known temperature unit applied historically.';
-    });
-  }
+  const coolingTargetUnitAssumed = !!cooling && (cooling.targetUnitAssumed
+    ?? (cooling.hvac === undefined ? input.targetUnitAssumed : false) ?? false);
+  const targetUnitAssumed = input.targetUnitAssumed ?? false;
+  const unitAssumptions = {
+    reportedTemperature: model.reportedUnitAssumed,
+    setpoints: targetUnitAssumed,
+    coolingReportedTemperature: cool?.model.reportedUnitAssumed ?? false,
+    coolingSetpoints: coolingTargetUnitAssumed,
+  };
+  recommendations.forEach((rec) => {
+    const referenceAssumed = rec.mode === 'heating' ? unitAssumptions.reportedTemperature
+      : rec.mode === 'cooling' ? unitAssumptions.coolingReportedTemperature
+        : unitAssumptions.reportedTemperature || unitAssumptions.coolingReportedTemperature;
+    const targetsAssumed = rec.mode === 'heating' ? unitAssumptions.setpoints
+      : rec.mode === 'cooling' ? unitAssumptions.coolingSetpoints
+        : unitAssumptions.setpoints || unitAssumptions.coolingSetpoints;
+    if (referenceAssumed) {
+      rec.detail += ' Climate-reference temperatures assume Home Assistant\'s last known temperature unit applied historically.';
+    }
+    if (targetsAssumed) {
+      rec.detail += ' Historical thermostat set points assume Home Assistant\'s last known temperature unit applied historically.';
+    }
+  });
   analyzed.forEach((a) => {
     a.out.recommendationIds = recommendations
       .filter((r) => r.sensorId === a.out.id || r.affectedSensorIds.includes(a.out.id))
@@ -2994,6 +3068,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       inferredMorningEvents: mornings.filter((e) => e.inferred).length,
       returnEvents: events.filter((e) => e.type === 'return').length,
       unknownUnitWindows: input.unknownUnitWindows ?? 0,
+      unitAssumptions,
       participationConfigured: !!config && COMFORT_SETTINGS.some((s) => config[s] !== null),
       thermostatParticipationSupported: true,
       followMe: config?.followMe ?? null,
