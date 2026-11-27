@@ -1284,6 +1284,33 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(coolingEvents(idle)).toBe(5);
     expect(coolingEvents(gap)).toBe(10);
     expect(coolingEvents((t) => ({ ...idle(t), hvacAction: null }))).toBe(10);
+    // Any other action (heating, off, fan) isn't idle either.
+    expect(coolingEvents((t) => ({ ...idle(t), hvacMode: 'heat_cool', hvacAction: 'heating' }))).toBe(10);
+    expect(coolingEvents((t) => ({ ...idle(t), hvacAction: 'off' }))).toBe(10);
+    expect(coolingEvents((t) => ({ ...idle(t), hvacAction: 'fan' }))).toBe(10);
+  });
+
+  it('gives cooling advice for the comfort setting cooling ran in', () => {
+    // Cooling only ran in Sleep; the Kitchen is only in Sleep.
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(flat, wakeBase),
+      participation: {
+        home: ['living_temperature', 'bedroom_temperature'],
+        sleep: ['kitchen_temperature', 'living_temperature', 'bedroom_temperature'],
+        away: null,
+        followMe: false,
+      },
+      cooling: {
+        ...coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 }),
+        comfort: [{ t: SUMMER, setting: 'sleep' }],
+      },
+    }));
+    const rec = result.recommendations.find((r) => r.mode === 'cooling')!;
+    expect(rec).toMatchObject({ id: 'cooling-kitchen', action: 'move', comfortSetting: 'sleep' });
+    expect(rec.detail).toContain('Because it\'s in your Sleep comfort setting, the AC keeps running');
+    expect(rec.detail).not.toContain('Home');
+    expect(result.recommendations.some((r) => r.action === 'include_in_comfort')).toBe(false);
   });
 
   it('only emits the existing recommendation actions', () => {
@@ -1462,6 +1489,23 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(bedroom).toMatchObject({ occupiedShare: { wake: null, home: null }, wakeOffset: null });
     expect(result.recommendations.some((r) => r.id === 'wake-bedroom')).toBe(false);
     expect(result.sensors.find((s) => s.id === 'living_temperature')!.occupiedShare).toEqual({ wake: 1, home: 1 });
+  });
+
+  it('treats a room without an occupancy stream as unknown with Follow Me', () => {
+    const withBedroom = (bedroom: OccupancySample[] | undefined) => analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
+        ...r, occupancy: r.id === 'bedroom_temperature' ? bedroom : occupied(true),
+      })),
+      participation: config(['bedroom_temperature', 'living_temperature'], true),
+    })).sensors.find((s) => s.id === 'bedroom_temperature')!;
+    // Explicitly unoccupied: only the Living Room counts.
+    expect(withBedroom(occupied(false))).toMatchObject({ occupiedShare: { wake: 0, home: 0 }, wakeOffset: -2 });
+    // No stream, or an outage: unknown, so it isn't read as unoccupied.
+    expect(withBedroom(undefined)).toMatchObject({ occupiedShare: { wake: null, home: null }, wakeOffset: null });
+    expect(withBedroom([])).toMatchObject({ occupiedShare: { wake: null, home: null }, wakeOffset: null });
+    expect(withBedroom([{ t: START - DAY, occupied: null }])).toMatchObject({
+      occupiedShare: { wake: null, home: null }, wakeOffset: null,
+    });
   });
 
   it('doesn\'t report an occupied share from mostly unknown occupancy', () => {

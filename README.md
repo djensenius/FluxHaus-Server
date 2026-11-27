@@ -453,7 +453,8 @@ about 10 days:
   ignored. Used for Follow Me (`coverage.occupancyAvailable`). An
   `unavailable`/`unknown` state (a `state` field) makes occupancy unknown until
   the next value: it isn't carried across an outage, the Follow Me average
-  isn't guessed while a participating room's occupancy is unknown, and
+  isn't guessed while a participating room's occupancy is unknown (including a
+  room with no occupancy stream when other rooms have one), and
   `occupiedShare` is `null` unless occupancy was known for at least 75% of the
   time.
 - **The thermostat's current temperature** (`isThermostat`, named
@@ -533,8 +534,9 @@ about 10 days:
   past 365 days: up to `days` days of data ending 2 hours after it, or the
   requested window when it falls inside it, so cooling tips also show in winter
   (`coverage.coolingFrom`/`coolingTo`, `coolingEvents`; `null`/`0` without
-  cooling in the past year). Cooling runs merge across known idle spells under
-  30 minutes (heating runs: 20 minutes), never across a gap or unknown action.
+  cooling in the past year). Cooling runs merge across reported `idle` spells
+  under 30 minutes (heating runs: 20 minutes), never across a gap, an unknown
+  action or any other action.
 - **Passive warmth:** when the comfort average sits at least 1.0 °C over the
   heating set point for most of the time heating is idle (or under the cool set
   point with cooling idle, in `cool` mode), a `passive-warmth-heating` /
@@ -568,7 +570,9 @@ about 10 days:
     than 20% of the time isn't blamed.
   - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a
     warm Kitchen known to participate) for other heat-ups;
-    `cooling-<sensor>` (always `move`) for cooling.
+    `cooling-<sensor>` (always `move`) for cooling. Heating tips are about Home;
+    cooling tips about the comfort setting in force for most of the cooling
+    runs (Home when unknown).
   - `add-<sensor>` / `add-cooling-<sensor>` (`include_in_comfort`) for a room known
     not to participate that is consistently off, or a room that overshoots by
     1.0 °C or more when no other heating tip applies.

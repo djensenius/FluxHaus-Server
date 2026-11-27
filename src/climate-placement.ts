@@ -796,8 +796,8 @@ function mergeComfort(samples: HvacSample[], timeline: SettingChange[], comfort:
 }
 
 // Intervals within [from, to] whose state in force is `active`, merged across
-// shorter known-idle spells than `merge` (never across a gap or an unknown
-// action). Only the states in force then are visited.
+// shorter reported-idle spells than `merge` (never across a gap, an unknown
+// action or any other action). Only the states in force then are visited.
 function runsWithin(
   samples: HvacSample[],
   from: number,
@@ -816,7 +816,9 @@ function runsWithin(
       if (b > a && prev && bridgeable && a - prev.to <= merge) prev.to = Math.max(prev.to, b);
       else if (b > a) runs.push({ from: a, to: b });
       if (b > a) bridgeable = true;
-    } else if (sample.gap || sample.hvacAction === null) {
+    } else if (sample.gap || !/^idle$/i.test(sample.hvacAction ?? '')) {
+      // Only a reported idle is bridged: not a gap, an unknown action, or any
+      // other action (e.g. cooling between heating runs, or off).
       bridgeable = false;
     }
   }
@@ -939,11 +941,19 @@ interface Model {
   timeline: SettingChange[];
 }
 
+// With occupancy history for any room, a room's occupancy is unknown at t when
+// it has no history (a missing stream), hasn't reported yet, or is in an
+// outage: it isn't inferred from other rooms. Without any occupancy history
+// nothing is known and Follow Me falls back to all participating rooms.
+function occupancyUnknown(model: Model, id: string, t: number): boolean {
+  return model.occupancy.size > 0 && occupiedAt(model.occupancy.get(id), t) === null;
+}
+
 // The thermostat's reading when fresh (it is Ecobee's average); otherwise the
 // mean of the participating rooms (all rooms when unknown) — with Follow Me,
 // only the occupied ones, falling back to all participating when none are.
-// With Follow Me, a member whose occupancy history has a gap then leaves it
-// unknown rather than assuming its last value.
+// With Follow Me, a member whose occupancy is unknown then (a gap or a missing
+// stream) leaves it unknown rather than assuming a value.
 function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSetting | null): number | null {
   const own = model.thermostatId === null ? undefined : grid.values.get(model.thermostatId)?.get(t);
   if (own !== undefined) return own;
@@ -951,7 +961,7 @@ function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSettin
   let members = (configured ?? model.rooms)
     .filter((id) => model.roomSet.has(id) && grid.values.get(id)?.has(t) === true);
   if (model.config?.followMe === true) {
-    if (members.some((id) => model.occupancy.has(id) && occupiedAt(model.occupancy.get(id), t) === null)) return null;
+    if (members.some((id) => occupancyUnknown(model, id, t))) return null;
     const occupied = members.filter((id) => occupiedAt(model.occupancy.get(id), t) === true);
     if (occupied.length > 0) members = occupied;
   }
@@ -1117,7 +1127,7 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
       if (followMe) {
         const occupied = occupiedAt(model.occupancy.get(id), t);
         if (occupied === true) occupiedMask |= 1 << i;
-        else if (occupied === null && model.occupancy.has(id)) unknownMask |= 1 << i;
+        else if (occupancyUnknown(model, id, t)) unknownMask |= 1 << i;
       }
       return value ?? 0;
     });
@@ -1341,6 +1351,27 @@ interface Analyzed {
   estimated: Participation;
 }
 
+// The setting in force for most of the runs' time (Home when unknown).
+function dominantSetting(timeline: SettingChange[], runs: Run[]): ComfortSetting {
+  const time = new Map<ComfortSetting, number>();
+  runs.forEach((run) => {
+    let t = run.from;
+    let index = firstIndexAfter(timeline, t, timeOf, true) - 1;
+    while (t < run.to) {
+      const end = Math.min(run.to, timeline[index + 1]?.t ?? run.to);
+      const setting = index >= 0 ? timeline[index].setting : null;
+      if (setting !== null) time.set(setting, (time.get(setting) ?? 0) + end - t);
+      t = end;
+      index += 1;
+    }
+  });
+  let best: ComfortSetting = 'home';
+  time.forEach((ms, setting) => {
+    if (ms > (time.get(best) ?? 0)) best = setting;
+  });
+  return best;
+}
+
 interface Env {
   followMe: boolean | null;
   // Whether the thermostat's averaged reading is available.
@@ -1354,6 +1385,9 @@ interface Env {
   wakes: Wake[];
   // "cooling from … to …, last cooling season" (or without the season), or ''.
   coolingRange: string;
+  // The comfort setting in force for most of the measured cooling (Home when
+  // unknown): cooling advice is about it.
+  coolSetting: ComfortSetting;
 }
 
 interface Skew {
@@ -1560,13 +1594,18 @@ function recBase(
   return { sensorId: a ? a.out.id : null, ...fields };
 }
 
+// Heating tips are about Home; cooling tips about the setting cooling ran in.
+function settingFor(mode: PlacementMode, env: Env): ComfortSetting {
+  return mode === 'heating' ? 'home' : env.coolSetting;
+}
+
 // Generic outlier tip for a participating (or possibly participating) room.
 function skewRec(a: Analyzed, skew: Skew, env: Env, rooms: Analyzed[]): Ranked | null {
-  const setting: ComfortSetting = 'home';
+  const setting = settingFor(skew.mode, env);
   const known = knownIn(a, setting);
   if (known.value === false) return null;
   // With Follow Me, a sensor rarely occupied while Home barely counted.
-  const share = a.out.occupiedShare.home;
+  const share = setting === 'home' ? a.out.occupiedShare.home : null;
   if (env.followMe === true && share !== null && share < FOLLOW_ME_MIN_SHARE) return null;
   const heating = skew.mode === 'heating';
   // Cooling tips always recommend moving the sensor.
@@ -1681,20 +1720,22 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
 // A room known not to be in Home that is consistently off: adding it lets the
 // thermostat account for it.
 function addRec(a: Analyzed, skew: Skew, env: Env): Ranked | null {
-  const known = knownIn(a, 'home');
+  const setting = settingFor(skew.mode, env);
+  const label = SETTING_LABEL[setting];
+  const known = knownIn(a, setting);
   if (known.value !== false) return null;
   const heating = skew.mode === 'heating';
   if (heating && (env.passiveHeat || env.heatingRare)) return null;
   const which = known.source === 'configured'
-    ? 'It isn\'t in your Home comfort setting'
-    : 'The thermostat\'s readings suggest it isn\'t in your Home comfort setting';
+    ? `It isn't in your ${label} comfort setting`
+    : `The thermostat's readings suggest it isn't in your ${label} comfort setting`;
   const verb = heating ? 'heat' : 'cool';
   // Over-conditioned (warm while heating, cool while cooling) or under-conditioned.
   const over = (skew.direction === 'above') === heating;
   const effect = over
-    ? `Adding it to Home would help the thermostat stop ${heating ? 'heating' : 'cooling'} sooner, though the other rooms `
+    ? `Adding it to ${label} would help the thermostat stop ${heating ? 'heating' : 'cooling'} sooner, though the other rooms `
       + `would end up a little ${heating ? 'cooler' : 'warmer'}.`
-    : `If the room feels too ${heating ? 'cool' : 'warm'}, adding it to Home would make Ecobee ${verb} for it too, though `
+    : `If the room feels too ${heating ? 'cool' : 'warm'}, adding it to ${label} would make Ecobee ${verb} for it too, though `
       + `the other rooms would end up ${heating ? 'warmer' : 'cooler'}.`;
   return {
     magnitude: skew.magnitude,
@@ -1703,11 +1744,11 @@ function addRec(a: Analyzed, skew: Skew, env: Env): Ranked | null {
       id: `add-${heating ? '' : 'cooling-'}${slug(a.out.id)}`,
       severity: 'medium',
       action: 'include_in_comfort',
-      title: `Consider adding ${a.out.name} to your Home comfort setting`,
+      title: `Consider adding ${a.out.name} to your ${label} comfort setting`,
       detail: `${skew.evidence}. ${which}, so Ecobee doesn't ${verb} for it. ${effect}${heating ? '' : coolingNote(env)}`,
       mode: skew.mode,
       period: null,
-      comfortSetting: 'home',
+      comfortSetting: setting,
       affectedSensorIds: [],
       likelyCauses: causesFor(a, skew.direction, skew.mode),
     }),
@@ -1914,7 +1955,7 @@ function verdictSummaryOf(a: Analyzed, skew: Skew | null, env: Env): string {
     return `${name} stays close to the house average (${fmt(bias)} °C ${bias < 0 ? 'below' : 'above'} on average), `
       + 'so it isn\'t skewing the thermostat.';
   }
-  const setting: ComfortSetting = 'home';
+  const setting = settingFor(skew.mode, env);
   const known = knownIn(a, setting);
   let consequence = known.source === 'configured'
     ? `, but it isn't in the ${SETTING_LABEL[setting]} comfort setting, so it doesn't steer the thermostat`
@@ -2082,6 +2123,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     passiveCooling,
     wakes,
     coolingRange,
+    coolSetting: cool ? dominantSetting(cool.timeline, coolRuns) : 'home',
   };
 
   const homeWindows: Run[] = [];
