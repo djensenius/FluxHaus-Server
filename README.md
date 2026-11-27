@@ -443,7 +443,9 @@ about 10 days:
   `coverage.comfortScheduleAvailable`). It takes precedence; wherever it has no
   known value (a thermostat without it, before its first value, or while the
   select is unavailable), the climate entity's preset (`away`, `home`, `sleep`,
-  …) is used instead, so wake-ups and returns from Away still work.
+  …) is used instead, so wake-ups and returns from Away still work. A
+  `none`/`unknown`/`unavailable` preset (or a gap) is unknown, not the previous
+  preset.
 - **Occupancy** is each room's `binary_sensor.<room>_occupancy` (`value` 0/1,
   change-driven, so each value holds until the next), matched to
   `sensor.<room>_temperature` (`home_occupancy` to the thermostat's
@@ -531,8 +533,8 @@ about 10 days:
   past 365 days: up to `days` days of data ending 2 hours after it, or the
   requested window when it falls inside it, so cooling tips also show in winter
   (`coverage.coolingFrom`/`coolingTo`, `coolingEvents`; `null`/`0` without
-  cooling in the past year). Cooling runs merge across idle spells under 30
-  minutes.
+  cooling in the past year). Cooling runs merge across known idle spells under
+  30 minutes (heating runs: 20 minutes), never across a gap or unknown action.
 - **Passive warmth:** when the comfort average sits at least 1.0 °C over the
   heating set point for most of the time heating is idle (or under the cool set
   point with cooling idle, in `cool` mode), a `passive-warmth-heating` /
@@ -564,10 +566,10 @@ about 10 days:
     set point. It mentions a Sleep setback of 2 °C or more, or a warm-up of an
     hour or more, and Smart Recovery. With Follow Me, a sensor occupied less
     than 20% of the time isn't blamed.
-  - `move-<sensor>` / `remove-<sensor>` (`move`, `remove_from_setting` for a
+  - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a
     warm Kitchen known to participate) for other heat-ups;
     `cooling-<sensor>` (always `move`) for cooling.
-  - `add-<sensor>` / `add-cooling-<sensor>` (`add_to_setting`) for a room known
+  - `add-<sensor>` / `add-cooling-<sensor>` (`include_in_comfort`) for a room known
     not to participate that is consistently off, or a room that overshoots by
     1.0 °C or more when no other heating tip applies.
   - `passive-warmth-heating`, `passive-cooling`, `participation-mismatch-<setting>`
@@ -575,8 +577,9 @@ about 10 days:
     only claims no overshoot when it was measured for every room, and names
     sensors without enough data and inferred heat-ups).
   `mode` (`heating`/`cooling`), `period` and `comfortSetting` say when it
-  applies. `include_in_comfort` and `exclude_from_comfort` are no longer
-  emitted.
+  applies. `action` stays within the existing values (`move`,
+  `exclude_from_comfort`, `include_in_comfort`, `none`); exclude/include refer
+  to the comfort setting named by `comfortSetting`.
 
 ```json
 {

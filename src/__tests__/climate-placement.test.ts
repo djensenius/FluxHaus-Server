@@ -338,7 +338,7 @@ describe('analyzePlacement', () => {
       hvac: hvac(5, { setpoint: 19.5 }),
     }));
     expect(result.sensors.every((s) => s.classification === 'representative')).toBe(true);
-    expect(result.recommendations.map((r) => r.action)).toEqual(['add_to_setting', 'add_to_setting']);
+    expect(result.recommendations.map((r) => r.action)).toEqual(['include_in_comfort', 'include_in_comfort']);
     expect(result.recommendations[0]).toMatchObject({ id: 'add-living', comfortSetting: 'home', mode: 'heating' });
     expect(result.recommendations[0].detail).toBe(
       'Living peaked 1.5 °C above the set point on average after the thermostat stopped heating, while closely tracking '
@@ -487,7 +487,7 @@ describe('analyzePlacement', () => {
       sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: samples,
     }));
     expect(result.coverage.inferredMorningEvents).toBe(2);
-    const include = result.recommendations.filter((r) => r.action === 'add_to_setting');
+    const include = result.recommendations.filter((r) => r.action === 'include_in_comfort');
     expect(include).toHaveLength(2);
     include.forEach((r) => expect(r.detail).toMatch(/\. 2 of these \d+ heat-ups were inferred from room temperatures, not thermostat history\. /));
   });
@@ -1267,6 +1267,44 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(mismatch.detail).toMatch(/Kitchen/);
   });
 
+  it('merges cooling runs only across known idle time, not a data gap', () => {
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    // Cooling 13:00–14:00 and 14:10–16:00; between them idle or a gap.
+    const split = (between: (t: number) => HvacSample) => coolHvac(5).flatMap((s) => (
+      ((s.t - SUMMER) % DAY) / HOUR === 13
+        ? [s, between(s.t + HOUR), { ...s, t: s.t + HOUR + HOUR / 6 }]
+        : [s]));
+    const coolingEvents = (between: (t: number) => HvacSample) => analyzePlacement(wakeInput({
+      sensors: rooms(flat, wakeBase),
+      cooling: { ...coolingInput(flat), hvac: split(between) },
+    })).coverage.coolingEvents;
+    const idle = (t: number): HvacSample => ({
+      ...state(t, 'idle', { presetMode: null, setpoint: 24, hvacMode: 'cool' }), coolSetpoint: 24,
+    });
+    expect(coolingEvents(idle)).toBe(5);
+    expect(coolingEvents(gap)).toBe(10);
+    expect(coolingEvents((t) => ({ ...idle(t), hvacAction: null }))).toBe(10);
+  });
+
+  it('only emits the existing recommendation actions', () => {
+    const legacy = ['move', 'exclude_from_comfort', 'include_in_comfort', 'none'];
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const results = [
+      analyzePlacement(input()),
+      analyzePlacement(wakeInput()),
+      analyzePlacement(wakeInput({
+        sensors: rooms(flat, wakeBase),
+        cooling: coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 }),
+      })),
+      analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: hvac(5, { setpoint: 19.5 }) })),
+      analyzePlacement(passiveInput()),
+    ];
+    const actions = new Set(results.flatMap((r) => r.recommendations.map((rec) => rec.action)));
+    expect([...actions].filter((a) => !legacy.includes(a))).toEqual([]);
+    // Placement, exclusion and inclusion advice are all exercised.
+    expect([...actions].sort()).toEqual([...legacy].sort());
+  });
+
   it('finds a warm sensor keeping the AC on from the last cooling season', () => {
     const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
     const result = analyzePlacement(wakeInput({
@@ -1320,7 +1358,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       .toMatchObject({ days: 5, warmDays: 5, coldDays: 0 });
     expect(result.recommendations.map((r) => [r.id, r.severity, r.action])).toEqual([
       ['passive-warmth-heating', 'medium', 'none'],
-      ['remove-kitchen', 'low', 'remove_from_setting'],
+      ['remove-kitchen', 'low', 'exclude_from_comfort'],
     ]);
     const [passive, kitchen] = result.recommendations;
     expect(passive.likelyCauses).toEqual([
@@ -1378,6 +1416,20 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     // A known Ecobee comfort setting takes precedence over the preset.
     const ecobee = analyzePlacement(input({ hvac: hvac(5), comfort: [{ t: START - DAY, setting: 'home' }] }));
     expect(ecobee.coverage.returnEvents).toBe(0);
+  });
+
+  it('doesn\'t carry a preset past an explicit unknown preset', () => {
+    // Away, then the preset turns unknown at 01:00; the comfort select is
+    // Home until it becomes unavailable at 12:00; Home (heating) at 17:00.
+    const states = (unknown: boolean) => [
+      state(at(0, 0), 'idle', { presetMode: 'away', setpoint: 17 }),
+      ...(unknown ? [state(at(0, 1), 'idle', { presetMode: null, setpoint: 17 })] : []),
+      state(at(0, 17), 'heating'),
+      state(at(0, 19), 'idle'),
+    ];
+    const comfort = [{ t: START - DAY, setting: 'home' }, { t: at(0, 12), setting: null }];
+    expect(analyzePlacement(input({ hvac: states(false), comfort })).coverage.returnEvents).toBe(1);
+    expect(analyzePlacement(input({ hvac: states(true), comfort })).coverage.returnEvents).toBe(0);
   });
 
   it('falls back to the preset only while the comfort setting is unknown', () => {

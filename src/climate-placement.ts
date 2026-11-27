@@ -99,7 +99,7 @@ export const COMFORT_AVERAGE_NAME = 'Thermostat (Ecobee average)';
 export type SensorClassification = 'cold' | 'warm' | 'representative' | 'insufficient';
 export type SensorVerdict = 'cold_outlier' | 'warm_outlier' | 'representative' | 'insufficient';
 export type RecommendationSeverity = 'high' | 'medium' | 'low';
-export type RecommendationAction = 'move' | 'remove_from_setting' | 'add_to_setting' | 'none';
+export type RecommendationAction = 'move' | 'exclude_from_comfort' | 'include_in_comfort' | 'none';
 export type PlacementEventType = 'wake' | 'morning' | 'return' | 'cooling';
 export type ComfortSetting = 'home' | 'sleep' | 'away';
 export const COMFORT_SETTINGS: readonly ComfortSetting[] = ['home', 'sleep', 'away'];
@@ -740,10 +740,11 @@ function coolPointOf(sample: HvacSample): number | null {
 // Comfort setting changes, time-sorted. A known comfort setting (the Ecobee
 // select) takes precedence; while it is unknown (before its first value, or
 // unavailable) the thermostat's preset is used. Without any known comfort
-// setting the timeline is the preset history.
+// setting the timeline is the preset history. An unknown preset (or a gap) is
+// kept as unknown, so an earlier preset isn't carried past it.
 function settingTimeline(comfort: ComfortSample[] | null | undefined, samples: HvacSample[]): SettingChange[] {
-  const presets = samples.filter((s) => !s.gap && s.presetMode !== null)
-    .map((s) => ({ t: s.t, comfort: false, setting: normalizeSetting(s.presetMode) }));
+  const presets = samples
+    .map((s) => ({ t: s.t, comfort: false, setting: s.gap ? null : normalizeSetting(s.presetMode) }));
   const known = !!comfort && comfort.some((c) => normalizeSetting(c.setting) !== null);
   const events = known
     ? [...comfort!.map((c) => ({ t: c.t, comfort: true, setting: normalizeSetting(c.setting) })), ...presets]
@@ -760,7 +761,7 @@ function settingTimeline(comfort: ComfortSample[] | null | undefined, samples: H
     const setting = select ?? preset;
     if (changes.length === 0 || changes[changes.length - 1].setting !== setting) changes.push({ t: e.t, setting });
   });
-  return changes;
+  return changes.some((c) => c.setting !== null) ? changes : [];
 }
 
 function settingAt(timeline: SettingChange[], t: number): ComfortSetting | null {
@@ -795,7 +796,8 @@ function mergeComfort(samples: HvacSample[], timeline: SettingChange[], comfort:
 }
 
 // Intervals within [from, to] whose state in force is `active`, merged across
-// shorter spells than `merge`. Only the states in force then are visited.
+// shorter known-idle spells than `merge` (never across a gap or an unknown
+// action). Only the states in force then are visited.
 function runsWithin(
   samples: HvacSample[],
   from: number,
@@ -804,14 +806,18 @@ function runsWithin(
   merge: number,
 ): Run[] {
   const runs: Run[] = [];
+  let bridgeable = false;
   for (let i = Math.max(0, stateIndexAt(samples, from)); i < samples.length && samples[i].t < to; i += 1) {
     const sample = samples[i];
     if (!sample.gap && active(sample)) {
       const a = Math.max(from, sample.t);
       const b = Math.min(to, samples[i + 1]?.t ?? to);
       const prev = runs[runs.length - 1];
-      if (b > a && prev && a - prev.to <= merge) prev.to = Math.max(prev.to, b);
+      if (b > a && prev && bridgeable && a - prev.to <= merge) prev.to = Math.max(prev.to, b);
       else if (b > a) runs.push({ from: a, to: b });
+      if (b > a) bridgeable = true;
+    } else if (sample.gap || sample.hvacAction === null) {
+      bridgeable = false;
     }
   }
   return runs;
@@ -1597,7 +1603,7 @@ function skewRec(a: Analyzed, skew: Skew, env: Env, rooms: Analyzed[]): Ranked |
     rec: recBase(a, {
       id: `${prefix}-${slug(a.out.id)}`,
       severity,
-      action: remove ? 'remove_from_setting' : 'move',
+      action: remove ? 'exclude_from_comfort' : 'move',
       title: `${a.out.name} ${titles[skew.mode][skew.direction]}`,
       detail: `${skew.evidence}. ${withLead(participationLead(known, setting), CONSEQUENCE[skew.mode][skew.direction])}${effect} `
         + `${adviceFor(a, skew.direction, setting, true, !heating)}${quiet}${heating ? '' : coolingNote(env)}`,
@@ -1696,7 +1702,7 @@ function addRec(a: Analyzed, skew: Skew, env: Env): Ranked | null {
     rec: recBase(a, {
       id: `add-${heating ? '' : 'cooling-'}${slug(a.out.id)}`,
       severity: 'medium',
-      action: 'add_to_setting',
+      action: 'include_in_comfort',
       title: `Consider adding ${a.out.name} to your Home comfort setting`,
       detail: `${skew.evidence}. ${which}, so Ecobee doesn't ${verb} for it. ${effect}${heating ? '' : coolingNote(env)}`,
       mode: skew.mode,
@@ -1736,7 +1742,7 @@ function overshootAddRec(a: Analyzed, env: Env): Ranked | null {
     rec: recBase(a, {
       id: `add-${slug(s.id)}`,
       severity: 'medium',
-      action: 'add_to_setting',
+      action: 'include_in_comfort',
       title: `Consider adding ${s.name} to your Home comfort setting`,
       detail: `${s.name} peaked ${fmt(s.overshoot)} °C above the set point on average after the thermostat stopped heating`
         + `${tracks}${provenance}. ${lead} would help Ecobee stop heating sooner.`,
