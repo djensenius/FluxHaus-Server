@@ -316,7 +316,28 @@ describe('analyzePlacement', () => {
     const [summary] = result.recommendations;
     expect(summary).toMatchObject({ id: 'no-changes', title: 'No placement issues found in the available data' });
     expect(summary.detail).not.toContain('None of them peaked');
-    expect(summary.detail).toContain('overshoot wasn\'t checked');
+    expect(summary.detail).toContain(
+      'Thermostat history didn\'t show heating stopping after a heat-up with a known set point, so overshoot wasn\'t checked.',
+    );
+  });
+
+  it('says which rooms lacked readings after recorded heating stops', () => {
+    // Heating stops at 08:30 and 19:30 are recorded, but the Bedroom has no
+    // readings for two hours after each, so its overshoot is unknown. That's
+    // missing readings, not missing thermostat history.
+    const [living, bedroom] = series({ living_temperature: 0, bedroom_temperature: 0 }, 5);
+    const afterStop = (t: number) => {
+      const h = ((t - START) % DAY) / HOUR;
+      return (h >= 8.5 && h < 10.5) || (h >= 19.5 && h < 21.5);
+    };
+    const result = analyzePlacement(input({
+      sensors: [living, { ...bedroom, points: bedroom.points.filter((p) => !afterStop(p.t)) }],
+    }));
+    expect(result.sensors.map((s) => [s.classification, s.overshoot])).toEqual([['representative', 0], ['representative', null]]);
+    const [summary] = result.recommendations;
+    expect(summary).toMatchObject({ id: 'no-changes', title: 'No placement issues found in the available data' });
+    expect(summary.detail).toContain('Overshoot wasn\'t checked for Bedroom: not enough readings after heating stopped.');
+    expect(summary.detail).not.toContain('Thermostat history');
   });
 
   it('mentions sensors without enough data in the summary', () => {
@@ -681,26 +702,51 @@ describe('analyzePlacement', () => {
     events.forEach((e, d) => expect(e).toEqual({ type: 'morning', t: at(d, 5.75), inferred: true }));
   });
 
-  it('analyzes 30 days of 30 sensors quickly', () => {
-    // Each inference candidate must only touch its own window; rescanning the
-    // whole history per candidate took seconds at this size.
-    const days = 30;
-    const biases = Object.fromEntries(Array.from({ length: 30 }, (_unused, i) => [`room${i}_temperature`, (i % 5) - 2]));
-    const sensors = series(biases, days);
-    const samples = Array.from({ length: days * 96 }, (_unused, i) => state(START + i * 15 * 60_000, 'idle', {
-      presetMode: null, setpoint: 20,
-    }));
-    // Fastest of three runs, so a busy test runner doesn't make this flaky;
-    // full-history rescans took about 1.5 s per run here.
-    const runs = Array.from({ length: 3 }, () => {
-      const started = performance.now();
-      const result = analyzePlacement(input({
-        sensors, hvac: samples, end: new Date(START + days * DAY), windowDays: days,
-      }));
-      expect(result.coverage.inferredMorningEvents).toBe(days);
-      return performance.now() - started;
-    });
-    expect(Math.min(...runs)).toBeLessThan(250);
+  it('does work that grows about linearly with the length of history', () => {
+    // Deterministic complexity check instead of a wall-clock gate: count reads
+    // of reading/state timestamps and Map operations (the grid) while
+    // analyzing, and require that doubling the days at most about doubles
+    // them. Rescanning whole histories per candidate grows quadratically.
+    const work = (days: number): number => {
+      let count = 0;
+      const counted = <T extends { t: number }>(item: T): T => {
+        const { t } = item;
+        return Object.defineProperty({ ...item }, 't', {
+          enumerable: true,
+          get: () => {
+            count += 1;
+            return t;
+          },
+        });
+      };
+      const biases = Object.fromEntries(Array.from({ length: 6 }, (_unused, i) => [`room${i}_temperature`, (i % 3) - 1]));
+      const sensors = series(biases, days).map((sensor) => ({ ...sensor, points: sensor.points.map(counted) }));
+      const samples = Array.from({ length: days * 96 }, (_unused, i) => counted(state(START + i * 15 * 60_000, 'idle', {
+        presetMode: null, setpoint: 20,
+      })));
+      const proto = Map.prototype;
+      const original = { get: proto.get, has: proto.has, set: proto.set, forEach: proto.forEach };
+      proto.get = function get(key) { count += 1; return original.get.call(this, key); };
+      proto.has = function has(key) { count += 1; return original.has.call(this, key); };
+      proto.set = function set(key, value) { count += 1; return original.set.call(this, key, value); };
+      proto.forEach = function forEach(callback, thisArg) {
+        original.forEach.call(this, (...args: Parameters<typeof callback>) => {
+          count += 1;
+          callback.apply(thisArg, args);
+        });
+      };
+      try {
+        const result = analyzePlacement(input({
+          sensors, hvac: samples, end: new Date(START + days * DAY), windowDays: days,
+        }));
+        expect(result.coverage.inferredMorningEvents).toBe(days);
+      } finally {
+        Object.assign(proto, original);
+      }
+      return count;
+    };
+    // About 2.0 now; whole-history rescans gave about 3.8.
+    expect(work(20) / work(10)).toBeLessThan(2.3);
   });
 
   it('infers mornings when the thermostat reports idle through a set point increase', () => {

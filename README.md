@@ -482,8 +482,9 @@ alone ("the thermostat may keep heating to satisfy it").
   `include_in_comfort` suggests considering a representative or warm room that
   overshoots by 1.0 °C or more (for a representative sensor it quotes the mean
   absolute difference from the house average, so opposite offsets don't cancel); `none` summarizes what the data did cover (it
-  only mentions overshoot when it was measured, and names sensors without
-  enough data and inferred heat-ups).
+  only claims no overshoot when it was measured for every room; otherwise it
+  says whether heating stops weren't recorded or which rooms lacked readings
+  after them, and names sensors without enough data and inferred heat-ups).
 
 ```json
 {
