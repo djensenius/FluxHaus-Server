@@ -10,6 +10,7 @@ import type { IndoorClimateStatus } from './indoor-climate';
 import {
   analyzePlacement,
   BUCKET_MS,
+  COMFORT_SETTINGS,
   type ComfortSample,
   type CoolingInput,
   type HvacSample,
@@ -85,28 +86,39 @@ function parseIdList(value: unknown, name: string): string[] | null {
   return [...new Set(ids)].sort();
 }
 
+function parseOptionalBoolean(value: unknown, name: string): boolean | null {
+  if (value === undefined) return null;
+  if (value !== 'true' && value !== 'false') throw inputError(`${name} must be true or false`);
+  return value === 'true';
+}
+
 // Optional comfort setting participation (`home`, `sleep`, `away`: sensor ids
-// in that comfort setting, '' for none) and `followMe` (true/false). Returns
-// null when none is given. Ids are checked against the sensors later.
+// in that comfort setting, '' for none), thermostat sensor participation and
+// `followMe` (true/false). Returns null when none is given. Ids are checked
+// against the sensors later.
 export function parsePlacementConfig(query: Record<string, unknown> = {}): ParticipationConfig | null {
   const home = parseIdList(query.home, 'home');
   const sleep = parseIdList(query.sleep, 'sleep');
   const away = parseIdList(query.away, 'away');
-  let followMe: boolean | null = null;
-  if (query.followMe !== undefined) {
-    if (query.followMe !== 'true' && query.followMe !== 'false') throw inputError('followMe must be true or false');
-    followMe = query.followMe === 'true';
-  }
-  if (home === null && sleep === null && away === null && followMe === null) return null;
+  const followMe = parseOptionalBoolean(query.followMe, 'followMe');
+  const thermostat = {
+    home: parseOptionalBoolean(query.thermostatHome, 'thermostatHome'),
+    sleep: parseOptionalBoolean(query.thermostatSleep, 'thermostatSleep'),
+    away: parseOptionalBoolean(query.thermostatAway, 'thermostatAway'),
+  };
+  const hasThermostat = COMFORT_SETTINGS.some((setting) => thermostat[setting] !== null);
+  if (home === null && sleep === null && away === null && followMe === null && !hasThermostat) return null;
   return {
     home, sleep, away, followMe,
+    ...(hasThermostat ? { thermostat } : {}),
   };
 }
 
 function configKey(days: number, config: ParticipationConfig | null): string {
   if (!config) return String(days);
   const list = (ids: string[] | null) => (ids === null ? '-' : ids.join(','));
-  return `${days}|${list(config.home)}|${list(config.sleep)}|${list(config.away)}|${String(config.followMe)}`;
+  const thermostat = COMFORT_SETTINGS.map((setting) => String(config.thermostat?.[setting] ?? null)).join('|');
+  return `${days}|${list(config.home)}|${list(config.sleep)}|${list(config.away)}|${String(config.followMe)}|${thermostat}`;
 }
 
 export interface PlacementIndoorClimate {
@@ -496,16 +508,19 @@ export class ClimatePlacementService {
     const sensors: IndoorSensor[] = status.sensors
       .map((s) => ({ id: objectId(s.entityId), name: s.name, isThermostat: s.isThermostat }))
       .filter((s) => SAFE_OBJECT_ID.test(s.id) && !OUTDOOR_PATTERN.test(s.id) && !OUTDOOR_PATTERN.test(s.name));
-    if (config && sensors.length > 0) {
+    if (config) {
       const selected = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []);
       const thermostatIds = new Set(sensors.filter((s) => s.isThermostat).map((s) => s.id));
       const thermostatMembers = selected.filter((id) => thermostatIds.has(id));
       if (thermostatMembers.length > 0) {
         throw inputError(`Thermostat average cannot participate: ${[...new Set(thermostatMembers)].join(', ')}`);
       }
-      const known = new Set(sensors.map((s) => s.id));
-      const unknown = selected.filter((id) => !known.has(id));
-      if (unknown.length > 0) throw inputError(`Unknown sensor ids: ${[...new Set(unknown)].join(', ')}`);
+      const rooms = sensors.filter((s) => !s.isThermostat);
+      if (rooms.length > 0) {
+        const known = new Set(rooms.map((s) => s.id));
+        const unknown = selected.filter((id) => !known.has(id));
+        if (unknown.length > 0) throw inputError(`Unknown sensor ids: ${[...new Set(unknown)].join(', ')}`);
+      }
     }
 
     const climateId = status.thermostat ? objectId(status.thermostat.entityId) : null;
@@ -514,8 +529,8 @@ export class ClimatePlacementService {
       : null;
     const unit = status.thermostat?.temperatureUnit;
 
-    // Missing discovery or thermostat counts as degraded so it is retried soon.
-    let degraded = sensors.length === 0 || !status.thermostat;
+    // Missing room discovery or thermostat counts as degraded so it is retried soon.
+    let degraded = sensors.every((s) => s.isThermostat) || !status.thermostat;
     const [heat, lastCooling] = await Promise.all([
       this.fetchWindow(sensors, entities, unit, start, end),
       entities ? this.fetchLastCooling(entities.climate, end).catch((err) => {

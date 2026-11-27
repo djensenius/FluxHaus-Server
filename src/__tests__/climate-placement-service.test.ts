@@ -134,6 +134,23 @@ describe('parsePlacementConfig', () => {
     });
   });
 
+  it.each(['home', 'sleep', 'away'] as const)('reads thermostat participation for %s as a tri-state', (setting) => {
+    const param = `thermostat${setting[0].toUpperCase()}${setting.slice(1)}`;
+    [true, false].forEach((value) => {
+      expect(parsePlacementConfig({ [param]: String(value) })).toEqual({
+        home: null,
+        sleep: null,
+        away: null,
+        followMe: null,
+        thermostat: { home: null, sleep: null, away: null, [setting]: value },
+      });
+    });
+    expect(parsePlacementConfig({ [param]: undefined })).toBeNull();
+    ['TRUE', '1', '', ['true'], true, null].forEach((value) => {
+      expect(() => parsePlacementConfig({ [param]: value })).toThrow(`${param} must be true or false`);
+    });
+  });
+
   it.each([
     [{ home: 'bad"id' }, 'home must be a comma-separated list of sensor ids'],
     [{ sleep: 'a,,b' }, 'sleep must be a comma-separated list of sensor ids'],
@@ -518,6 +535,25 @@ describe('ClimatePlacementService', () => {
     expect(result.coverage.occupancyAvailable).toBe(true);
   });
 
+  it.each([
+    ['0', -2],
+    ['1', null],
+    ['unavailable', null],
+  ])('associates thermostat occupancy %s with the aggregate entity', async (value, offset) => {
+    const { service, rows } = makeDeps();
+    rows.temperatures = rows.temperatures.filter((row) => row.entity_id !== 'home_current_temperature');
+    (rows.states as Rows).push(
+      { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: value, domain: 'binary_sensor', entity_id: 'home_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'office_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'kitchen_occupancy' },
+    );
+    const result = await service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'true',
+    });
+    expect(result.coverage.occupancyAvailable).toBe(true);
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBe(offset);
+  });
+
   it('reuses the window for cooling within it, else fetches the last cooling season', async () => {
     const recent = makeDeps();
     recent.rows.cooling = [{ _time: '2026-01-18T12:00:00Z' }];
@@ -555,6 +591,23 @@ describe('ClimatePlacementService', () => {
     expect(calls('temperatures')).toHaveLength(2);
     await expect(service.getInsights('14', { home: 'den_temperature' })).rejects.toThrow('Unknown sensor ids: den_temperature');
     await expect(service.getInsights('14', { home: 'den_temperature' })).rejects.toThrow('Unknown sensor ids');
+  });
+
+  it('separates the cache for every thermostat setting and tri-state', async () => {
+    const { service, calls } = makeDeps();
+    const base = { home: 'office_temperature', followMe: 'false' };
+    const variants: Record<string, string>[] = [base];
+    ['thermostatHome', 'thermostatSleep', 'thermostatAway'].forEach((param) => {
+      variants.push({ ...base, [param]: 'true' }, { ...base, [param]: 'false' });
+    });
+    variants.push(
+      { ...base, thermostatHome: 'true', thermostatSleep: 'false' },
+      { ...base, thermostatHome: 'false', thermostatSleep: 'true' },
+    );
+    for (const variant of variants) await service.getInsights('14', variant);
+    expect(calls('temperatures')).toHaveLength(variants.length);
+    for (const variant of variants) await service.getInsights('14', variant);
+    expect(calls('temperatures')).toHaveLength(variants.length);
   });
 
   it('caches results per window for 15 minutes', async () => {
@@ -710,6 +763,7 @@ describe('ClimatePlacementService', () => {
     rows.states = new Error('influx down');
     rows.cooling = new Error('influx down');
     const result = await service.getInsights('14');
+    expect(result.coverage.thermostatParticipationSupported).toBe(true);
     expect(result.sensors.every((s) => s.sampleCount === 0 && s.classification === 'insufficient')).toBe(true);
     expect(result.recommendations).toEqual([]);
   });
@@ -742,7 +796,9 @@ describe('GET /climate/placement-insights', () => {
   it('returns insights', async () => {
     const { service } = makeDeps();
     const response = await request(buildApp(service)).get('/climate/placement-insights').expect(200);
-    expect(response.body).toMatchObject({ windowDays: 14, unit: '°C', coverage: { hvacHistoryAvailable: true } });
+    expect(response.body).toMatchObject({
+      windowDays: 14, unit: '°C', coverage: { hvacHistoryAvailable: true, thermostatParticipationSupported: true },
+    });
     expect(Array.isArray(response.body.sensors)).toBe(true);
     expect(Array.isArray(response.body.recommendations)).toBe(true);
   });
@@ -768,6 +824,49 @@ describe('GET /climate/placement-insights', () => {
     const response = await request(buildApp(service)).get('/climate/placement-insights')
       .query({ [setting]: 'office_temperature,home_current_temperature', followMe: 'false' }).expect(400);
     expect(response.body.error).toBe('Thermostat average cannot participate: home_current_temperature');
+  });
+
+  it.each(['home', 'sleep', 'away'] as const)('applies thermostat %s through the HTTP query', async (setting) => {
+    const { service, rows } = makeDeps();
+    rows.temperatures = rows.temperatures.filter((row) => row.entity_id !== 'home_current_temperature');
+    rows.states = (rows.states as Rows).map((row) => (row.domain === 'select' ? { ...row, _value: setting } : row));
+    const param = `thermostat${setting[0].toUpperCase()}${setting.slice(1)}`;
+    const query = { [setting]: 'office_temperature,kitchen_temperature', followMe: 'false' };
+    for (const [value, expected] of [['true', null], ['false', -1], [undefined, null]] as const) {
+      const response = await request(buildApp(service)).get('/climate/placement-insights')
+        .query(value === undefined ? query : { ...query, [param]: value }).expect(200);
+      expect(response.body.coverage.thermostatParticipationSupported).toBe(true);
+      const office = response.body.sensors.find((s: { id: string }) => s.id === 'office_temperature');
+      expect(office.periodOffsets.heatingRuns).toBe(expected);
+    }
+    for (const value of ['TRUE', '', '1', 'true&duplicate']) {
+      const response = await request(buildApp(service)).get('/climate/placement-insights')
+        .query({ [param]: value }).expect(400);
+      expect(response.body.error).toBe(`${param} must be true or false`);
+    }
+    await request(buildApp(service)).get(`/climate/placement-insights?${param}=true&${param}=false`).expect(400);
+  });
+
+  it.each([false, true])('defers unknown room ids when discovery has no eligible rooms (thermostat: %s)', async (hasThermostat) => {
+    const { service, deps, advance } = makeDeps();
+    deps.indoorClimate.cachedStatus = {
+      ...deps.indoorClimate.cachedStatus,
+      sensors: hasThermostat ? [sensor('sensor.home_current_temperature', 'Home', true)] : [],
+    } as never;
+    const app = buildApp(service);
+    const query = { home: 'office_temperature', thermostatHome: 'false' };
+    const response = await request(app).get('/climate/placement-insights').query(query).expect(200);
+    expect(response.body.coverage.thermostatParticipationSupported).toBe(true);
+    await request(app).get('/climate/placement-insights').query({ ...query, thermostatAway: 'maybe' }).expect(400);
+    if (hasThermostat) {
+      await request(app).get('/climate/placement-insights').query({ home: 'home_current_temperature' }).expect(400);
+    }
+    deps.indoorClimate.cachedStatus = {
+      ...deps.indoorClimate.cachedStatus, sensors: [sensor('sensor.kitchen_temperature', 'Kitchen')],
+    } as never;
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    const retried = await request(app).get('/climate/placement-insights').query(query).expect(400);
+    expect(retried.body.error).toBe('Unknown sensor ids: office_temperature');
   });
 
   it('passes participation parameters through', async () => {

@@ -139,6 +139,11 @@ const FOLLOW_ME_OFF = {
   home: null, sleep: null, away: null, followMe: false,
 };
 
+// Fixtures using a room-only Ecobee average explicitly exclude the physical
+// thermostat sensor; the aggregate series itself is still a separate reading.
+const THERMOSTAT_EXCLUDED = { home: false, sleep: false, away: false };
+const FOLLOW_ME_OFF_THERMOSTAT_EXCLUDED = { ...FOLLOW_ME_OFF, thermostat: THERMOSTAT_EXCLUDED };
+
 function input(overrides: Partial<Parameters<typeof analyzePlacement>[0]> = {}) {
   return {
     participation: FOLLOW_ME_OFF,
@@ -264,6 +269,7 @@ describe('analyzePlacement', () => {
         returnEvents: 5,
         unknownUnitWindows: 0,
         participationConfigured: false,
+        thermostatParticipationSupported: true,
         followMe: null,
         occupancyAvailable: false,
         comfortScheduleAvailable: true,
@@ -277,7 +283,8 @@ describe('analyzePlacement', () => {
     expect(Object.keys(result.coverage).sort()).toEqual([
       'comfortScheduleAvailable', 'coolingEvents', 'coolingFrom', 'coolingTo', 'end', 'followMe',
       'hvacEarliestStateAt', 'hvacHistoryAvailable', 'inferredMorningEvents', 'morningEvents', 'occupancyAvailable',
-      'participationConfigured', 'returnEvents', 'returnHistoryAvailable', 'start', 'unknownUnitWindows', 'wakeEvents',
+      'participationConfigured', 'returnEvents', 'returnHistoryAvailable', 'start', 'thermostatParticipationSupported',
+      'unknownUnitWindows', 'wakeEvents',
     ]);
     expect(Object.keys(result.sensors[0]).sort()).toEqual([
       'averageOffset', 'classification', 'consistency', 'coolingOffset', 'coolingUndershoot',
@@ -1088,13 +1095,15 @@ describe('analyzePlacement', () => {
 
   it('describes rooms sitting above the set point with heating idle as passive warmth, not a rise', () => {
     // Rooms sit flat at 22 °C, above the 21 °C set point whenever heating is
-    // idle: sensors aren't the cause, and the text must not say they rose.
+    // idle. The Ecobee aggregate independently reports that same temperature.
     const samples = mornings((d) => [state(at(d, 7), 'idle')]);
-    const result = analyzePlacement(input({ sensors: flatRooms(() => 22), hvac: samples }));
-    expect(result.sensors.map((s) => s.overshoot)).toEqual([1, 1]);
+    const sensors = flatRooms(() => 22);
+    const aggregate = { id: 'home_current_temperature', name: 'Home', isThermostat: true, points: sensors[0].points };
+    const result = analyzePlacement(input({ sensors: [...sensors, aggregate], hvac: samples }));
+    expect(result.sensors.filter((s) => !s.isThermostat).map((s) => s.overshoot)).toEqual([1, 1]);
     const [rec] = result.recommendations;
     expect(rec).toMatchObject({ id: 'passive-warmth-heating', action: 'none', sensorId: null, mode: 'heating' });
-    expect(rec.detail).toContain('the rooms sat 2.1 °C above the set point on average, and at least 1.0 °C above it 100% of the time');
+    expect(rec.detail).toContain('the Ecobee average sat 2.1 °C above the set point on average, and at least 1.0 °C above it 100% of the time');
     expect(rec.detail).toContain('Sensor placement isn\'t causing this');
     expect(result.recommendations.every((r) => !/\brose\b/.test(r.detail))).toBe(true);
   });
@@ -1207,7 +1216,8 @@ const WAKE_BIASES = {
 
 function wakeInput(overrides: Partial<Parameters<typeof analyzePlacement>[0]> = {}) {
   return input({
-    sensors: rooms(WAKE_BIASES, wakeBase),
+    // Ecobee reports the actual aggregate of these four rooms.
+    sensors: rooms({ ...WAKE_BIASES, home_current_temperature: 0 }, wakeBase),
     hvac: wakeHvac(5),
     comfort: comfortSchedule(5),
     ...overrides,
@@ -1269,6 +1279,7 @@ function passiveInput(overrides: Partial<Parameters<typeof analyzePlacement>[0]>
     sensors: rooms(PASSIVE_BIASES, (t) => 23 + 0.5 * Math.sin((2 * Math.PI * (t - START)) / DAY)),
     hvac: passiveHvac(5),
     comfort: comfortSchedule(5),
+    participation: FOLLOW_ME_OFF_THERMOSTAT_EXCLUDED,
     ...overrides,
   });
 }
@@ -1276,7 +1287,7 @@ function passiveInput(overrides: Partial<Parameters<typeof analyzePlacement>[0]>
 const occupied = (value: boolean): OccupancySample[] => [{ t: START - DAY, occupied: value }];
 
 const config = (home: string[] | null, followMe: boolean | null = false) => ({
-  home, sleep: null, away: null, followMe,
+  home, sleep: null, away: null, followMe, thermostat: THERMOSTAT_EXCLUDED,
 });
 
 describe('analyzePlacement (Ecobee comfort average)', () => {
@@ -1299,7 +1310,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       recommendationIds: ['wake-bedroom'],
     });
     // One cold room pulls the house average down; the others aren't outliers.
-    result.sensors.filter((s) => s.id !== 'bedroom_temperature').forEach((s) => {
+    result.sensors.filter((s) => !s.isThermostat && s.id !== 'bedroom_temperature').forEach((s) => {
       expect(s).toMatchObject({ verdict: 'representative', wakeOvershoot: 0.5, recommendationIds: ['wake-bedroom'] });
     });
     expect(result.recommendations).toHaveLength(1);
@@ -1325,7 +1336,10 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
   });
 
   it('states participation plainly when the comfort settings are configured', () => {
-    const result = analyzePlacement(wakeInput({ participation: config(['bedroom_temperature', 'living_temperature']) }));
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase),
+      participation: config(['bedroom_temperature', 'living_temperature']),
+    }));
     expect(result.coverage).toMatchObject({ participationConfigured: true, followMe: false });
     // The effective average is the participating sensors' mean (-0.5).
     expect(result.sensors.map((s) => [s.id, s.wakeOffset, s.participation.home])).toEqual([
@@ -1364,7 +1378,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     const full = withOccupancy(true);
     expect(full.recommendations[0].id).toBe('wake-bedroom');
     expect(full.recommendations[0].detail).toContain(
-      'With Follow Me on, it counted 100% of the time while the warm-ups heated in Home (while occupied, or when no participating room was).',
+      'With Follow Me on, it counted 100% of the time while the warm-ups heated in Home (while occupied, or when no participating sensor was).',
     );
   });
 
@@ -1385,8 +1399,208 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     office_temperature: 0.8,
   };
 
+  it.each(['home', 'sleep', 'away'] as const)('uses the aggregate and only reconstructs complete %s averages', (setting) => {
+    const members = ['bedroom_temperature', 'living_temperature'];
+    const sensors = rooms({
+      home_current_temperature: 1, bedroom_temperature: -2, living_temperature: 0,
+    }, () => 20);
+    const result = (membership: boolean | null, fresh: boolean, selected: string[] | null = members) => {
+      const participation = {
+        home: members, sleep: members, away: members, followMe: false,
+        [setting]: selected,
+        thermostat: { home: null, sleep: null, away: null, [setting]: membership },
+      };
+      return analyzePlacement(wakeInput({
+        sensors: sensors.map((s) => (s.isThermostat && !fresh ? { ...s, points: [] } : s)),
+        comfort: [{ t: START - DAY, setting }],
+        participation,
+      })).sensors.find((s) => s.id === 'bedroom_temperature')!.periodOffsets.heatingRuns;
+    };
+    [true, false, null].forEach((membership) => {
+      // The actual aggregate wins even when participation is unknown or incomplete.
+      expect(result(membership, true, [...members, 'undiscovered_temperature'])).toBe(-3);
+    });
+    expect(result(true, false)).toBeNull();
+    expect(result(null, false)).toBeNull();
+    expect(result(false, false)).toBe(-1);
+    expect(result(false, false, null)).toBeNull();
+    expect(result(false, false, [...members, 'undiscovered_temperature'])).toBeNull();
+  });
+
+  it('reconstructs a Follow Me average only when the possible thermostat participant is provably left out', () => {
+    const members = ['bedroom_temperature', 'living_temperature'];
+    const result = (
+      thermostatOccupancy: boolean | null,
+      livingOccupancy: boolean | null,
+      thermostatIncluded: boolean | null,
+      selected = members,
+      followMe: boolean | null = true,
+    ) => {
+      const sensors = rooms({
+        home_current_temperature: 0, bedroom_temperature: -2, living_temperature: 0,
+      }, () => 20).map((s) => ({
+        ...s,
+        points: s.isThermostat ? [] : s.points,
+        occupancy: [{
+          t: START - DAY,
+          occupied: s.isThermostat ? thermostatOccupancy : s.id === 'living_temperature' ? livingOccupancy : false,
+        }],
+      }));
+      return analyzePlacement(wakeInput({
+        sensors,
+        comfort: [{ t: START - DAY, setting: 'home' }],
+        participation: {
+          home: selected, sleep: null, away: null, followMe, thermostat: { home: thermostatIncluded },
+        },
+      })).sensors.find((s) => s.id === 'bedroom_temperature')!.periodOffsets.home;
+    };
+    expect(result(false, true, true)).toBe(-2);
+    expect(result(false, true, null)).toBe(-2);
+    expect(result(true, true, true)).toBeNull();
+    expect(result(null, true, true)).toBeNull();
+    expect(result(false, false, true)).toBeNull();
+    expect(result(false, null, true)).toBeNull();
+    expect(result(false, true, true, [...members, 'undiscovered_temperature'])).toBeNull();
+    expect(result(true, true, false)).toBe(-2);
+    expect(result(null, true, false)).toBe(-2);
+    expect(result(false, true, true, members, null)).toBeNull();
+  });
+
+  it('allows the sole configured room when the thermostat is excluded, even without occupancy', () => {
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms({ bedroom_temperature: -2, living_temperature: 0 }, () => 20),
+      comfort: [{ t: START - DAY, setting: 'home' }],
+      participation: {
+        home: ['bedroom_temperature'], sleep: null, away: null, followMe: true, thermostat: { home: false },
+      },
+    }));
+    expect(result.sensors.find((s) => s.id === 'bedroom_temperature')!.periodOffsets.home).toBe(0);
+    expect(result.sensors.find((s) => s.id === 'living_temperature')!.periodOffsets.home).toBe(2);
+    expect(result.recommendations.find((r) => r.id === 'move-bedroom')!.title).toBe('Bedroom is keeping the heat on');
+  });
+
+  it('accounts for thermostat membership and occupancy when an unoccupied room may count', () => {
+    const members = ['bedroom_temperature', 'living_temperature'];
+    const run = (
+      thermostatMember: boolean | null,
+      thermostatOccupancy: boolean | null | undefined,
+      bedroomOccupied = false,
+      livingOccupied = false,
+      selected = members,
+    ) => analyzePlacement(wakeInput({
+      sensors: rooms({ home_current_temperature: 0, ...WAKE_BIASES }, wakeBase).map((s) => ({
+        ...s,
+        occupancy: s.isThermostat
+          ? thermostatOccupancy === undefined ? undefined : [{ t: START - DAY, occupied: thermostatOccupancy }]
+          : occupied(s.id === 'bedroom_temperature' ? bedroomOccupied : livingOccupied),
+      })),
+      participation: {
+        home: selected, sleep: selected, away: null, followMe: true,
+        thermostat: { home: thermostatMember, sleep: thermostatMember },
+      },
+    }));
+    const wake = (result: ReturnType<typeof run>) => result.recommendations.find((r) => r.id === 'wake-bedroom');
+    const bedroom = (result: ReturnType<typeof run>) => result.sensors.find((s) => s.id === 'bedroom_temperature')!;
+
+    const occupiedThermostat = run(true, true);
+    expect(wake(occupiedThermostat)).toBeUndefined();
+    expect(bedroom(occupiedThermostat).verdictSummary).toContain('never counted');
+    const emptyThermostat = run(true, false);
+    expect(wake(emptyThermostat)).toMatchObject({ title: 'Bedroom is holding the morning warm-up on' });
+    expect(wake(emptyThermostat)!.detail).toContain('it counted 100% of the time');
+    expect(wake(run(false, true))).toMatchObject({ title: 'Bedroom is holding the morning warm-up on' });
+    expect(wake(run(null, false))).toMatchObject({ title: 'Bedroom is holding the morning warm-up on' });
+    [run(true, null), run(true, undefined), run(null, true)].forEach((unknown) => {
+      expect(wake(unknown)).toMatchObject({ severity: 'low', title: 'Bedroom may be holding the morning warm-up on' });
+      expect(wake(unknown)!.detail).toContain('If it counted');
+    });
+    // Its own occupancy proves it counts, regardless of the thermostat.
+    expect(wake(run(true, null, true))).toMatchObject({ title: 'Bedroom is holding the morning warm-up on' });
+    // Another known occupied room proves it doesn't, even with thermostat occupancy unknown.
+    expect(wake(run(true, null, false, true))).toBeUndefined();
+    expect(bedroom(run(true, null, false, true)).verdictSummary).toContain('never counted');
+    // A configured but undiscovered participant may be occupied.
+    const partial = run(false, false, false, false, ['bedroom_temperature', 'undiscovered_temperature']);
+    expect(wake(partial)).toMatchObject({ severity: 'low', title: 'Bedroom may be holding the morning warm-up on' });
+    const undiscovered = analyzePlacement(wakeInput({
+      sensors: rooms({ home_current_temperature: 0, ...WAKE_BIASES }, wakeBase)
+        .map((s) => ({ ...s, occupancy: occupied(false) })),
+      participation: { home: null, sleep: null, away: null, followMe: true },
+    }));
+    expect(wake(undiscovered)).toMatchObject({ severity: 'low', title: 'Bedroom may be holding the morning warm-up on' });
+  });
+
+  it('does not fit room-only membership when the physical thermostat could contribute', () => {
+    const wrong = ['bedroom_temperature', 'kitchen_temperature'];
+    const result = (home: boolean | null, sleep: boolean | null) => analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase),
+      participation: {
+        home: wrong, sleep: wrong, away: null, followMe: false, thermostat: { home, sleep },
+      },
+    }));
+    const uncertain = result(null, true);
+    expect(uncertain.recommendations.some((r) => r.id.startsWith('participation-mismatch'))).toBe(false);
+    const legacy = analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase), participation: FOLLOW_ME_OFF,
+    }));
+    const legacyWake = legacy.recommendations.find((r) => r.id === 'wake-bedroom')!;
+    expect(legacyWake.detail).toContain('If it\'s in your Home comfort setting');
+    expect(legacyWake.detail).not.toContain('readings suggest');
+    const knownHome = result(false, true);
+    expect(knownHome.recommendations.map((r) => r.id)).toContain('participation-mismatch-home');
+    expect(knownHome.recommendations.map((r) => r.id)).not.toContain('participation-mismatch-sleep');
+    const missingRoom = analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase),
+      participation: {
+        home: [...wrong, 'undiscovered_temperature'], sleep: null, away: null, followMe: false,
+        thermostat: { home: false },
+      },
+    }));
+    expect(missingRoom.recommendations.map((r) => r.id)).not.toContain('participation-mismatch-home');
+    const missingReading = analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase).map((s) => (
+        s.id === 'kitchen_temperature' ? { ...s, points: [] } : s
+      )),
+      participation: { ...config(wrong), thermostat: { home: false } },
+    }));
+    expect(missingReading.recommendations.map((r) => r.id)).not.toContain('participation-mismatch-home');
+  });
+
+  it.each(['home', 'sleep', 'away'] as const)('warns when empty %s also excludes the thermostat', (setting) => {
+    const participation = {
+      home: null, sleep: null, away: null, followMe: false,
+      [setting]: [],
+      thermostat: { [setting]: false },
+    };
+    const comfort = [{ t: START - DAY, setting }];
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase),
+      participation,
+      comfort,
+    }));
+    const warning = result.recommendations.find((r) => r.id === `participation-empty-${setting}`)!;
+    expect(warning).toMatchObject({ action: 'none', comfortSetting: setting });
+    expect(warning.detail).toContain('thermostat sensor');
+    expect(warning.detail).toContain('unknown');
+    expect(result.sensors.find((s) => s.isThermostat)!.participation).toEqual({ home: null, sleep: null, away: null });
+    const missing = analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase),
+      participation,
+      comfort,
+    }));
+    expect(missing.sensors.every((s) => s.periodOffsets.heatingRuns === null)).toBe(true);
+    expect(missing.recommendations.map((r) => r.id)).toContain(`participation-empty-${setting}`);
+    const unknown = analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase), participation: { ...participation, thermostat: {} }, comfort,
+    }));
+    expect(unknown.recommendations.map((r) => r.id)).not.toContain(`participation-empty-${setting}`);
+  });
+
   it('estimates which sensors Ecobee averages from the thermostat reading', () => {
-    const result = analyzePlacement(wakeInput({ sensors: rooms(EST_BIASES, wakeBase) }));
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase),
+      participation: FOLLOW_ME_OFF_THERMOSTAT_EXCLUDED,
+    }));
     // Bedroom and Living Room are estimated in Home; Kitchen and Office out.
     const recIds = result.recommendations.map((r) => r.id);
     expect(recIds).toContain('wake-bedroom');
@@ -1527,9 +1741,13 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
 
   it('finds a warm sensor keeping the AC on from the last cooling season', () => {
     const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const summer = { kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 };
     const result = analyzePlacement(wakeInput({
       sensors: rooms(flat, wakeBase),
-      cooling: coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 }),
+      cooling: {
+        ...coolingInput(summer),
+        sensors: rooms({ ...summer, home_current_temperature: 0.5 / 3 }, coolBase, { from: SUMMER }),
+      },
     }));
     expect(result.coverage).toMatchObject({
       coolingFrom: '2026-07-04T00:00:00.000Z', coolingTo: '2026-07-09T00:00:00.000Z', coolingEvents: 5,
@@ -1653,15 +1871,17 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       sleep: ['bedroom_temperature', 'living_temperature'],
       away: null,
       followMe: false,
+      thermostat: THERMOSTAT_EXCLUDED,
     };
-    const result = analyzePlacement(wakeInput({ participation }));
+    const sensors = rooms(WAKE_BIASES, wakeBase);
+    const result = analyzePlacement(wakeInput({ sensors, participation }));
     const wake = result.recommendations.find((r) => r.id === 'wake-bedroom')!;
     // Home's own offset, not a blend with the preheat in Sleep.
     expect(wake).toMatchObject({ comfortSetting: 'home' });
     expect(wake.detail).toMatch(/^In 5 of 5 wake-ups \(Sleep → Home\), Bedroom read 1\.3 °C below the comfort average Ecobee heats to\. /);
     // In Sleep only: the preheat's setting is the one blamed, from its offset.
     const sleepOnly = analyzePlacement(wakeInput({
-      participation: { ...participation, home: ['kitchen_temperature', 'office_temperature'] },
+      sensors, participation: { ...participation, home: ['kitchen_temperature', 'office_temperature'] },
     }));
     const sleepWake = sleepOnly.recommendations.find((r) => r.id === 'wake-bedroom')!;
     expect(sleepWake).toMatchObject({ comfortSetting: 'sleep', title: 'Bedroom is holding the morning warm-up on' });
@@ -1700,6 +1920,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       sleep: ['bedroom_temperature', 'living_temperature'],
       away: null,
       followMe: false,
+      thermostat: THERMOSTAT_EXCLUDED,
     };
     const wake = (anomalyHour: number | null) => {
       const sensors = rooms({
@@ -1740,8 +1961,11 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     const hourOf = (t: number) => ((t - START) % DAY) / HOUR;
     const night = (t: number) => hourOf(t) < 6 || hourOf(t) >= 22;
     const withBedroom = (bias: (t: number) => number) => rooms({ ...WAKE_BIASES, bedroom_temperature: bias }, wakeBase);
-    const recsFor = (bias: (t: number) => number) => analyzePlacement(wakeInput({ sensors: withBedroom(bias) }))
-      .recommendations.filter((r) => r.sensorId === 'bedroom_temperature');
+    const all = Object.keys(WAKE_BIASES);
+    const recsFor = (bias: (t: number) => number) => analyzePlacement(wakeInput({
+      sensors: withBedroom(bias),
+      participation: { ...config(all), sleep: all },
+    })).recommendations.filter((r) => r.sensorId === 'bedroom_temperature');
     // Cold only in Sleep: no Home tip; the preheat in Sleep is what it affects.
     const sleepCold = recsFor((t) => (night(t) ? -2 : 0.5));
     expect(sleepCold.some((r) => r.comfortSetting === 'home')).toBe(false);
@@ -1758,12 +1982,14 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       sleep: ['living_temperature', 'kitchen_temperature', 'office_temperature'],
       away: null,
       followMe: false,
+      thermostat: THERMOSTAT_EXCLUDED,
     };
-    const result = analyzePlacement(wakeInput({ hvac: preheatHvac(5), participation }));
+    const sensors = rooms(WAKE_BIASES, wakeBase);
+    const result = analyzePlacement(wakeInput({ sensors, hvac: preheatHvac(5), participation }));
     expect(result.recommendations.some((r) => r.id === 'wake-bedroom')).toBe(false);
     // In Sleep, it is blamed for Sleep.
     const inSleep = analyzePlacement(wakeInput({
-      hvac: preheatHvac(5), participation: { ...participation, sleep: [...participation.sleep, 'bedroom_temperature'] },
+      sensors, hvac: preheatHvac(5), participation: { ...participation, sleep: [...participation.sleep, 'bedroom_temperature'] },
     }));
     expect(inSleep.recommendations.find((r) => r.id === 'wake-bedroom')).toMatchObject({ comfortSetting: 'sleep' });
   });
@@ -1986,7 +2212,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
         ...r, occupancy: occupied(r.id !== 'bedroom_temperature' && othersOccupied),
       })),
-      participation: { home: both, sleep: both, away: null, followMe },
+      participation: { home: both, sleep: both, away: null, followMe, thermostat: THERMOSTAT_EXCLUDED },
     }));
     const caveat = 'Follow Me wasn\'t specified; if it\'s on it may have left it out of the average while '
       + 'unoccupied, and whether it counted isn\'t known';
@@ -2029,7 +2255,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(omitted.detail).toContain('If it\'s in your Home comfort setting and counted toward the average (Follow Me '
       + 'wasn\'t specified');
     const off = withConfig({
-      home: null, sleep: null, away: null, followMe: false,
+      ...FOLLOW_ME_OFF_THERMOSTAT_EXCLUDED,
     }).recommendations.find((r) => r.id === 'wake-bedroom')!;
     expect(off.detail).toContain('The thermostat\'s readings suggest it\'s in your Home comfort setting. Ecobee keeps heating');
   });
@@ -2080,7 +2306,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     const some = run(true, true);
     expect(some.rec).toMatchObject({ title: 'Kitchen is keeping the AC on' });
     expect(some.rec!.detail).toContain('With Follow Me on, it counted 2% of the time while the AC ran in Home (while '
-      + 'occupied, or when no participating room was). Whether it counted could only be told for 75% of that time; '
+      + 'occupied, or when no participating sensor was). Whether it counted could only be told for 75% of that time; '
       + 'the share is of that part.');
     expect(some.summary).toContain('(with Follow Me it counted 2% of the time while the AC ran in Home, of the 75% of '
       + 'that time it could be told)');
@@ -2092,7 +2318,8 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       + 'unoccupied, and whether it counted isn\'t known';
     // Omitted, nothing configured, no thermostat reading: the average Ecobee
     // used isn't assumed, so there are no wake offsets or wake-up tip.
-    const omitted = analyzePlacement(wakeInput({ participation: undefined }));
+    const withoutAggregate = rooms(WAKE_BIASES, wakeBase);
+    const omitted = analyzePlacement(wakeInput({ sensors: withoutAggregate, participation: undefined }));
     expect(omitted.coverage).toMatchObject({ followMe: null, occupancyAvailable: false });
     expect(omitted.sensors.every((s) => s.wakeOffset === null)).toBe(true);
     expect(omitted.recommendations.map((r) => [r.id, r.severity, r.title])).toEqual([
@@ -2112,7 +2339,9 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(wake.detail).toContain(`(${omittedCaveat})`);
     expect(estimated.recommendations.every((r) => !r.detail.includes('readings suggest'))).toBe(true);
     // Explicitly on: the same, worded for Follow Me on.
-    const on = analyzePlacement(wakeInput({ participation: { home: both, sleep: both, away: null, followMe: true } }));
+    const on = analyzePlacement(wakeInput({
+      sensors: withoutAggregate, participation: { home: both, sleep: both, away: null, followMe: true },
+    }));
     const bedroom = on.sensors.find((s) => s.id === 'bedroom_temperature')!;
     expect(bedroom.wakeOffset).toBeNull();
     expect(on.recommendations.map((r) => [r.id, r.severity, r.title])).toEqual([
@@ -2123,13 +2352,18 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       + 'time. If it counted, Ecobee keeps heating');
     expect(bedroom.verdictSummary).toContain('so it may or may not be pulling the average down');
     // Explicitly off: all members count, as before.
-    const off = analyzePlacement(wakeInput({ participation: { home: both, sleep: both, away: null, followMe: false } }));
+    const off = analyzePlacement(wakeInput({
+      sensors: withoutAggregate,
+      participation: { home: both, sleep: both, away: null, followMe: false, thermostat: THERMOSTAT_EXCLUDED },
+    }));
     expect(off.recommendations[0]).toMatchObject({
       id: 'wake-bedroom', severity: 'medium', title: 'Bedroom is holding the morning warm-up on',
     });
     expect(off.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary).toContain('— likely');
     // With the thermostat's reading and Follow Me off, membership is estimated.
-    const offEstimated = analyzePlacement(wakeInput({ sensors: rooms(EST_BIASES, wakeBase) }));
+    const offEstimated = analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase), participation: FOLLOW_ME_OFF_THERMOSTAT_EXCLUDED,
+    }));
     expect(offEstimated.recommendations.find((r) => r.id === 'wake-bedroom')!.detail).toContain('readings suggest');
   });
 
@@ -2272,6 +2506,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     };
     const result = analyzePlacement(wakeInput({
       sensors: rooms(EST_BIASES, wakeBase),
+      participation: FOLLOW_ME_OFF_THERMOSTAT_EXCLUDED,
       cooling: {
         ...coolingInput(summer),
         sensors: rooms({ ...summer, home_current_temperature: 0.5 / 3 }, coolBase, { from: SUMMER }),
@@ -2299,6 +2534,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       sensors: rooms(EST_BIASES, wakeBase).map((r) => (r.id === 'office_temperature'
         ? { ...r, points: r.points.filter((p) => keep(p.t)) }
         : r)),
+      participation: FOLLOW_ME_OFF_THERMOSTAT_EXCLUDED,
     }));
     const estimated = 'The thermostat\'s readings suggest it\'s in your Home comfort setting. Ecobee keeps heating';
     // Absent: no subset with the Office can be scored, so it doesn't block the others.
