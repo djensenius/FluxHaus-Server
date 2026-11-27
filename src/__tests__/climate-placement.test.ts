@@ -316,15 +316,19 @@ describe('analyzePlacement', () => {
     const [summary] = result.recommendations;
     expect(summary).toMatchObject({ id: 'no-changes', title: 'No placement issues found in the available data' });
     expect(summary.detail).not.toContain('None of them peaked');
-    expect(summary.detail).toContain(
-      'Thermostat history didn\'t show heating stopping after a heat-up with a known set point, so overshoot wasn\'t checked.',
-    );
+    expect(summary.detail).toContain('Overshoot after heating stopped couldn\'t be measured for Living, Bedroom.');
   });
 
-  it('says which rooms lacked readings after recorded heating stops', () => {
-    // Heating stops at 08:30 and 19:30 are recorded, but the Bedroom has no
-    // readings for two hours after each, so its overshoot is unknown. That's
-    // missing readings, not missing thermostat history.
+  // The no-changes overshoot sentence is coverage-neutral: it never says why
+  // overshoot couldn't be measured, and never claims rooms stayed below it.
+  const expectNeutralOvershoot = (result: ReturnType<typeof analyzePlacement>, rooms: string) => {
+    const [summary] = result.recommendations;
+    expect(summary).toMatchObject({ id: 'no-changes', title: 'No placement issues found in the available data' });
+    expect(summary.detail).toContain(`Overshoot after heating stopped couldn't be measured for ${rooms}.`);
+    expect(summary.detail).not.toMatch(/None of them peaked|Thermostat history|readings after|wasn't checked/);
+  };
+
+  it('stays neutral when a room lacks readings after heating stops', () => {
     const [living, bedroom] = series({ living_temperature: 0, bedroom_temperature: 0 }, 5);
     const afterStop = (t: number) => {
       const h = ((t - START) % DAY) / HOUR;
@@ -334,10 +338,24 @@ describe('analyzePlacement', () => {
       sensors: [living, { ...bedroom, points: bedroom.points.filter((p) => !afterStop(p.t)) }],
     }));
     expect(result.sensors.map((s) => [s.classification, s.overshoot])).toEqual([['representative', 0], ['representative', null]]);
-    const [summary] = result.recommendations;
-    expect(summary).toMatchObject({ id: 'no-changes', title: 'No placement issues found in the available data' });
-    expect(summary.detail).toContain('Overshoot wasn\'t checked for Bedroom: not enough readings after heating stopped.');
-    expect(summary.detail).not.toContain('Thermostat history');
+    expectNeutralOvershoot(result, 'Bedroom');
+  });
+
+  it('stays neutral when heating restarts right after stopping', () => {
+    // Idle at 07:00, heating again at 07:15: too short to measure overshoot.
+    const samples = mornings((d) => [state(at(d, 7), 'idle'), state(at(d, 7.25), 'heating'), state(at(d, 9), 'idle', { setpoint: 17 })]);
+    const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: samples }));
+    expect(result.coverage.morningEvents).toBe(5);
+    expect(result.sensors.map((s) => [s.classification, s.overshoot])).toEqual([['representative', null], ['representative', null]]);
+    expectNeutralOvershoot(result, 'Living, Bedroom');
+  });
+
+  it('stays neutral when heating stops with a simultaneous set point change', () => {
+    const samples = mornings((d) => [state(at(d, 7), 'idle', { setpoint: 18 })]);
+    const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: samples }));
+    expect(result.coverage.morningEvents).toBe(5);
+    expect(result.sensors.map((s) => [s.classification, s.overshoot])).toEqual([['representative', null], ['representative', null]]);
+    expectNeutralOvershoot(result, 'Living, Bedroom');
   });
 
   it('mentions sensors without enough data in the summary', () => {
@@ -707,7 +725,7 @@ describe('analyzePlacement', () => {
     // of reading/state timestamps and Map operations (the grid) while
     // analyzing, and require that doubling the days at most about doubles
     // them. Rescanning whole histories per candidate grows quadratically.
-    const work = (days: number): number => {
+    const work = (days: number, observed: boolean): number => {
       let count = 0;
       const counted = <T extends { t: number }>(item: T): T => {
         const { t } = item;
@@ -721,9 +739,13 @@ describe('analyzePlacement', () => {
       };
       const biases = Object.fromEntries(Array.from({ length: 6 }, (_unused, i) => [`room${i}_temperature`, (i % 3) - 1]));
       const sensors = series(biases, days).map((sensor) => ({ ...sensor, points: sensor.points.map(counted) }));
-      const samples = Array.from({ length: days * 96 }, (_unused, i) => counted(state(START + i * 15 * 60_000, 'idle', {
-        presetMode: null, setpoint: 20,
-      })));
+      // Observed: reported heating starts and stops each morning and evening
+      // (with Away/home presets). Inferred: idle every 15 minutes.
+      const samples = observed
+        ? hvac(days).map(counted)
+        : Array.from({ length: days * 96 }, (_unused, i) => counted(state(START + i * 15 * 60_000, 'idle', {
+          presetMode: null, setpoint: 20,
+        })));
       const proto = Map.prototype;
       const original = { get: proto.get, has: proto.has, set: proto.set, forEach: proto.forEach };
       proto.get = function get(key) { count += 1; return original.get.call(this, key); };
@@ -739,14 +761,18 @@ describe('analyzePlacement', () => {
         const result = analyzePlacement(input({
           sensors, hvac: samples, end: new Date(START + days * DAY), windowDays: days,
         }));
-        expect(result.coverage.inferredMorningEvents).toBe(days);
+        expect(result.coverage).toMatchObject(observed
+          ? { morningEvents: days, inferredMorningEvents: 0, returnEvents: days }
+          : { morningEvents: days, inferredMorningEvents: days });
+        expect(result.sensors.some((s) => s.overshoot !== null)).toBe(observed);
       } finally {
         Object.assign(proto, original);
       }
       return count;
     };
-    // About 2.0 now; whole-history rescans gave about 3.8.
-    expect(work(20) / work(10)).toBeLessThan(2.3);
+    // About 2.0 now; whole-history rescans gave about 2.9–3.8.
+    expect(work(20, false) / work(10, false)).toBeLessThan(2.3);
+    expect(work(20, true) / work(10, true)).toBeLessThan(2.3);
   });
 
   it('infers mornings when the thermostat reports idle through a set point increase', () => {

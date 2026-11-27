@@ -483,8 +483,9 @@ alone ("the thermostat may keep heating to satisfy it").
   overshoots by 1.0 °C or more (for a representative sensor it quotes the mean
   absolute difference from the house average, so opposite offsets don't cancel); `none` summarizes what the data did cover (it
   only claims no overshoot when it was measured for every room; otherwise it
-  says whether heating stops weren't recorded or which rooms lacked readings
-  after them, and names sensors without enough data and inferred heat-ups).
+  says neutrally which rooms' overshoot after heating stopped couldn't be
+  measured, without guessing why, and names sensors without enough data and
+  inferred heat-ups).
 
 ```json
 {

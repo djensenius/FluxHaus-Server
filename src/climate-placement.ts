@@ -558,13 +558,17 @@ function eventContexts(grid: Grid, events: PlacementEvent[], samples: HvacSample
   });
 }
 
-// Peak above the set point from the sensor's own points that lie wholly inside
-// the window; null unless they cover enough of it.
+// Peak above the set point from the sensor's own (time-sorted) points that
+// lie wholly inside the window; null unless they cover enough of it. Only the
+// window's points are visited.
 function overshootIn(points: SensorSeriesInput['points'], window: OvershootWindow): number | null {
   const firstSlot = Math.ceil(window.from / BUCKET_MS);
   const slots = Math.floor(window.to / BUCKET_MS) - firstSlot;
   if (slots < MIN_OVERSHOOT_BUCKETS) return null;
-  const inside = points.filter((p) => p.t >= window.from && p.t + BUCKET_MS <= window.to);
+  const inside = points.slice(
+    firstIndexAfter(points, window.from, timeOf, false),
+    firstIndexAfter(points, window.to - BUCKET_MS, timeOf, true),
+  );
   const covered = new Set(inside.map((p) => Math.floor(p.t / BUCKET_MS))).size;
   if (covered < OVERSHOOT_COVERAGE * slots) return null;
   return Math.max(0, Math.max(...inside.map((p) => p.v)) - window.setpoint);
@@ -741,24 +745,20 @@ function recommend(analyzed: Analyzed[]): { rec: PlacementRecommendation; magnit
 }
 
 // Summary when nothing was flagged; only claims what the data covered.
-function noChanges(
-  analyzed: Analyzed[],
-  events: PlacementEvent[],
-  contexts: EventContext[],
-): PlacementRecommendation | null {
+function noChanges(analyzed: Analyzed[], events: PlacementEvent[]): PlacementRecommendation | null {
   const assessed = analyzed.filter((a) => a.out.classification !== 'insufficient');
   if (assessed.length < MIN_SENSORS_FOR_MEAN) return null;
   const missing = analyzed.filter((a) => a.out.classification === 'insufficient').map((a) => a.out.name);
   const overshootKnown = assessed.every((a) => a.out.overshoot !== null);
   const parts = ['No sensor with enough data read consistently above or below the house average during heat-ups.'];
-  if (overshootKnown) {
+  // Coverage-neutral when overshoot is unknown: no claim about why.
+  const unmeasured = assessed.filter((a) => a.out.overshoot === null).map((a) => a.out.name);
+  if (overshootKnown && events.length > 0) {
     parts.push(`None of them peaked ${OVERSHOOT_THRESHOLD.toFixed(1)} °C or more above the set point on average after heating stopped.`);
-  } else if (contexts.some((ctx) => ctx.overshoot !== null)) {
-    // Heating was recorded stopping, but some rooms lacked readings afterwards.
-    const unchecked = assessed.filter((a) => a.out.overshoot === null).map((a) => a.out.name);
-    parts.push(`Overshoot wasn't checked for ${unchecked.join(', ')}: not enough readings after heating stopped.`);
+  } else if (unmeasured.length > 0) {
+    parts.push(`Overshoot after heating stopped couldn't be measured for ${unmeasured.join(', ')}.`);
   } else {
-    parts.push('Thermostat history didn\'t show heating stopping after a heat-up with a known set point, so overshoot wasn\'t checked.');
+    parts.push('Overshoot after heating stopped couldn\'t be measured.');
   }
   if (missing.length > 0) parts.push(`Not enough data for ${missing.join(', ')}.`);
   const inferred = events.filter((e) => e.inferred).length;
@@ -824,7 +824,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   ));
   const recommendations = ranked.map((r) => r.rec);
   if (recommendations.length === 0) {
-    const summary = noChanges(analyzed, events, contexts);
+    const summary = noChanges(analyzed, events);
     if (summary) recommendations.push(summary);
   }
 
