@@ -326,8 +326,9 @@ describe('analyzePlacement', () => {
     expect(result.recommendations[0].detail).toBe(
       'In 5 of 5 wake-ups (Sleep → Home), Office read 2.4 °C below the reported or approximated comfort reading. '
       + 'If it\'s in your Home comfort setting, a low reading could contribute to a longer warm-up. Kitchen peaked 1.0 °C over '
-      + 'the Home set point on average in the 2 hours after waking. Move it to an interior wall at about chest height, '
-      + 'away from windows, doors and vents, or remove it from Home. The Sleep set point averaged 4.0 °C below Home. '
+      + 'the Home set point on average in the 2 hours after the corresponding heated wake-ups with sufficient readings. '
+      + 'Move it to an interior wall at about chest height, away from windows, doors and vents, or remove it from Home. '
+      + 'The Sleep set point averaged 4.0 °C below Home. '
       + 'Smart Recovery can start heating before Home; consider a smaller Sleep setback or reviewing Smart Recovery timing.',
     );
     expect(result.recommendations[0].likelyCauses.length).toBeGreaterThan(0);
@@ -1563,8 +1564,9 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(result.recommendations[0].detail).toBe(
       'In 5 of 5 wake-ups (Sleep → Home), Bedroom read 1.5 °C below the reported or approximated comfort reading. '
       + 'If it\'s in your Home comfort setting, a low reading could contribute to a longer warm-up. Living, Kitchen and Office '
-      + 'peaked 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after waking. Move it to an '
-      + 'interior wall at about chest height, away from windows, doors and vents, or remove it from Home. The Sleep '
+      + 'peaked 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after the corresponding heated wake-ups '
+      + 'with sufficient readings. Move it to an interior wall at about chest height, away from windows, doors and vents, '
+      + 'or remove it from Home. The Sleep '
       + 'set point averaged 4.0 °C below Home. The warm-up ran 150 minutes on average. Smart Recovery can start heating '
       + 'before Home; consider a smaller Sleep setback or reviewing Smart Recovery timing.',
     );
@@ -3275,6 +3277,282 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
         state(at(d, from + 3), 'idle', options),
       ];
     }).flat();
+
+    it.each(['heating', 'cooling'] as const)(
+      'review d29c8d1: does not assess %s verdicts from events in different scopes',
+      (mode) => {
+        const sensors = rooms({ kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 }, () => 22, { days: 3 });
+        const end = new Date(START + 3 * DAY);
+        const run = (comfort: ComfortSample[]) => analyzePlacement(input({
+          sensors,
+          primaryThermostatId: null,
+          hvac: activeHistory(mode, 3).map((sample) => ({ ...sample, setpoint: 23 })),
+          comfort,
+          participation: config(sensors.map((sensor) => sensor.id)),
+          end,
+          windowDays: 3,
+          cooling: mode === 'cooling' ? { start: new Date(START), end } : undefined,
+        }));
+        // Two Home events and one Sleep/unknown event do not give enough
+        // evidence for any of the separately judged scopes.
+        const split = run([...home, { t: at(2, 0), setting: mode === 'heating' ? 'sleep' : null }]);
+        const kitchen = split.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!;
+        expect(kitchen.verdict).toBe('insufficient');
+        expect(kitchen.verdictSummary).toContain('enough data');
+        expect(kitchen.verdictSummary).not.toMatch(/tracks|stays close/);
+        expect(split.recommendations.some((rec) => rec.id === 'no-changes')).toBe(false);
+
+        const complete = run(home);
+        expect(complete.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.verdict).toBe('warm_outlier');
+        expect(complete.recommendations.some((rec) => rec.sensorId === 'kitchen_temperature' && rec.mode === mode)).toBe(true);
+      },
+    );
+
+    it('review d29c8d1: limits a representative verdict to the assessed cooling setting', () => {
+      const end = new Date(START + 4 * DAY);
+      const sensors = rooms({
+        kitchen_temperature: (t) => (t >= at(3, 0) ? 3 : 0), living_temperature: 0, bedroom_temperature: 0,
+      }, () => 22, { days: 4 });
+      const result = analyzePlacement(input({
+        sensors, primaryThermostatId: null,
+        hvac: activeHistory('cooling', 4).map((sample) => ({ ...sample, setpoint: 22 })),
+        comfort: [...home, { t: at(3, 0), setting: null }],
+        participation: config(sensors.map((sensor) => sensor.id)),
+        end, windowDays: 4, cooling: { start: new Date(START), end },
+      }));
+      const kitchen = result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!;
+      expect(kitchen.verdict).toBe('representative');
+      expect(kitchen.verdictSummary).toContain('assessed Home cooling data');
+      expect(kitchen.verdictSummary).toContain('did not stand out consistently');
+      const summary = result.recommendations.find((rec) => rec.id === 'no-changes')!;
+      expect(summary.detail).toContain('Some settings or periods lacked enough comparable data');
+    });
+
+    it('review d29c8d1: does not call cancelling representative offsets close tracking', () => {
+      const end = new Date(START + 3 * DAY);
+      const sensors = rooms({
+        kitchen_temperature: (t) => [3, -3, 0][Math.floor((t - START) / DAY)],
+        living_temperature: 0,
+        bedroom_temperature: 0,
+      }, () => 22, { days: 3 });
+      const result = analyzePlacement(input({
+        sensors, primaryThermostatId: null,
+        hvac: activeHistory('cooling', 3).map((sample) => ({ ...sample, setpoint: 22 })),
+        comfort: home, participation: config(sensors.map((sensor) => sensor.id)),
+        end, windowDays: 3, cooling: { start: new Date(START), end },
+      }));
+      const kitchen = result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!;
+      expect(kitchen.verdict).toBe('representative');
+      expect(kitchen.verdictSummary).toContain('did not stand out consistently');
+      expect(kitchen.verdictSummary).not.toMatch(/tracks|stays close/);
+    });
+
+    const alternatingCooling = (days: number) => {
+      const end = new Date(START + days * DAY);
+      const sensors = rooms({
+        kitchen_temperature: 3,
+        living_temperature: 0,
+        bedroom_temperature: (t) => (t === at(0, 1.25) ? -4 : 0),
+      }, () => 24, { days });
+      const history = Array.from({ length: days }, (_, d) => [
+        state(at(d, 0), 'idle', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+        state(at(d, 1), 'cooling', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+        state(at(d, 10), 'idle', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+      ]).flat();
+      const schedule = Array.from({ length: days }, (_, d) => [
+        { t: at(d, 0), setting: 'home' },
+        { t: at(d, 2.5), setting: 'sleep' },
+        { t: at(d, 4), setting: 'home' },
+        { t: at(d, 5.5), setting: 'sleep' },
+        { t: at(d, 7), setting: 'home' },
+        { t: at(d, 8.5), setting: 'sleep' },
+      ]).flat();
+      const all = sensors.map((sensor) => sensor.id);
+      return analyzePlacement(input({
+        sensors, primaryThermostatId: null, hvac: history, comfort: schedule,
+        participation: { ...config(all), sleep: all },
+        end, windowDays: days, cooling: { start: new Date(START), end },
+      }));
+    };
+
+    it('review d29c8d1: does not count setting fragments as distinct cooling runs', () => {
+      const result = alternatingCooling(1);
+      expect(result.coverage.coolingEvents).toBe(1);
+      expect(result.recommendations.filter((rec) => rec.mode === 'cooling' && rec.sensorId === 'kitchen_temperature'))
+        .toEqual([]);
+      expect(result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.verdict).toBe('insufficient');
+    });
+
+    it('review d29c8d1: counts and measures distinct cooling runs even when each has repeated setting fragments', () => {
+      const result = alternatingCooling(3);
+      expect(result.coverage.coolingEvents).toBe(3);
+      const homeTip = result.recommendations.find((rec) => rec.id === 'cooling-kitchen-home')!;
+      const sleepTip = result.recommendations.find((rec) => rec.id === 'cooling-kitchen-sleep')!;
+      expect(homeTip.detail).toContain('3 of 3 cooling runs in Home');
+      expect(sleepTip.detail).toContain('3 of 3 cooling runs in Sleep');
+      // One 4 °C dip in one of the three runs is 1.3 °C per run, not 4/9.
+      expect(homeTip.detail).toContain('Bedroom dipped 1.3 °C below the cool set point on average');
+      expect(sleepTip.detail).not.toContain('Bedroom dipped');
+      expect(result.sensors.find((sensor) => sensor.id === 'bedroom_temperature')!.coolingUndershoot).toBe(1.3);
+    });
+
+    it('review d29c8d1: weights repeated cooling fragments by their comparable samples within each run', () => {
+      const end = new Date(START + 3 * DAY);
+      const sensors = rooms({
+        kitchen_temperature: (t) => {
+          const hour = ((t - START) % DAY) / HOUR;
+          return (hour >= 1 && hour < 1.5) || (hour >= 5 && hour < 5.5) ? 6 : 0;
+        },
+        living_temperature: 0,
+        bedroom_temperature: 0,
+      }, () => 24, { days: 3 });
+      const history = Array.from({ length: 3 }, (_, d) => [
+        state(at(d, 0), 'idle', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+        state(at(d, 1), 'cooling', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+        state(at(d, 10), 'idle', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+      ]).flat();
+      const schedule = Array.from({ length: 3 }, (_, d) => [
+        { t: at(d, 0), setting: 'home' }, { t: at(d, 1.5), setting: 'sleep' },
+        { t: at(d, 2), setting: 'home' }, { t: at(d, 4), setting: 'sleep' },
+        { t: at(d, 5), setting: 'home' }, { t: at(d, 5.5), setting: 'sleep' },
+      ]).flat();
+      const all = sensors.map((sensor) => sensor.id);
+      const result = analyzePlacement(input({
+        sensors, primaryThermostatId: null, hvac: history, comfort: schedule,
+        participation: { ...config(all), sleep: all }, end, windowDays: 3,
+        cooling: { start: new Date(START), end },
+      }));
+      const tip = result.recommendations.find((rec) => rec.id === 'cooling-kitchen')!;
+      expect(tip.detail).toContain('3 of 3 cooling runs in Home');
+      // Four 4 °C offsets and eight zero offsets make 1.3 °C per run.
+      expect(tip.detail).toContain('1.3 °C above on average while cooling ran in Home');
+    });
+
+    const wakePairing = (heatedDays: number[], peakDays: number[], referenceDays: number[], peak = 2) => {
+      const days = 5;
+      const value = (t: number) => {
+        const d = Math.floor((t - START) / DAY);
+        const hour = ((t - START) % DAY) / HOUR;
+        return 21 + (peakDays.includes(d) && (!heatedDays.includes(d) || hour >= 7) ? peak : 0);
+      };
+      const sensors = rooms({
+        home_current_temperature: 0, bedroom_temperature: -2, living_temperature: 0, kitchen_temperature: 0,
+      }, value, { days }).map((sensor) => (sensor.isThermostat
+        ? { ...sensor, points: sensor.points.filter((point) => referenceDays.includes(Math.floor((point.t - START) / DAY))) }
+        : sensor));
+      const history = Array.from({ length: days }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, setpoint: 21 }),
+        ...(heatedDays.includes(d) ? [
+          state(at(d, 6), 'heating', { presetMode: null, setpoint: 21 }),
+          state(at(d, 7), 'idle', { presetMode: null, setpoint: 21 }),
+        ] : []),
+        state(at(d, 22), 'idle', { presetMode: null, setpoint: 21 }),
+      ]).flat();
+      return analyzePlacement(wakeInput({
+        sensors, hvac: history, comfort: comfortSchedule(days),
+        // Missing references cannot be reconstructed from rooms.
+        participation: { ...config(['bedroom_temperature', 'living_temperature', 'kitchen_temperature']), thermostat: { home: true } },
+      }));
+    };
+
+    it('review d29c8d1: pairs wake advice with the heated wakes, not unrelated idle wake overshoots', () => {
+      const idlePeaks = wakePairing([0, 1], [2, 3, 4], [0, 1, 2, 3, 4]);
+      expect(idlePeaks.coverage.wakeEvents).toBe(5);
+      expect(idlePeaks.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(1.2);
+      expect(idlePeaks.recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+
+      const pairedPeak = wakePairing([0, 1], [0, 2, 3, 4], [0, 1, 2, 3, 4]);
+      const tip = pairedPeak.recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      expect(tip).toBeDefined();
+      expect(tip.detail).toContain('peaked 1.0 and 1.0 °C over the Home set point');
+      expect(pairedPeak.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(1.6);
+    });
+
+    it('review d29c8d1: excludes heated wakes without a qualifying reference from wake overshoot advice', () => {
+      const missingReference = wakePairing([0, 1, 2], [2], [0, 1], 4);
+      expect(missingReference.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(0.8);
+      expect(missingReference.recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+
+      const complete = wakePairing([0, 1, 2], [2], [0, 1, 2, 3, 4], 4);
+      const tip = complete.recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      expect(tip).toBeDefined();
+      expect(tip.detail).toContain('peaked 1.3 and 1.3 °C over the Home set point');
+    });
+
+    it.each(['heating', 'cooling'] as const)(
+      'review d29c8d1: describes the signed passive %s mean independently of the threshold share',
+      (mode) => {
+        const direction = mode === 'heating' ? 1 : -1;
+        const target = 22;
+        const end = new Date(START + 2 * DAY);
+        const run = (secondHalf: number) => {
+          const sensors = rooms({ bedroom_temperature: 0, living_temperature: 0 }, (t) => (
+            target + direction * (t < START + DAY ? 1 : secondHalf)
+          ), { days: 2 });
+          return analyzePlacement(input({
+            sensors, primaryThermostatId: null, reportedTemperature: { points: sensors[0].points },
+            hvac: [state(START, 'idle', { hvacMode: mode === 'heating' ? 'heat' : 'cool', setpoint: target })],
+            comfort: home, participation: config(sensors.map((sensor) => sensor.id)),
+            end, windowDays: 2, cooling: mode === 'cooling' ? { start: new Date(START), end } : undefined,
+          })).recommendations.find((rec) => rec.id === (mode === 'heating' ? 'passive-warmth-heating' : 'passive-cooling'))!;
+        };
+        const point = mode === 'heating' ? 'the set point' : 'the cool set point';
+        const preferred = mode === 'heating' ? 'above' : 'below';
+        const opposite = mode === 'heating' ? 'below' : 'above';
+        const negative = run(-3);
+        expect(negative.detail).toContain(`sat 1.0 °C ${opposite} ${point} on average`);
+        expect(negative.detail).toContain(`at least 1.0 °C ${preferred} it 50% of the observed idle samples`);
+        expect(run(-1).detail).toContain(`sat at ${point} on average`);
+        expect(run(0).detail).toContain(`sat 0.5 °C ${preferred} ${point} on average`);
+      },
+    );
+
+    it.each([
+      ['heating', 'cold'], ['heating', 'warm'], ['cooling', 'cold'], ['cooling', 'warm'],
+    ] as const)(
+      'review d29c8d1: does not describe an opposite-sign %s event mean in the %s direction',
+      (mode, classification) => {
+        const from = mode === 'heating' ? 6 : 12;
+        const sign = classification === 'cold' ? -1 : 1;
+        const sensorSeries = (mixed: boolean) => rooms({
+          bedroom_temperature: (t) => {
+            const d = Math.floor((t - START) / DAY);
+            const hour = ((t - START) % DAY) / HOUR;
+            return mixed && d === 2 && hour >= from && hour < from + 1 ? -4.5 * sign : 1.5 * sign;
+          },
+          living_temperature: 0,
+          kitchen_temperature: 0,
+        }, () => 20, { days: 3 });
+        const history = Array.from({ length: 3 }, (_, d) => {
+          const options = { hvacMode: mode === 'heating' ? 'heat' : 'cool', setpoint: 20, presetMode: null };
+          return [
+            state(at(d, 0), 'idle', options),
+            state(at(d, from), mode, options),
+            state(at(d, from + (d === 2 ? 1 : 3)), 'idle', options),
+          ];
+        }).flat();
+        const end = new Date(START + 3 * DAY);
+        const run = (mixed: boolean) => {
+          const sensors = sensorSeries(mixed);
+          return analyzePlacement(input({
+            sensors, primaryThermostatId: null, hvac: history, comfort: home,
+            participation: config(sensors.map((sensor) => sensor.id)), end, windowDays: 3,
+            cooling: mode === 'cooling' ? { start: new Date(START), end } : undefined,
+          }));
+        };
+        const result = run(true);
+        const bedroom = result.sensors.find((sensor) => sensor.id === 'bedroom_temperature')!;
+        expect(bedroom.verdict).toBe(`${classification}_outlier`);
+        expect(bedroom.verdictSummary).toContain(`2 of 3 ${mode === 'heating' ? 'heat-ups' : 'cooling runs'}`);
+        const direction = classification === 'cold' ? 'below' : 'above';
+        expect(bedroom.verdictSummary).not.toContain(`0.3 °C ${direction}`);
+        const tip = result.recommendations.find((rec) => rec.sensorId === bedroom.id && rec.mode === mode)!;
+        expect(tip.detail).toContain('2 of 3');
+        expect(tip.detail).not.toContain(`0.3 °C ${direction}`);
+        const consistent = run(false).sensors.find((sensor) => sensor.id === 'bedroom_temperature')!;
+        expect(consistent.verdictSummary).toContain(`1.0 °C ${direction} the house average`);
+      },
+    );
 
     it.each(['heating', 'cooling'] as const)(
       'keeps %s advice setting-neutral when comfort and preset history are unknown',

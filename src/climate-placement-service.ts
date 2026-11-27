@@ -654,7 +654,8 @@ export class ClimatePlacementService {
       const thermostatIds = new Set(sensors.filter((s) => s.isThermostat).map((s) => s.id));
       const thermostatMembers = selected.filter((id) => thermostatIds.has(id));
       if (thermostatMembers.length > 0) {
-        throw inputError(`Thermostat average cannot participate: ${[...new Set(thermostatMembers)].join(', ')}`);
+        throw inputError(`Thermostat-associated sensors cannot be listed as rooms: ${[...new Set(thermostatMembers)].join(', ')}. `
+          + 'Use thermostatHome, thermostatSleep or thermostatAway to configure the built-in sensor.');
       }
       const rooms = sensors.filter((s) => !s.isThermostat);
       if (rooms.length > 0) {

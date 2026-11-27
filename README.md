@@ -681,14 +681,16 @@ about 10 days:
   gap, an unknown action or any other action. Cooling event offsets and daily
   room comparisons use complete source buckets within actual active cooling,
   not the merged idle spells; every room in a comparison must belong to the
-  same active run.
+  same active run. Repeated parts of one run in the same comfort setting
+  contribute a sample-weighted offset to one occurrence, not multiple runs.
 - **Passive warmth:** when the reported or approximated comfort reading sits at
   least 1.0 °C over the heating set point for at least half of 96 or more
   observed idle samples (excluding the 2 hours after a reported heating run),
   or under the cool set point with cooling idle in `cool` mode, a
   `passive-warmth-heating` / `passive-cooling` recommendation gives the sampled
-  share and mean distance. It notes that sensor placement may still matter and
-  offers other possible explanations; idle evidence doesn't prove the cause.
+  share and signed mean distance, whose direction can differ from the threshold
+  share. It notes that sensor placement may still matter and offers other
+  possible explanations; idle evidence doesn't prove the cause.
   The reported idle action, applicable mode and set point must hold throughout
   the temperature source intervals; gaps, changes and buckets overlapping a
   recent run aren't treated as observed idle.
@@ -701,7 +703,11 @@ about 10 days:
   off the other rooms (cold/warm heat-ups as above, or at least 0.5 °C off on
   60% of at least 3 sampled calendar dates) and also stands out from the median
   room, so one outlier pulling the house average doesn't make every other room
-  look skewed.
+  look skewed. A representative verdict uses the heating or cooling scope
+  actually assessed; events from different settings cannot by themselves make
+  a separately judged setting sufficient. A scope without enough evidence is
+  not described as representative, and a no-changes summary discloses other
+  settings or periods with insufficient evidence.
   `periodOffsets` (`sleep`, `wake`, `home`, `heatingRuns`, `cooling`) are mean
   offsets from the thermostat-reported comfort reading, or from the complete
   room-only approximation where safe (otherwise `null`). `wakeOffset` and
@@ -710,7 +716,8 @@ about 10 days:
   the room peaked over the Home set point in the 2 hours after waking (against
   the set point reported within the first 15 minutes, excluding overlapping
   buckets before that target, and ending early at a set point, mode or preset
-  change or a gap); `coolingUndershoot` is the greatest dip below the cool set
+  change or a gap), averaged across measurable wakes whether or not they heated;
+  `coolingUndershoot` is the greatest dip below the cool set
   point in whole source buckets of actual active cooling, with a stable target.
   Merged idle spells and buckets spanning target changes cannot contribute.
   Heating offsets and daily comparisons skip source buckets containing a known `off`/`cool` mode or cooling
@@ -731,8 +738,11 @@ about 10 days:
   `likelyCauses`, and say what to do (`action`). These are hypotheses and
   actionable checks, not proof that placement caused the heating or cooling:
   - `wake-<sensor>` (`move`): a sensor at least 0.5 °C below the comfort average
-    in 60% of wake-ups while other rooms end up at least 0.5 °C over the Home
-    set point. It targets the setting the temperature evidence came from: Home
+    in 60% of measurable heated wake-ups while other rooms end up at least
+    0.5 °C over the Home set point on those same wake-ups with sufficient room
+    readings. Idle wakes and heated wakes without that sensor's qualifying
+    reference offsets do not contribute to the tip's overshoot. It targets the
+    setting the temperature evidence came from: Home
     when measured there, else the setting the preheat ran in (e.g. Sleep,
     "while heating in Sleep before Home"). A sensor configured or estimated
     outside that setting isn't treated as a participant. It can mention a Sleep
@@ -781,7 +791,8 @@ about 10 days:
     unknown-setting group). Without a heating verdict,
     `verdict` uses the first skewed setting by cooling time; `coolingOffset`, `coolingUndershoot` and the
     cooling `consistency` counts cover all cooling; the rooms a tip says the AC
-    overcooled come from that setting's cooling only.
+    overcooled come from that setting's cooling only, with the greatest dip
+    counted once per original run even when that setting has multiple parts.
   - `add-<sensor>` / `add-cooling-<sensor>` (`include_in_comfort`) for a room known
     not to participate that is consistently off, or a room that overshoots by
     1.0 °C or more when no other heating tip applies.

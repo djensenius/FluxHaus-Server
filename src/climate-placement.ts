@@ -281,7 +281,7 @@ export interface PlacementRecommendation {
 
 export interface PassiveSummary {
   // Share of idle points with the comfort average past the set point by
-  // PASSIVE_THRESHOLD, and its mean distance past the set point (°C).
+  // PASSIVE_THRESHOLD, and its signed mean distance past the set point (°C).
   share: number;
   offset: number;
 }
@@ -964,6 +964,9 @@ function actionsKnownThroughout(samples: HvacSample[], from: number, to: number)
 
 interface SettingRun extends Run {
   setting: ComfortSetting | null;
+  // Parts of the same original run are one occurrence, even if a setting
+  // appears more than once.
+  parent: Run;
 }
 
 // Runs split wherever the comfort setting changes, each with the setting in
@@ -975,7 +978,7 @@ function splitBySetting(timeline: SettingChange[], runs: Run[]): SettingRun[] {
     let index = firstIndexAfter(timeline, t, timeOf, true) - 1;
     while (t < run.to) {
       const end = Math.min(run.to, timeline[index + 1]?.t ?? run.to);
-      if (end > t) parts.push({ from: t, to: end, setting: index >= 0 ? timeline[index].setting : null });
+      if (end > t) parts.push({ from: t, to: end, setting: index >= 0 ? timeline[index].setting : null, parent: run });
       t = end;
       index += 1;
     }
@@ -1596,6 +1599,8 @@ interface EventContext {
   overshoot: OvershootWindow | null;
   // A wake-up's heating runs, per comfort setting (else null).
   heatParts: SettingRun[] | null;
+  // The actual Sleep → Home change associated with this heated wake-up.
+  wake: Wake | null;
 }
 
 // Cooling event comparisons need the entire grid bucket and each contributing
@@ -1634,13 +1639,14 @@ function eventContext(
   overshoot: OvershootWindow | null,
   heatParts: SettingRun[] | null = null,
   activeRuns: Run[] | null = null,
+  wake: Wake | null = null,
 ): EventContext {
   // Only readings taken within the window count.
   const windowed = windowGrid(grid, window.from, window.to);
   const restricted = activeRuns ? activeEventGrid(windowed, activeRuns) : windowed;
   const { cohort, times } = cohortAt(restricted, restricted.times, model.roomSet);
   return {
-    event, mode, setting, model, cohort: new Set(cohort), times, grid: restricted, overshoot, heatParts,
+    event, mode, setting, model, cohort: new Set(cohort), times, grid: restricted, overshoot, heatParts, wake,
   };
 }
 
@@ -1660,7 +1666,7 @@ function heatingContexts(
       // measured once heating after the change to Home is satisfied.
       const from = Math.max(wake.run.from, wake.h);
       const overshoot = wake.run.to > wake.h ? overshootWindow(samples, { ...event, t: from }, nextEvent) : null;
-      return eventContext(grid, model, event, 'heating', null, wakeMeasureWindow(wake), overshoot, wake.parts);
+      return eventContext(grid, model, event, 'heating', null, wakeMeasureWindow(wake), overshoot, wake.parts, null, wake);
     }
     // An inferred window also ends at the first recorded state in which the
     // thermostat couldn't heat (off/cool), so later readings never count.
@@ -1690,6 +1696,7 @@ interface EventStat {
   // MIN_EVENT_SAMPLES grid times).
   bySetting: Partial<Record<ComfortSetting, number>>;
   inferred: boolean;
+  wake: Wake | null;
 }
 
 interface Measured {
@@ -1720,6 +1727,7 @@ function measure(
   const measured: Measured = {
     heat: [], cool: [], overshoots: [], homeOvershoots: [], heatSamples: 0, coolSamples: 0, absoluteOffsetSum: 0,
   };
+  const coolingByRun = new Map<number, { stat: EventStat; samples: number }>();
   contexts.forEach((ctx) => {
     const times = only ? ctx.times.filter((t) => inSetting(ctx, t, only)) : ctx.times;
     if (ctx.cohort.has(id) && times.length >= MIN_EVENT_SAMPLES) {
@@ -1742,14 +1750,21 @@ function measure(
         if (effective.length >= MIN_EVENT_SAMPLES) bySetting[setting] = mean(effective)!;
       });
       const stat: EventStat = {
-        type: ctx.event.type, offset: mean(offsets)!, bySetting, inferred: ctx.event.inferred,
+        type: ctx.event.type, offset: mean(offsets)!, bySetting, inferred: ctx.event.inferred, wake: ctx.wake,
       };
       if (ctx.mode === 'heating') {
         measured.heat.push(stat);
         measured.heatSamples += offsets.length;
         measured.absoluteOffsetSum += offsets.reduce((sum, o) => sum + Math.abs(o), 0);
       } else {
-        measured.cool.push(stat);
+        // Cooling event times identify parent runs, so repeated fragments
+        // contribute sample-weighted offsets to one run rather than votes.
+        const previous = coolingByRun.get(ctx.event.t);
+        if (previous) {
+          previous.stat.offset = (previous.stat.offset * previous.samples + stat.offset * offsets.length)
+            / (previous.samples + offsets.length);
+          previous.samples += offsets.length;
+        } else coolingByRun.set(ctx.event.t, { stat, samples: offsets.length });
         measured.coolSamples += offsets.length;
       }
     }
@@ -1762,6 +1777,7 @@ function measure(
       if (homeOvershoot !== null) measured.homeOvershoots.push(homeOvershoot);
     }
   });
+  measured.cool = [...coolingByRun.values()].map(({ stat }) => stat);
   return measured;
 }
 
@@ -1775,46 +1791,44 @@ function classify(events: EventStat[], samples: number): SensorClassification {
   return 'representative';
 }
 
-// Mean peak above the Home set point in the WAKE_OVERSHOOT_MS after each
-// Sleep → Home change (whether or not heating ran). The set point is the one
+// Peak above the Home set point in the WAKE_OVERSHOOT_MS after a Sleep → Home
+// change (whether or not heating ran). The set point is the one
 // in force as Home starts (its first BUCKET_MS, so a target arriving with it
 // counts); the window ends at the next set point, mode or comfort-setting
 // change or history gap, so a later intentional change isn't overshoot.
-function wakeOvershootOf(points: SensorSeriesInput['points'], wakes: Wake[], samples: HvacSample[]): number | null {
-  const peaks = wakes.map((wake) => {
-    const start = wake.h + BUCKET_MS;
-    const state = samples[stateIndexAt(samples, start)];
-    if (!state || state.gap || state.setpoint === null) return null;
-    const window = wakeWindow(wake);
-    if (start > window.to) return null;
-    const matches = (sample: HvacSample | undefined) => !!sample && !sample.gap
-      && sample.setpoint === state.setpoint && sample.hvacMode === state.hvacMode && sample.presetMode === state.presetMode;
-    let from = window.from;
-    let previous = samples[stateIndexAt(samples, from)];
-    for (let i = firstIndexAfter(samples, from, timeOf, true); i < samples.length && samples[i].t <= start; i += 1) {
-      if (!matches(previous) || !matches(samples[i])) from = samples[i].t;
-      previous = samples[i];
-    }
-    const change = findAfter(samples, start, window.to, (x) => x.gap || x.setpoint !== state.setpoint
-      || x.hvacMode !== state.hvacMode || x.presetMode !== state.presetMode);
-    return overshootIn(points, {
-      from, to: Math.min(window.to, change?.t ?? window.to), setpoint: state.setpoint,
-    });
-  }).filter((p): p is number => p !== null);
-  return mean(peaks);
+function wakeOvershootIn(points: SensorSeriesInput['points'], wake: Wake, samples: HvacSample[]): number | null {
+  const start = wake.h + BUCKET_MS;
+  const state = samples[stateIndexAt(samples, start)];
+  if (!state || state.gap || state.setpoint === null) return null;
+  const window = wakeWindow(wake);
+  if (start > window.to) return null;
+  const matches = (sample: HvacSample | undefined) => !!sample && !sample.gap
+    && sample.setpoint === state.setpoint && sample.hvacMode === state.hvacMode && sample.presetMode === state.presetMode;
+  let from = window.from;
+  let previous = samples[stateIndexAt(samples, from)];
+  for (let i = firstIndexAfter(samples, from, timeOf, true); i < samples.length && samples[i].t <= start; i += 1) {
+    if (!matches(previous) || !matches(samples[i])) from = samples[i].t;
+    previous = samples[i];
+  }
+  const change = findAfter(samples, start, window.to, (x) => x.gap || x.setpoint !== state.setpoint
+    || x.hvacMode !== state.hvacMode || x.presetMode !== state.presetMode);
+  return overshootIn(points, {
+    from, to: Math.min(window.to, change?.t ?? window.to), setpoint: state.setpoint,
+  });
 }
 
 // Mean of each cooling run's greatest dip below the cool set point in force at
 // that reading, only in whole active-cooling buckets with a stable target.
 function coolingUndershootOf(
-  points: SensorSeriesInput['points'], runs: Run[], samples: HvacSample[], activeRuns: Run[],
+  points: SensorSeriesInput['points'], runs: (Run & { parent?: Run })[], samples: HvacSample[], activeRuns: Run[],
 ): number | null {
-  const dips = runs.map((run) => {
+  const dips = new Map<Run, number>();
+  runs.forEach((run) => {
     const inside = points.slice(
       firstIndexAfter(points, run.from, timeOf, false),
       firstIndexAfter(points, run.to - BUCKET_MS, timeOf, true),
     );
-    if (inside.length === 0) return null;
+    if (inside.length === 0) return;
     const undershoots = inside.map((reading) => {
       if (!inActiveRuns(activeRuns, reading.t)) return null;
       const state = samples[stateIndexAt(samples, reading.t)];
@@ -1825,9 +1839,12 @@ function coolingUndershootOf(
       ));
       return change ? null : point - reading.v;
     }).filter((undershoot): undershoot is number => undershoot !== null);
-    return undershoots.length > 0 ? Math.max(0, ...undershoots) : null;
-  }).filter((d): d is number => d !== null);
-  return mean(dips);
+    if (undershoots.length > 0) {
+      const parent = run.parent ?? run;
+      dips.set(parent, Math.max(dips.get(parent) ?? 0, ...undershoots));
+    }
+  });
+  return mean([...dips.values()]);
 }
 
 
@@ -1850,6 +1867,8 @@ interface Analyzed {
   coolClass: SensorClassification;
   heatScan: RoomScan | undefined;
   coolScan: RoomScan | undefined;
+  wakePeaks: Map<Wake, number | null>;
+  incompleteScopedEvidence: boolean;
   // Participation estimated from the thermostat's reading (null: can't tell),
   // in the window and in the cooling data.
   estimated: Participation;
@@ -1947,6 +1966,12 @@ function dailyCounts(scanned: RoomScan | undefined, mode: PlacementMode): { days
   return counts;
 }
 
+function assessedIn(a: Analyzed, mode: PlacementMode): boolean {
+  const classification = mode === 'heating' ? a.heatClass : a.coolClass;
+  const scanned = mode === 'heating' ? a.heatScan : a.coolScan;
+  return classification !== 'insufficient' || dailyCounts(scanned, mode).days >= MIN_EVENTS;
+}
+
 // How a room skews the average in one mode: from its heat-ups (or cooling
 // runs) when they classify it, else from sampled calendar dates on one side
 // of the house average.
@@ -1971,7 +1996,8 @@ function skewOf(
   if ((cls === 'cold' && standsOut(-1)) || (cls === 'warm' && standsOut(1))) {
     const direction: BiasDirection = cls === 'cold' ? 'below' : 'above';
     const sign = cls === 'cold' ? -1 : 1;
-    const biased = events.filter((e) => sign * e.offset >= OFFSET_THRESHOLD).length;
+    const biasedEvents = events.filter((e) => sign * e.offset >= OFFSET_THRESHOLD);
+    const biased = biasedEvents.length;
     const offsetOf = (types: PlacementEventType[]) => mean(events
       .filter((e) => types.includes(e.type)).map((e) => e.offset));
     const all = mean(events.map((e) => e.offset));
@@ -1988,7 +2014,7 @@ function skewOf(
     const provenance = inferred > 0
       ? `. ${inferred} of these ${events.length} ${noun} were inferred from room temperatures, not thermostat history`
       : '';
-    const magnitude = Math.abs(match ? match[0]! : all ?? 0);
+    const magnitude = Math.abs(match ? match[0]! : mean(biasedEvents.map((e) => e.offset))!);
     return {
       mode,
       setting,
@@ -1997,8 +2023,10 @@ function skewOf(
       evidence: match
         ? `${counted} (${fmt(match[0]!)} °C ${direction} on average ${match[1]})${provenance}`
         : `${counted}${provenance}`,
-      brief: `${name} reads ${fmt(magnitude)} °C ${direction} the house average${match ? ` ${match[1]}` : ''}, `
-        + `and at least ${OFFSET_THRESHOLD.toFixed(1)} °C ${direction} it in ${biased} of ${events.length} ${noun}`,
+      brief: match
+        ? `${name} reads ${fmt(match[0]!)} °C ${direction} the house average ${match[1]}, `
+          + `and at least ${OFFSET_THRESHOLD.toFixed(1)} °C ${direction} it in ${biased} of ${events.length} ${noun}`
+        : counted,
     };
   }
   const { days, cold, warm } = dailyCounts(scanned, mode);
@@ -2256,11 +2284,11 @@ function skewRec(
 // Settings the warm-ups heated in where the room read consistently below the
 // comfort reference and isn't known to be out. Home comes first.
 function wakeSetting(a: Analyzed): {
-  setting: ComfortSetting; offsets: number[]; cold: number; offset: number; known: Known; share: Contribution | null;
+  setting: ComfortSetting; offsets: number[]; wakes: Wake[]; cold: number; offset: number; known: Known; share: Contribution | null;
 } | null {
   const candidates = COMFORT_SETTINGS.map((setting) => {
-    const offsets = a.measured.heat.filter((e) => e.type === 'wake' && e.bySetting[setting] !== undefined)
-      .map((e) => e.bySetting[setting]!);
+    const events = a.measured.heat.filter((e) => e.wake !== null && e.bySetting[setting] !== undefined);
+    const offsets = events.map((e) => e.bySetting[setting]!);
     if (offsets.length < 2) return null;
     const cold = offsets.filter((o) => o <= -AFFECTED_THRESHOLD).length;
     const offset = mean(offsets)!;
@@ -2269,7 +2297,7 @@ function wakeSetting(a: Analyzed): {
     const share = a.contribution.wake[setting] ?? null;
     if (known.value === false) return null;
     return {
-      setting, offsets, cold, offset, known, share,
+      setting, offsets, wakes: events.map((e) => e.wake!), cold, offset, known, share,
     };
   }).filter((c): c is NonNullable<typeof c> => c !== null);
   return candidates.find((c) => c.setting === 'home')
@@ -2279,27 +2307,31 @@ function wakeSetting(a: Analyzed): {
 // A (possibly) participating room reading below the comfort average while
 // wake-up warm-ups heated, while other rooms end up over the Home set point.
 function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
-  // It must also stand out from the typical room, so one warm room inflating
-  // the average doesn't make every other room look like the culprit.
-  const wakeOffset = (o: Analyzed) => mean(o.measured.heat.filter((e) => e.type === 'wake').map((e) => e.offset));
-  const typical = median(rooms.map(wakeOffset).filter((o): o is number => o !== null));
-  const own = wakeOffset(a);
-  if (typical === null || own === null || own - typical > -AFFECTED_THRESHOLD) return null;
   const found = wakeSetting(a);
   if (!found) return null;
   const {
-    setting, offsets, cold, offset, known, share,
+    setting, offsets, wakes, cold, offset, known, share,
   } = found;
+  const eligible = new Set(wakes);
+  // It must also stand out from the typical room, so one warm room inflating
+  // the average doesn't make every other room look like the culprit. Compare
+  // the same heated wakes that supplied this setting's reference offsets.
+  const wakeOffset = (o: Analyzed) => mean(o.measured.heat
+    .filter((e) => e.wake !== null && eligible.has(e.wake)).map((e) => e.offset));
+  const typical = median(rooms.map(wakeOffset).filter((o): o is number => o !== null));
+  const own = wakeOffset(a);
+  if (typical === null || own === null || own - typical > -AFFECTED_THRESHOLD) return null;
   const label = SETTING_LABEL[setting];
   const unknown = countUnknown(env, share);
-  const affected = rooms.filter((o) => o !== a && (o.out.wakeOvershoot ?? 0) >= AFFECTED_THRESHOLD)
-    .sort((x, y) => y.out.wakeOvershoot! - x.out.wakeOvershoot!);
+  const affected = rooms.filter((o) => o !== a).map((room) => ({
+    room,
+    peak: mean(wakes.map((wake) => room.wakePeaks.get(wake) ?? null).filter((p): p is number => p !== null)),
+  })).filter((item): item is { room: Analyzed; peak: number } => item.peak !== null && item.peak >= AFFECTED_THRESHOLD)
+    .sort((x, y) => y.peak - x.peak);
   if (affected.length === 0) return null;
-  const heated = env.wakes.filter((w) => w.run !== null);
-  const setback = mean(heated.map((w) => w.setback).filter((s): s is number => s !== null));
+  const setback = mean(wakes.map((w) => w.setback).filter((s): s is number => s !== null));
   // Heating time, not the span: other time between runs isn't warm-up.
-  const ramp = heated.length > 0 && heated.every((w) => w.heatingMs !== null)
-    ? mean(heated.map((w) => w.heatingMs!)) : null;
+  const ramp = wakes.every((w) => w.heatingMs !== null) ? mean(wakes.map((w) => w.heatingMs!)) : null;
   let recovery = '';
   if ((setback !== null && setback >= SETBACK_NOTE) || (ramp !== null && ramp >= LONG_RAMP_MS)) {
     const gap = setback !== null && setback > 0 ? ` The Sleep set point averaged ${fmt(setback)} °C below Home.` : '';
@@ -2309,7 +2341,7 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
   }
   const followMe = countedNote(env, share, `while the warm-ups heated in ${label}`, known);
   const quiet = quietNote(env);
-  let severity: RecommendationSeverity = affected[0].out.wakeOvershoot! >= OVERSHOOT_THRESHOLD ? 'high' : 'medium';
+  let severity: RecommendationSeverity = affected[0].peak >= OVERSHOOT_THRESHOLD ? 'high' : 'medium';
   if (quiet || unknown) severity = 'low';
   return {
     magnitude: Math.abs(offset),
@@ -2322,13 +2354,14 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
       detail: `In ${cold} of ${offsets.length} wake-ups (Sleep → Home), ${a.out.name} read ${fmt(offset)} °C below `
         + `the reported or approximated comfort reading${setting === 'home' ? '' : ` while heating in ${label} before Home`}. `
         + `${withLead(countingLead(known, setting, unknown, env, share), 'a low reading could contribute to a longer warm-up.')} `
-        + `${listOf(affected.map((o) => o.out.name))} peaked `
-        + `${listOf(affected.map((o) => fmt(o.out.wakeOvershoot!)))} °C over the Home set point on average in the 2 hours after waking. `
+        + `${listOf(affected.map((o) => o.room.out.name))} peaked `
+        + `${listOf(affected.map((o) => fmt(o.peak)))} °C over the Home set point on average `
+        + 'in the 2 hours after the corresponding heated wake-ups with sufficient readings. '
         + `${adviceFor(a, 'below', setting, true)}${recovery}${followMe}${quiet}`,
       mode: 'heating',
       period: 'wake',
       comfortSetting: setting,
-      affectedSensorIds: affected.map((o) => o.out.id),
+      affectedSensorIds: affected.map((o) => o.room.out.id),
       likelyCauses: causesFor(a, 'below', 'heating'),
     }),
   };
@@ -2423,6 +2456,13 @@ const PASSIVE_WARM_CAUSES = [
   'cooking and appliance heat',
 ];
 
+function passiveAverage(offset: number, mode: PlacementMode): string {
+  const signed = mode === 'heating' ? offset : -offset;
+  const point = mode === 'heating' ? 'the set point' : 'the cool set point';
+  return signed === 0 ? `at ${point} on average`
+    : `${fmt(signed)} °C ${signed > 0 ? 'above' : 'below'} ${point} on average`;
+}
+
 function passiveRecs(env: Env, rooms: Analyzed[]): Ranked[] {
   const recs: Ranked[] = [];
   const average = comfortReading(env);
@@ -2440,14 +2480,14 @@ function passiveRecs(env: Env, rooms: Analyzed[]): Ranked[] {
         + `on average${heatingTime === null ? '.' : `, with heating running ${minutes(heatingTime)} on average around the change.`}`
       : '';
     recs.push({
-      magnitude: warmth.offset,
+      magnitude: Math.abs(warmth.offset),
       rank: 0,
       rec: recBase(null, {
         id: 'passive-warmth-heating',
         severity: 'medium',
         action: 'none',
-        title: 'The comfort reading stays warm while heating is idle',
-        detail: `With heating idle, ${average} sat ${fmt(warmth.offset)} °C above the set point on average, and at least `
+        title: 'The comfort reading is often warm while heating is idle',
+        detail: `With heating idle, ${average} sat ${passiveAverage(warmth.offset, 'heating')}, and at least `
           + `${PASSIVE_THRESHOLD.toFixed(1)} °C above it ${percent(warmth.share)}% of the observed idle samples${runtime}. `
           + 'This does not establish the cause; sensor placement may still affect the comfort reading.'
           + `${wake} The set point, sun, cooking or appliances could also play a part. If rooms feel too warm, `
@@ -2463,14 +2503,14 @@ function passiveRecs(env: Env, rooms: Analyzed[]): Ranked[] {
   const coolness = env.passiveCooling;
   if (coolness && coolness.share >= PASSIVE_SHARE) {
     recs.push({
-      magnitude: coolness.offset,
+      magnitude: Math.abs(coolness.offset),
       rank: 2,
       rec: recBase(null, {
         id: 'passive-cooling',
         severity: 'low',
         action: 'none',
-        title: 'The comfort reading stays cool while cooling is idle',
-        detail: `With cooling idle, ${comfortReading(env, 'cooling')} sat ${fmt(coolness.offset)} °C below the cool set point on average, and at least `
+        title: 'The comfort reading is often cool while cooling is idle',
+        detail: `With cooling idle, ${comfortReading(env, 'cooling')} sat ${passiveAverage(coolness.offset, 'cooling')}, and at least `
           + `${PASSIVE_THRESHOLD.toFixed(1)} °C below it ${percent(coolness.share)}% of the observed idle samples. `
           + 'This does not establish the cause; sensor placement may still affect the comfort reading. The set point, shade '
           + `or cool nights could also play a part; check sensor placement if rooms feel too cool.${coolingNote(env)}`,
@@ -2564,6 +2604,7 @@ function noChanges(
   const assessed = rooms.filter((a) => a.out.verdict !== 'insufficient');
   if (assessed.length < MIN_SENSORS_FOR_MEAN) return null;
   const missing = rooms.filter((a) => a.out.verdict === 'insufficient').map((a) => a.out.name);
+  const incomplete = assessed.some((a) => a.incompleteScopedEvidence);
   const overshootKnown = assessed.every((a) => a.out.overshoot !== null);
   const outliers = assessed.filter((a) => a.out.verdict === 'cold_outlier' || a.out.verdict === 'warm_outlier');
   const overshooting = assessed.filter((a) => (a.out.overshoot ?? 0) >= OVERSHOOT_THRESHOLD);
@@ -2572,7 +2613,7 @@ function noChanges(
   const parts = outliers.length > 0
     ? [`${listOf(outliers.map((a) => `${a.out.name} (${a.out.verdict === 'cold_outlier' ? 'below' : 'above'})`))} `
       + `read consistently off the house average${unacted}`]
-    : ['No room sensor read consistently above or below the house average.'];
+    : ['No assessed room sensor stood out consistently from the house average in the assessed settings and periods.'];
   // Coverage-neutral when overshoot is unknown: no claim about why.
   const unmeasured = assessed.filter((a) => a.out.overshoot === null).map((a) => a.out.name);
   if (overshooting.length > 0) {
@@ -2588,8 +2629,9 @@ function noChanges(
   if (cooling.checked && !cooling.found) parts.push('No cooling was found in the available history for the past year.');
   else if (cooling.found && cooling.events === 0) parts.push('No cooling runs were found to compare.');
   if (missing.length > 0) parts.push(`Not enough data for ${missing.join(', ')}.`);
+  if (incomplete) parts.push('Some settings or periods lacked enough comparable data for a placement assessment.');
   const inferred = events.filter((e) => e.inferred).length;
-  const noIssues = overshootKnown && missing.length === 0 && inferred === 0
+  const noIssues = overshootKnown && missing.length === 0 && inferred === 0 && !incomplete
     ? 'No placement issues found'
     : 'No placement issues found in the available data';
   if (inferred > 0) {
@@ -2610,14 +2652,21 @@ function noChanges(
   };
 }
 
-function verdictSummaryOf(a: Analyzed, skew: Skew | null, env: Env): string {
+function verdictSummaryOf(
+  a: Analyzed, skew: Skew | null, env: Env, mode: PlacementMode, scopeSetting: ComfortSetting | null,
+): string {
   const { name } = a.out;
   if (!skew) {
     if (a.out.verdict === 'insufficient') return `There isn't enough data yet to judge ${name}.`;
-    const bias = meanOf(a.heatScan?.bias) ?? meanOf(a.coolScan?.bias);
-    if (bias === null || Math.abs(bias) < 0.05) return `${name} tracks the house average in the available data.`;
-    return `${name} stays close to the house average (${fmt(bias)} °C ${bias < 0 ? 'below' : 'above'} on average), `
-      + 'so it does not stand out from the other rooms in the available data.';
+    const scanned = mode === 'heating' ? a.heatScan : a.coolScan;
+    const events = mode === 'heating' ? a.measured.heat : a.measured.cool;
+    const bias = dailyCounts(scanned, mode).days >= MIN_EVENTS
+      ? meanOf(scanned?.bias) : mean(events.map((event) => event.offset));
+    const scope = scopeSetting === null ? `${mode} with the comfort setting unknown` : `${SETTING_LABEL[scopeSetting]} ${mode}`;
+    const noStandout = `did not stand out consistently from the other rooms in the assessed ${scope} data`;
+    if (bias === null || Math.abs(bias) < 0.05) return `${name} ${noStandout}.`;
+    const relation = `${fmt(bias)} °C ${bias < 0 ? 'below' : 'above'}`;
+    return `${name} averaged ${relation} the house average, but ${noStandout}.`;
   }
   const { setting } = skew;
   const known = knownIn(a, setting, skew.mode);
@@ -2829,7 +2878,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     const contextOf = (part: SettingRun) => eventContext(
       data.grid,
       data.model,
-      { type: 'cooling', t: part.from, inferred: false },
+      { type: 'cooling', t: part.parent.from, inferred: false },
       'cooling',
       part.setting,
       part,
@@ -2900,13 +2949,12 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     };
     const heatDays = dailyCounts(heatRoom, 'heating');
     const coolDays = dailyCounts(coolRoom, 'cooling');
+    const wakePeaks = new Map(wakes.map((wake) => [wake, wakeOvershootIn(points, wake, samples)]));
     const occupancy = model.occupancy.get(sensor.id);
     const coolPoints = cool?.points.get(sensor.id);
     const inWindowPoints = points.filter((p) => p.t >= startMs && p.t < endMs).length;
     let classification = heatClass;
     if (!room) classification = inWindowPoints > 0 ? 'representative' : 'insufficient';
-    const assessed = heatClass !== 'insufficient' || coolClass !== 'insufficient'
-      || heatDays.days >= MIN_EVENTS || coolDays.days >= MIN_EVENTS;
     return {
       room,
       measured,
@@ -2914,6 +2962,8 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       coolClass,
       heatScan: heatRoom,
       coolScan: coolRoom,
+      wakePeaks,
+      incompleteScopedEvidence: false,
       estimated: estimates.get(sensor.id) ?? unknownParticipation(),
       estimatedCool: cool?.model.estimated?.get(sensor.id) ?? unknownParticipation(),
       contribution: room
@@ -2941,10 +2991,10 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
         coolingOffset: periodOffsets.cooling,
         participation: room ? participationOf(sensor.id, config) : unknownParticipation(),
         occupiedShare: { wake: occupiedShare(occupancy, wakeWindows), home: occupiedShare(occupancy, homeWindows) },
-        verdict: room && !assessed ? 'insufficient' : null,
+        verdict: null,
         verdictSummary: null,
         periodOffsets,
-        wakeOvershoot: roundOrNull(wakeOvershootOf(points, wakes, samples)),
+        wakeOvershoot: roundOrNull(mean([...wakePeaks.values()].filter((peak): peak is number => peak !== null))),
         coolingUndershoot: cool && coolPoints ? roundOrNull(coolingUndershootOf(coolPoints, coolRuns, cool.samples, activeCoolRuns)) : null,
         consistency: room
           ? {
@@ -2973,6 +3023,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const coolViews = new Map<Analyzed, { view: Analyzed; skew: Skew; undershoot: Map<string, number | null> }[]>(
     rooms.map((a) => [a, []]),
   );
+  const assessedCooling = new Map<Analyzed, { view: Analyzed; setting: ComfortSetting | null }>();
   coolGroups.forEach((group) => {
     const groupScan = scan({
       grid: cool!.grid,
@@ -3010,6 +3061,9 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     views.forEach((view, i) => {
       const skew = skewOf(view, 'cooling', typical, group.setting, scope);
       if (skew) coolViews.get(rooms[i])!.push({ view, skew, undershoot });
+      if (assessedIn(view, 'cooling')) {
+        if (!assessedCooling.has(rooms[i])) assessedCooling.set(rooms[i], { view, setting: group.setting });
+      } else rooms[i].incompleteScopedEvidence = true;
     });
   });
   analyzed.forEach((a) => {
@@ -3021,16 +3075,23 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     // evidence without applying any setting's membership.
     const setting = model.timeline.length === 0 ? null : 'home';
     const evidence = measure(a.out.id, heat.points.get(a.out.id)!, contexts, setting);
-    heatSkews.set(a, skewOf({
+    const heatView = {
       ...a, measured: { ...a.measured, heat: evidence.heat, heatSamples: evidence.heatSamples },
       heatClass: classify(evidence.heat, evidence.heatSamples),
-    }, 'heating', typicalHeat, setting));
+    };
+    const heatAssessed = assessedIn(heatView, 'heating');
+    if (!heatAssessed && (evidence.heat.length > 0 || (heatView.heatScan?.bias.n ?? 0) > 0)) a.incompleteScopedEvidence = true;
+    heatSkews.set(a, skewOf(heatView, 'heating', typicalHeat, setting));
     const heatSkew = heatSkews.get(a) ?? null;
     const [firstCool] = coolViews.get(a)!;
+    const coolingAssessment = assessedCooling.get(a);
     const skew = heatSkew ?? firstCool?.skew ?? null;
     if (skew) a.out.verdict = skew.direction === 'below' ? 'cold_outlier' : 'warm_outlier';
-    else if (a.out.verdict === null) a.out.verdict = 'representative';
-    a.out.verdictSummary = verdictSummaryOf(heatSkew || !firstCool ? a : firstCool.view, skew, env);
+    else a.out.verdict = heatAssessed || coolingAssessment ? 'representative' : 'insufficient';
+    const heatingSummary = !!heatSkew || (!firstCool && (heatAssessed || !coolingAssessment));
+    const summaryView = heatingSummary ? heatView : firstCool?.view ?? coolingAssessment!.view;
+    const summarySetting = heatingSummary ? setting : firstCool?.skew.setting ?? coolingAssessment?.setting ?? null;
+    a.out.verdictSummary = verdictSummaryOf(summaryView, skew, env, heatingSummary ? 'heating' : 'cooling', summarySetting);
   });
 
   const ranked: Ranked[] = [];

@@ -1508,11 +1508,21 @@ describe('GET /climate/placement-insights', () => {
     expect(response.body.error).toBe(message);
   });
 
-  it.each(['home', 'sleep', 'away'])('rejects the thermostat average in %s participation', async (setting) => {
+  it.each(['home', 'sleep', 'away'])('review d29c8d1: rejects thermostat-associated sensors in %s room lists', async (setting) => {
     const { service } = makeDeps();
     const response = await request(buildApp(service)).get('/climate/placement-insights')
       .query({ [setting]: 'office_temperature,home_current_temperature', followMe: 'false' }).expect(400);
-    expect(response.body.error).toBe('Thermostat average cannot participate: home_current_temperature');
+    expect(response.body.error).toBe('Thermostat-associated sensors cannot be listed as rooms: home_current_temperature. '
+      + 'Use thermostatHome, thermostatSleep or thermostatAway to configure the built-in sensor.');
+  });
+
+  it('review d29c8d1: names multiple thermostat-associated sensors without identifying them as averages', async () => {
+    const fixture = makeDeps();
+    fixture.deps.indoorClimate.cachedStatus.sensors.push(sensor('sensor.hall_temperature', 'Hall', true));
+    const response = await request(buildApp(fixture.service)).get('/climate/placement-insights')
+      .query({ home: 'home_current_temperature,hall_temperature', sleep: 'hall_temperature' }).expect(400);
+    expect(response.body.error).toBe('Thermostat-associated sensors cannot be listed as rooms: hall_temperature, home_current_temperature. '
+      + 'Use thermostatHome, thermostatSleep or thermostatAway to configure the built-in sensor.');
   });
 
   it.each(['home', 'sleep', 'away'] as const)('applies thermostat %s through the HTTP query', async (setting) => {
