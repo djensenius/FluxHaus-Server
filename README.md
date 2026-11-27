@@ -434,15 +434,16 @@ about 10 days:
   unit is unknown or the result is outside 5–35 °C. Mode, action and preset carry
   forward between changes; set points come from each change. The last value
   before the window (within 30 days) gives the state at its start.
-  `unavailable`/`unknown` states are gaps: no transition is read across one,
+  An `unavailable`/`unknown` action is unknown (not a heating start, stop or
+  satisfaction). `unavailable`/`unknown` states are gaps: no transition is read across one,
   and history with nothing but gaps counts as unavailable
   (`hvacHistoryAvailable: false`, retried after 1 minute).
 - **Comfort setting** is the Ecobee select `<thermostat>_current_mode` (e.g.
   `select.home_current_mode`: `home`, `sleep`, `away`;
-  `coverage.comfortScheduleAvailable`). It takes precedence; when it has no
-  known value (e.g. a thermostat without it, or the select unavailable), the
-  climate entity's preset (`away`, `home`, `sleep`, …) is used instead, so
-  wake-ups and returns from Away still work.
+  `coverage.comfortScheduleAvailable`). It takes precedence; wherever it has no
+  known value (a thermostat without it, before its first value, or while the
+  select is unavailable), the climate entity's preset (`away`, `home`, `sleep`,
+  …) is used instead, so wake-ups and returns from Away still work.
 - **Occupancy** is each room's `binary_sensor.<room>_occupancy` (`value` 0/1,
   change-driven, so each value holds until the next), matched to
   `sensor.<room>_temperature` (`home_occupancy` to the thermostat's
@@ -502,7 +503,8 @@ about 10 days:
     used on its own to rule heating out. `inferredMorningEvents` counts inferred events, and
     every recommendation's text says how many of a sensor's heat-ups were inferred.
 - **Heating stopped:** the thermostat is *satisfied* only when it goes from
-  heating to a reported non-heating action in a mode that can heat, with the
+  heating to a reported non-heating action in a mode that can heat (an unknown
+  action after heating ends the heat-up unsatisfied), with the
   mode, set point and preset unchanged since the event. Switching to
   `off`/`cool`, or any set point, preset or mode change during the heat-up
   (even while heating continues), is an *interruption*: it ends the heat-up,

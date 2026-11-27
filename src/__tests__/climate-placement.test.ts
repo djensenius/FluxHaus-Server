@@ -396,6 +396,15 @@ describe('analyzePlacement', () => {
     expectNeutralOvershoot(result, 'Living, Bedroom');
   });
 
+  it('stays neutral when the heating action becomes unknown before going idle', () => {
+    // Heating, then an unknown action at 07:00, idle at 07:30: when heating
+    // ended isn't known, so the later idle isn't read as satisfaction.
+    const samples = mornings((d) => [state(at(d, 7), null), state(at(d, 7.5), 'idle')]);
+    const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: samples }));
+    expect(result.coverage.morningEvents).toBe(5);
+    expect(result.sensors.map((s) => [s.classification, s.overshoot])).toEqual([['representative', null], ['representative', null]]);
+  });
+
   it('stays neutral when heating stops with a simultaneous set point change', () => {
     const samples = mornings((d) => [state(at(d, 7), 'idle', { setpoint: 18 })]);
     const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: samples }));
@@ -1369,6 +1378,21 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     // A known Ecobee comfort setting takes precedence over the preset.
     const ecobee = analyzePlacement(input({ hvac: hvac(5), comfort: [{ t: START - DAY, setting: 'home' }] }));
     expect(ecobee.coverage.returnEvents).toBe(0);
+  });
+
+  it('falls back to the preset only while the comfort setting is unknown', () => {
+    // Known (Home) until day 2, unavailable through days 2–3, known again from
+    // day 4: only the preset's returns from Away on days 2 and 3 are read.
+    const comfort = [
+      { t: START - DAY, setting: 'home' },
+      { t: at(2, 0), setting: null },
+      { t: at(4, 0), setting: 'home' },
+    ];
+    const result = analyzePlacement(input({ hvac: hvac(5), comfort }));
+    expect(result.coverage).toMatchObject({ returnHistoryAvailable: true, returnEvents: 2 });
+    // Before the first comfort value the preset is used too.
+    const late = analyzePlacement(input({ hvac: hvac(5), comfort: [{ t: at(3, 0), setting: 'home' }] }));
+    expect(late.coverage.returnEvents).toBe(3);
   });
 
   it('doesn\'t assume occupancy across an outage with Follow Me', () => {

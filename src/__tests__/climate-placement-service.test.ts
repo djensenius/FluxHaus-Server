@@ -229,6 +229,25 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(detectHvacEvents(samples, 'UTC')).toEqual([]);
   });
 
+  it('treats unknown or unavailable HVAC actions as unknown', () => {
+    const rows = (sentinel: string, before: string, after: string) => [
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', before),
+      climateRow('2026-01-19T06:00:00Z', 'temperature', '21'),
+      climateRow('2026-01-19T06:30:00Z', 'hvac_action_str', sentinel),
+      climateRow('2026-01-19T07:00:00Z', 'hvac_action_str', after),
+    ];
+    ['unknown', 'unavailable'].forEach((sentinel) => {
+      // Unknown → heating isn't a heating start.
+      const start = parseStates(rows(sentinel, 'idle', 'heating'), entities, '°C').hvac!;
+      expect(start.map((s) => s.hvacAction)).toEqual(['idle', null, 'heating']);
+      expect(detectHvacEvents(start, 'UTC')).toEqual([]);
+      // Heating → unknown isn't a reported (satisfied) idle.
+      const end = parseStates(rows(sentinel, 'heating', 'idle'), entities, '°C').hvac!;
+      expect(end.map((s) => s.hvacAction)).toEqual(['heating', null, 'idle']);
+    });
+  });
+
   it('treats implausible or unknown-unit set points as unknown', () => {
     const rows = [climateRow('2026-01-19T06:00:00Z', 'state', 'heat'), climateRow('2026-01-19T06:00:00Z', 'temperature', '70')];
     expect(parseStates(rows, entities, '°C').hvac![0].setpoint).toBeNull();

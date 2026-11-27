@@ -175,7 +175,7 @@ export interface PlacementInput {
   sensors: SensorSeriesInput[];
   // null when thermostat history could not be read.
   hvac: HvacSample[] | null;
-  // Comfort setting history; when it has any known setting it replaces the samples' presetMode.
+  // Comfort setting history; where known it takes precedence over the samples' presetMode.
   comfort?: ComfortSample[] | null;
   participation?: ParticipationConfig | null;
   // null when no cooling was recorded in the past year; absent when not checked.
@@ -663,7 +663,9 @@ function heatUpEnd(samples: HvacSample[], event: PlacementEvent): HeatUpEnd {
     }
     if (isHeating(sample.hvacAction)) {
       heating = true;
-    } else if (heating && (sample.hvacAction !== null || !canHeat(sample))) {
+    } else if (heating) {
+      // An unknown action after heating ends the heat-up unsatisfied: a later
+      // idle can't be told apart from the end of heating.
       return { at: sample.t, satisfied: canHeat(sample) && sample.hvacAction !== null };
     }
   }
@@ -735,16 +737,28 @@ function coolPointOf(sample: HvacSample): number | null {
   return /^cool$/i.test(sample.hvacMode ?? '') ? sample.setpoint : null;
 }
 
-// Comfort setting changes, time-sorted: from the comfort history when given,
-// else from the thermostat's preset.
+// Comfort setting changes, time-sorted. A known comfort setting (the Ecobee
+// select) takes precedence; while it is unknown (before its first value, or
+// unavailable) the thermostat's preset is used. Without any known comfort
+// setting the timeline is the preset history.
 function settingTimeline(comfort: ComfortSample[] | null | undefined, samples: HvacSample[]): SettingChange[] {
-  const raw = comfort && comfort.length > 0
-    ? [...comfort].sort((a, b) => a.t - b.t).map((c) => ({ t: c.t, setting: normalizeSetting(c.setting) }))
-    : samples.filter((s) => !s.gap && s.presetMode !== null)
-      .map((s) => ({ t: s.t, setting: normalizeSetting(s.presetMode) }));
+  const presets = samples.filter((s) => !s.gap && s.presetMode !== null)
+    .map((s) => ({ t: s.t, comfort: false, setting: normalizeSetting(s.presetMode) }));
+  const known = !!comfort && comfort.some((c) => normalizeSetting(c.setting) !== null);
+  const events = known
+    ? [...comfort!.map((c) => ({ t: c.t, comfort: true, setting: normalizeSetting(c.setting) })), ...presets]
+      .sort((a, b) => a.t - b.t)
+    : presets;
+  let select: ComfortSetting | null = null;
+  let preset: ComfortSetting | null = null;
   const changes: SettingChange[] = [];
-  raw.forEach((c) => {
-    if (changes.length === 0 || changes[changes.length - 1].setting !== c.setting) changes.push(c);
+  events.forEach((e, i) => {
+    if (e.comfort) select = e.setting;
+    else preset = e.setting;
+    // Settle all events at one time before recording the setting in force.
+    if (events[i + 1]?.t === e.t) return;
+    const setting = select ?? preset;
+    if (changes.length === 0 || changes[changes.length - 1].setting !== setting) changes.push({ t: e.t, setting });
   });
   return changes;
 }
@@ -755,19 +769,18 @@ function settingAt(timeline: SettingChange[], t: number): ComfortSetting | null 
 }
 
 // Thermostat states with presetMode set to the comfort setting in force, plus a
-// copy of the state in force at each comfort change, so heat-up and return
+// copy of the state in force at each setting change, so heat-up and return
 // detection see setting changes. Without comfort history the samples are kept.
-function mergeComfort(samples: HvacSample[], comfort: ComfortSample[] | null | undefined): HvacSample[] {
-  if (!comfort || comfort.length === 0 || samples.length === 0) return samples;
-  const changes = [...comfort].sort((a, b) => a.t - b.t);
+function mergeComfort(samples: HvacSample[], timeline: SettingChange[], comfort: boolean): HvacSample[] {
+  if (!comfort || samples.length === 0) return samples;
   const merged: HvacSample[] = [];
   let preset: string | null = null;
   let si = 0;
   let ci = 0;
-  while (si < samples.length || ci < changes.length) {
-    if (ci < changes.length && (si >= samples.length || changes[ci].t <= samples[si].t)) {
-      const { t } = changes[ci];
-      preset = changes[ci].setting;
+  while (si < samples.length || ci < timeline.length) {
+    if (ci < timeline.length && (si >= samples.length || timeline[ci].t <= samples[si].t)) {
+      const { t } = timeline[ci];
+      preset = timeline[ci].setting;
       ci += 1;
       const prev = merged[merged.length - 1];
       if (prev && !(si < samples.length && samples[si].t === t)) {
@@ -1930,18 +1943,17 @@ function dataset(
   config: ParticipationConfig | null,
 ): Dataset {
   const raw = [...(hvac ?? [])].sort((a, b) => a.t - b.t);
-  // The Ecobee comfort setting takes precedence over the thermostat's preset;
-  // without any known comfort setting (e.g. a non-Ecobee thermostat, or the
-  // select unavailable) the preset history is used.
-  const known = comfort && comfort.some((c) => normalizeSetting(c.setting) !== null) ? comfort : null;
-  const timeline = settingTimeline(known, raw);
+  // The Ecobee comfort setting takes precedence over the thermostat's preset,
+  // which fills in wherever the comfort setting is unknown.
+  const known = !!comfort && comfort.some((c) => normalizeSetting(c.setting) !== null);
+  const timeline = settingTimeline(comfort, raw);
   const rooms = sensors.filter((s) => !s.isThermostat).map((s) => s.id);
   const occupancy = new Map(sensors
     .filter((s) => s.occupancy && s.occupancy.length > 0)
     .map((s) => [s.id, [...s.occupancy!].sort((a, b) => a.t - b.t)]));
   return {
     raw,
-    samples: mergeComfort(raw, known),
+    samples: mergeComfort(raw, timeline, known),
     timeline,
     model: {
       rooms,

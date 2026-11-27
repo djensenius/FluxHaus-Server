@@ -272,6 +272,10 @@ export function buildLastCoolingQuery(bucket: string, climate: string, start: Da
 
 const SETPOINT_FIELDS = ['temperature', 'target_temp_low', 'target_temp_high'];
 
+function unknownState(value: string): boolean {
+  return value === '' || value === 'unavailable' || value === 'unknown';
+}
+
 export interface ParsedStates {
   hvac: HvacSample[] | null;
   comfort: ComfortSample[] | null;
@@ -323,10 +327,12 @@ export function parseStates(
   const hvac = [...climate.keys()].sort((a, b) => a - b).map((t): HvacSample => {
     const fields = climate.get(t)!;
     if (fields.has('state')) mode = fields.get('state')!;
-    if (fields.has('hvac_action')) action = fields.get('hvac_action')!;
+    // An unknown/unavailable action isn't a reported action: no heating start
+    // or satisfaction is read from (or into) it.
+    if (fields.has('hvac_action')) action = unknownState(fields.get('hvac_action')!) ? null : fields.get('hvac_action')!;
     if (fields.has('preset_mode')) {
       const value = fields.get('preset_mode')!;
-      preset = value === '' || value === 'none' || value === 'unavailable' || value === 'unknown' ? null : value;
+      preset = value === 'none' || unknownState(value) ? null : value;
     }
     if (SETPOINT_FIELDS.some((f) => fields.has(f))) {
       setpoints = new Map(SETPOINT_FIELDS.map((f) => [f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unit))]));
