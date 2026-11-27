@@ -463,10 +463,13 @@ about 10 days:
   time.
 - **The thermostat's current temperature** (`isThermostat`, named
   "Thermostat (Ecobee average)") is Ecobee's averaged comfort reading, not a
-  room. It is the effective average when it has readings (else the configured
-  setting's sensors — unknown if one it needs has no fresh reading, never a
-  partial average — else all fresh rooms), it is never judged as an outlier, and
-  rooms are compared with each other without it. Which rooms each setting
+  room. It is the effective average when it has readings. Otherwise the
+  average is reconstructed from the configured setting's sensors, or from the
+  fresh rooms when participation is unknown, only when the required temperatures
+  and Follow Me occupancy are known. With configured participation, a missing
+  required sensor makes the average unknown rather than partial. The thermostat
+  is never judged as an outlier, and rooms are compared with each other without
+  it. Which rooms each setting
   averages is estimated from it: every subset of rooms is scored over the times
   all its members have readings (so a sparse or missing room doesn't block the
   others), and rooms in every subset within 0.1 °C of the best fit (itself
@@ -564,10 +567,11 @@ about 10 days:
   60% of at least 3 days) and also stands out from the median room, so one
   outlier pulling the house average doesn't make every other room look skewed.
   `periodOffsets` (`sleep`, `wake`, `home`, `heatingRuns`, `cooling`) are mean
-  offsets from the house average; `wakeOffset` and `coolingOffset` are from the
-  effective comfort average; `wakeOvershoot` is how far the room peaked over
-  the Home set point in the 2 hours after waking (against the set point at the
-  start, ending early at a set point, mode or preset change or a gap); `coolingUndershoot` is how far
+  offsets from the effective comfort average. `wakeOffset` and `coolingOffset`
+  repeat the corresponding wake and cooling values. `wakeOvershoot` is how far
+  the room peaked over the Home set point in the 2 hours after waking (against
+  the set point at the start, ending early at a set point, mode or preset
+  change or a gap); `coolingUndershoot` is how far
   it ended below the cool set point while cooling ran. Heating offsets and
   days skip times the thermostat couldn't heat (`off`/`cool` mode or cooling);
   without thermostat history all times count. Heating verdicts, `consistency`
