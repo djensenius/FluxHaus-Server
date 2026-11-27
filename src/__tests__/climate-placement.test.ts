@@ -500,6 +500,26 @@ describe('analyzePlacement', () => {
     expect(result.sensors.map((s) => [s.classification, s.overshoot])).toEqual([['representative', null], ['representative', null]]);
   });
 
+  it('does not treat an unsupported action as a heating start or satisfaction', () => {
+    expect(detectHvacEvents([
+      state(at(0, 5), 'vendor_wait'),
+      state(at(0, 6), 'heating'),
+    ], 'UTC')).toEqual([]);
+    expect(detectHvacEvents([
+      state(at(0, 5), 'idle'),
+      state(at(0, 6), 'vendor_preheating'),
+    ], 'UTC')).toEqual([]);
+    const samples = mornings((d) => [state(at(d, 7), 'vendor_wait'), state(at(d, 7.5), 'idle')]);
+    const result = analyzePlacement(input({ sensors: flatRooms(() => 23), hvac: samples }));
+    expect(result.sensors.map((s) => s.overshoot)).toEqual([null, null]);
+    const interrupted = mornings((d) => [state(at(d, 7), 'idle'), state(at(d, 7.25), 'vendor_wait')]);
+    expect(analyzePlacement(input({ sensors: flatRooms(() => 23), hvac: interrupted }))
+      .sensors.map((s) => s.overshoot)).toEqual([null, null]);
+    const fan = mornings((d) => [state(at(d, 7), 'fan')]);
+    expect(analyzePlacement(input({ sensors: flatRooms(() => 23), hvac: fan }))
+      .sensors.map((s) => s.overshoot)).toEqual([null, null]);
+  });
+
   it('stays neutral when heating stops with a simultaneous set point change', () => {
     const samples = mornings((d) => [state(at(d, 7), 'idle', { setpoint: 18 })]);
     const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), hvac: samples }));
@@ -1167,6 +1187,120 @@ describe('alignSensors', () => {
   });
 });
 
+describe('separately sourced climate reference', () => {
+  const quarter = 15 * 60_000;
+  const room = (t: number): SensorSeriesInput => ({
+    id: 'bedroom_temperature', name: 'Bedroom', isThermostat: false, points: [{ t, v: 18 }],
+  });
+  const result = (
+    roomTime: number,
+    history: HvacSample[],
+    reference: NonNullable<Parameters<typeof analyzePlacement>[0]['reportedTemperature']> = {
+      points: [{ t: START, v: 20 }],
+    },
+  ) => analyzePlacement(input({
+    start: new Date(START),
+    end: new Date(START + HOUR),
+    sensors: [room(roomTime)],
+    primaryThermostatId: null,
+    reportedTemperature: reference,
+    hvac: history,
+    comfort: [{ t: START - HOUR, setting: 'home' }],
+    participation: { home: null, sleep: null, away: null, followMe: false, thermostat: { home: true } },
+  })).sensors[0].periodOffsets.home;
+
+  it('uses the reference only after its complete source bucket and while fresh', () => {
+    const history = [state(START - HOUR, 'idle')];
+    expect(result(START, history)).toBe(-2);
+    expect(result(START + quarter, history)).toBe(-2);
+    expect(result(START + 2 * quarter, history)).toBeNull();
+  });
+
+  it('keeps its internal reference separate even if a room has the same candidate id', () => {
+    const analysis = analyzePlacement(input({
+      start: new Date(START),
+      end: new Date(START + HOUR),
+      sensors: [{ ...room(START), id: '__climate_reported_temperature__' }],
+      primaryThermostatId: null,
+      reportedTemperature: { points: [{ t: START, v: 20 }] },
+      hvac: [state(START - HOUR, 'idle')],
+      comfort: [{ t: START - HOUR, setting: 'home' }],
+    }));
+    expect(analysis.sensors).toHaveLength(1);
+    expect(analysis.sensors[0].periodOffsets.home).toBe(-2);
+  });
+
+  it('rejects source buckets crossing climate gaps and does not carry across a later gap', () => {
+    const initial = state(START - HOUR, 'idle');
+    expect(result(START, [initial, gap(START + 7 * 60_000), state(START + 10 * 60_000, 'idle')])).toBeNull();
+    expect(result(START, [initial, gap(START + quarter)])).toBe(-2);
+    expect(result(START + quarter, [initial, gap(START + quarter)])).toBeNull();
+    expect(result(START, [initial, gap(START), state(START + 5 * 60_000, 'idle')])).toBeNull();
+  });
+
+  it('does not compare a newer reference with a room carried across a climate gap', () => {
+    const history = [state(START - HOUR, 'idle'), gap(START + 7 * 60_000), state(START + quarter, 'idle')];
+    expect(result(START, history, { points: [{ t: START + quarter, v: 20 }] })).toBeNull();
+  });
+
+  it('does not fit membership from room and reference windows separated by gaps', () => {
+    const starts = Array.from({ length: 30 }, (_, i) => START + i * 2 * quarter);
+    const biases: [string, number][] = [
+      ['bedroom_temperature', 18], ['living_temperature', 20], ['kitchen_temperature', 22],
+    ];
+    const sensors = biases.map(([id, value]) => ({
+      id, name: id, isThermostat: false,
+      points: starts.map((t) => ({ t, v: value })),
+    }));
+    const history = [state(START - HOUR, 'idle'), ...starts.flatMap((t) => [
+      gap(t + 7 * 60_000), state(t + quarter, 'idle'),
+    ])];
+    const analysis = analyzePlacement(input({
+      start: new Date(START),
+      end: new Date(START + 16 * HOUR),
+      sensors,
+      primaryThermostatId: null,
+      reportedTemperature: { points: starts.map((t) => ({ t: t + quarter, v: 18 })) },
+      hvac: history,
+      comfort: [{ t: START - HOUR, setting: 'home' }],
+      participation: { home: ['living_temperature'], sleep: null, away: null, followMe: false, thermostat: { home: false } },
+    }));
+    expect(analysis.recommendations.some((rec) => rec.id.startsWith('participation-mismatch'))).toBe(false);
+  });
+
+  it('does not carry a reference across invalid unit windows or unavailable attribute changes', () => {
+    const history = [state(START - HOUR, 'idle')];
+    expect(result(START + quarter, history, {
+      points: [{ t: START, v: 20 }], invalidWindows: [START + quarter],
+    })).toBeNull();
+    expect(result(START + quarter, history, {
+      points: [{ t: START, v: 20 }], invalidations: [START + quarter + 1],
+    })).toBeNull();
+    expect(result(START, history, {
+      points: [{ t: START, v: 20 }], invalidations: [START + quarter],
+    })).toBe(-2);
+  });
+
+  it('requires both the climate and room source buckets to fit the active run and comfort setting', () => {
+    const run = (referenceTime: number, comfort: ComfortSample[]) => analyzePlacement(input({
+      start: new Date(START),
+      end: new Date(START + HOUR),
+      sensors: [room(START + quarter)],
+      primaryThermostatId: null,
+      reportedTemperature: { points: [{ t: referenceTime, v: 20 }] },
+      hvac: [state(START, 'idle'), state(START + quarter, 'heating'), state(START + 2 * quarter, 'idle')],
+      comfort,
+      participation: { home: null, sleep: null, away: null, followMe: false, thermostat: { home: true } },
+    })).sensors[0].periodOffsets;
+    const home = [{ t: START - HOUR, setting: 'home' }];
+    expect(run(START, home).heatingRuns).toBeNull();
+    expect(run(START + quarter, home).heatingRuns).toBe(-2);
+    const changes = [{ t: START, setting: 'sleep' }, { t: START + quarter, setting: 'home' }];
+    expect(run(START, changes).home).toBeNull();
+    expect(run(START + quarter, changes).home).toBe(-2);
+  });
+});
+
 // Flat rooms over `days` from `from`: `value(t)` plus each room's bias.
 function rooms(
   biases: Record<string, number | ((t: number) => number)>,
@@ -1780,6 +1914,30 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(missingReading.recommendations.map((r) => r.id)).not.toContain('participation-mismatch-home');
   });
 
+  it('fits a separately sourced reference only when the physical thermostat is explicitly excluded', () => {
+    const sensors = rooms(EST_BIASES, wakeBase);
+    const reference = sensors.find((s) => s.isThermostat)!.points;
+    const physical = sensors.map((s) => (s.isThermostat
+      ? { ...s, points: s.points.map((p) => ({ ...p, v: p.v + 4 })) }
+      : s));
+    const run = (included: boolean | null) => analyzePlacement(wakeInput({
+      sensors: physical,
+      primaryThermostatId: null,
+      reportedTemperature: { points: reference, assumedUnit: true },
+      participation: {
+        home: ['bedroom_temperature', 'kitchen_temperature'], sleep: null, away: null, followMe: false,
+        thermostat: { home: included },
+      },
+    }));
+    [true, null].forEach((included) => {
+      const result = run(included);
+      expect(result.recommendations.some((r) => r.id.startsWith('participation-mismatch'))).toBe(false);
+      expect(result.sensors.find((s) => s.id === 'bedroom_temperature')!.periodOffsets.home).toBe(-1);
+      expect(result.recommendations[0].detail).toContain('assume Home Assistant\'s last known temperature unit applied historically');
+    });
+    expect(run(false).recommendations.map((r) => r.id)).toContain('participation-mismatch-home');
+  });
+
   it('does not infer another room’s membership when a discovered room has no temperatures', () => {
     const sensors = rooms({ ...EST_BIASES, home_current_temperature: -2 }, wakeBase)
       .map((sensor) => (sensor.id === 'office_temperature' ? { ...sensor, points: [] } : sensor));
@@ -2113,6 +2271,73 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(result.sensors
       .filter((sensor) => sensor.id !== 'home_current_temperature')
       .map((sensor) => sensor.coolingUndershoot)).toEqual([0, 0, 0, 0]);
+  });
+
+  it.each([[0, 4], [10, 0], [15, 0]])(
+    'uses the target change at wake + %s minutes only for subsequent whole buckets',
+    (minute, expected) => {
+      const history = Array.from({ length: 5 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, setpoint: 18 }),
+        state(at(d, 6) + minute * 60_000, 'idle', { presetMode: null, setpoint: 21 }),
+        state(at(d, 22), 'idle', { presetMode: null, setpoint: 18 }),
+      ]).flat();
+      const sensors = rooms({ bedroom_temperature: 0 }, (t) => (
+        (t - START) % DAY === 6 * HOUR ? 25 : 21
+      ));
+      const result = analyzePlacement(wakeInput({ sensors, hvac: history }));
+      expect(result.sensors.find((s) => s.id === 'bedroom_temperature')!.wakeOvershoot).toBe(expected);
+    },
+  );
+
+  it('excludes idle and target-transition buckets from cooling undershoot', () => {
+    const sample = (hour: number, action: string, target: number): HvacSample => ({
+      ...state(SUMMER + hour * HOUR, action, { hvacMode: 'cool', setpoint: target }),
+      coolSetpoint: target,
+    });
+    const run = (history: HvacSample[], dipHour: number) => analyzePlacement(wakeInput({
+      cooling: {
+        start: new Date(SUMMER),
+        end: new Date(SUMMER + DAY),
+        sensors: rooms({ bedroom_temperature: 0 }, (t) => (
+          (t - SUMMER) / HOUR === dipHour ? 20 : 24.5
+        ), { from: SUMMER, days: 1 }),
+        hvac: history,
+        comfort: [{ t: SUMMER, setting: 'home' }],
+      },
+    })).sensors.find((s) => s.id === 'bedroom_temperature')!.coolingUndershoot;
+    expect(run([
+      sample(0, 'idle', 24), sample(13, 'cooling', 24), sample(13.5, 'idle', 24),
+      sample(13.75, 'cooling', 24), sample(15, 'idle', 24),
+    ], 13.5)).toBe(0);
+    expect(run([
+      sample(0, 'idle', 24), sample(13, 'cooling', 24),
+      sample(13 + 40 / 60, 'cooling', 23), sample(15, 'idle', 23),
+    ], 13.5)).toBe(0);
+  });
+
+  it('does not describe an idle-only dip as occurring while cooling ran', () => {
+    const sample = (t: number, action: string): HvacSample => ({
+      ...state(t, action, { hvacMode: 'cool', setpoint: 24 }), coolSetpoint: 24,
+    });
+    const history = Array.from({ length: 5 }, (_, d) => [
+      sample(SUMMER + d * DAY, 'idle'),
+      sample(SUMMER + d * DAY + 13 * HOUR, 'cooling'),
+      sample(SUMMER + d * DAY + 13.5 * HOUR, 'idle'),
+      sample(SUMMER + d * DAY + 13.75 * HOUR, 'cooling'),
+      sample(SUMMER + d * DAY + 16 * HOUR, 'idle'),
+    ]).flat();
+    const sensors = rooms({
+      kitchen_temperature: 3,
+      living_temperature: 0,
+      bedroom_temperature: (t) => ((t - SUMMER) % DAY === 13.5 * HOUR ? -4.5 : 0),
+    }, () => 24.5, { from: SUMMER });
+    const result = analyzePlacement(wakeInput({
+      cooling: { ...coolingInput({}), sensors, hvac: history },
+    }));
+    expect(result.sensors.find((s) => s.id === 'bedroom_temperature')!.coolingUndershoot).toBe(0);
+    const tip = result.recommendations.find((r) => r.id === 'cooling-kitchen')!;
+    expect(tip).toBeDefined();
+    expect(tip.detail).not.toContain('dipped');
   });
 
   it('discloses when no cooling was recorded in the past year', () => {
@@ -2894,6 +3119,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       ['a late first observation', [state(at(4, 23), 'idle')]],
       ['a history gap', [state(START, 'idle'), gap(at(1, 0)), state(at(4, 23), 'idle')]],
       ['an unknown action', [state(START, 'idle'), state(at(1, 0), null), state(at(4, 23), 'idle')]],
+      ['an unsupported action', [state(START, 'vendor_wait')]],
     ])('does not infer rare heating or suppress useful advice from %s', (_description, history) => {
       const result = analyzePlacement(input({
         sensors: rooms(flat, () => 20),
@@ -2929,6 +3155,19 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       const result = analyzePlacement(passiveInput({ hvac: history }));
       const passive = result.recommendations.find((r) => r.id === 'passive-warmth-heating')!;
       expect(passive).toBeDefined();
+      expect(passive.detail).not.toMatch(/heating running 0 minutes?/);
+      expect(passive.detail).not.toMatch(/heating.{0,30}0\.0 h/i);
+    });
+
+    it('does not report zero wake minutes across an unsupported action', () => {
+      const history = Array.from({ length: 5 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, setpoint: 18 }),
+        state(at(d, 4), 'vendor_wait', { presetMode: null, setpoint: 18 }),
+        state(at(d, 6), 'idle', { presetMode: null, setpoint: 20 }),
+        state(at(d, 22), 'idle', { presetMode: null, setpoint: 18 }),
+      ]).flat();
+      const passive = analyzePlacement(passiveInput({ hvac: history }))
+        .recommendations.find((r) => r.id === 'passive-warmth-heating')!;
       expect(passive.detail).not.toMatch(/heating running 0 minutes?/);
       expect(passive.detail).not.toMatch(/heating.{0,30}0\.0 h/i);
     });

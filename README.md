@@ -428,10 +428,12 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
   (including each thermostat tri-state) for 15 minutes (at most 32 at once:
   expired results are evicted first, then the least recently used); results
   with missing data (a failed read, no eligible room sensors, no thermostat,
-  no positively identified thermostat-reported temperature entity, no
+  no usable current-window thermostat reference history, missing room
   temperature data or no thermostat history) are cached for 1 minute so they
-  are retried soon. Where the evidence is missing,
-  values are `null` or events are marked inferred rather than guessed.
+  are retried soon. A separate thermostat temperature entity is not required,
+  and the age of the last change-driven reference value alone does not shorten
+  the cache; stale values still cannot be used in comparisons. Where evidence
+  is missing, values are `null` or events are marked inferred rather than guessed.
 
 All history comes from the InfluxDB bucket Home Assistant writes to (the
 configured `INFLUXDB_BUCKET`), since the Home Assistant recorder keeps only
@@ -453,6 +455,22 @@ about 10 days:
   individual readings).
   Outdoor-looking sensors (`outdoor`, `outside`, `patio`, `exterior`,
   `environment_canada`) are skipped.
+- **Reported climate temperature** is the selected climate entity's
+  `current_temperature` attribute in InfluxDB, queried separately from
+  `sensor` entities and averaged in complete 15-minute source windows. It is
+  the thermostat-reported reference, not a separately measured physical
+  thermostat sensor or evidence of its participation. The climate attribute's
+  recorded unit is used where available; for untagged readings the analysis
+  assumes Home Assistant's last known climate temperature unit applied
+  throughout that history. HA's unit may have changed without being recorded,
+  so this assumption can be wrong and is noted in recommendations. An unknown
+  or conflicting explicit unit is not replaced by the assumption; evidence of
+  a historical unit change also prevents assuming units for untagged readings.
+  Windows split across series or with unknown units are dropped. The existing
+  `coverage.unknownUnitWindows` counts room/sensor windows, not this separate
+  reference. Known climate outages, unavailable attribute values and invalid
+  unit windows cannot be crossed by the combined source intervals of a
+  reference and the rooms it is compared with.
 - **Alignment:** readings are placed on a 15-minute grid. A 15-minute average
   is used only once its window has ended, and for at most 30 minutes after the
   window started, so stale readings are never compared. A sensor joins an
@@ -465,11 +483,16 @@ about 10 days:
   `climate`): `state` (mode), `hvac_action_str`, `preset_mode_str`, and set points `temperature`
   (else `target_temp_low` for heating, `target_temp_high` for cooling; `_str`
   variants too) in its `temperatureUnit`, converted to °C and dropped if the
-  unit is unknown or the result is outside 5–35 °C. Mode, action and preset carry
-  forward between changes; set points come from each change. The last value
+  unit is unknown or the result is outside 5–35 °C. As with untagged reported
+  temperatures, set-point conversion assumes HA's last known climate unit
+  applied historically; plausible values cannot prove the unit never changed.
+  Mode, action and preset carry forward between changes; set points come from
+  each change. The last value
   before the window (within 30 days) gives the state at its start.
-  An `unavailable`/`unknown` action is unknown (not a heating start, stop or
-  satisfaction). `unavailable`/`unknown` states are gaps: they clear the carried
+  Only `off`, `heating`, `cooling`, `drying`, `fan` and `idle` are treated as
+  known actions. An `unavailable`/`unknown` or unsupported action is unknown
+  (not a heating start, stop, satisfaction or zero-runtime evidence).
+  `unavailable`/`unknown` states are gaps: they clear the carried
   action, preset and set points (a recovery row without them leaves them unknown),
   no transition is read across one,
   and history with nothing but gaps counts as unavailable
@@ -511,13 +534,13 @@ about 10 days:
 - **Thermostat-associated temperatures:** an `isThermostat` entity is not
   automatically the thermostat-reported comfort reading. A shared device, a
   name, a sole temperature entity, or even a matching current snapshot does not
-  establish the meaning of its historical series. Current discovery lacks
-  positive evidence to identify that series, so it leaves the reported reference
-  unknown and retries degraded results after 1 minute. Such sensors retain their
-  names, are never judged as rooms, and don't claim to be the selected reading.
-  If a reported-temperature series is positively identified by a future source,
-  placement can use it whenever fresh regardless of built-in participation;
-  the legacy name "Thermostat (Ecobee average)" is reserved for that reference.
+  establish the meaning of its historical series. Discovery therefore does not
+  identify those entities as the reference; the separately queried climate
+  attribute can be used whenever fresh regardless of built-in participation.
+  No synthetic sensor is added to the response. Unidentified thermostat-associated
+  sensors retain their names, are never judged as rooms, and don't claim to be the
+  selected reading. The legacy name "Thermostat (Ecobee average)" remains
+  reserved for a separately identified reported-temperature sensor.
   Temperature sensors that cannot safely be distinguished from thermostat
   readings are omitted from placement
   analysis. An unreadable or classless indoor-looking discovered sensor can
@@ -599,7 +622,7 @@ about 10 days:
     used on its own to rule heating out. `inferredMorningEvents` counts inferred events, and
     every recommendation's text says how many of a sensor's heat-ups were inferred.
 - **Heating stopped:** the thermostat is *satisfied* only when it goes from
-  heating to a reported non-heating action in a mode that can heat (an unknown
+  heating to reported `idle` in a mode that can heat (an unknown
   action after heating ends the heat-up unsatisfied), with the
   mode, set point and preset unchanged since the event. Switching to
   `off`/`cool`, or any set point, preset or mode change during the heat-up
@@ -616,9 +639,9 @@ about 10 days:
   effective comfort average.
 - **`overshoot`** is how far a room's highest 15-minute average was above the set
   point after the thermostat was satisfied, for up to 2 hours,
-  ending early when heating restarts, at the next set point, preset or mode
-  change, at a gap in history, or at the next event. Only averages wholly inside
-  that window count, and they must cover at least 75% of at least two
+  ending early when the action is no longer reported idle, at the next set
+  point, preset or mode change, at a gap in history, or at the next event.
+  Only averages wholly inside that window count, and they must cover at least 75% of at least two
   15-minute windows. It's `0` when the room stayed at or below the set point and
   `null` when that can't be established: inferred events, unknown set points,
   heating that was interrupted or wasn't reported to stop within 4 hours, or
@@ -659,9 +682,12 @@ about 10 days:
   `coolingOffset` repeat the corresponding wake
   and cooling values. `wakeOvershoot` is how far
   the room peaked over the Home set point in the 2 hours after waking (against
-  the set point at the start, ending early at a set point, mode or preset
-  change or a gap); `coolingUndershoot` is how far
-  it ended below the cool set point while cooling ran. Heating offsets and
+  the set point reported within the first 15 minutes, excluding overlapping
+  buckets before that target, and ending early at a set point, mode or preset
+  change or a gap); `coolingUndershoot` is the greatest dip below the cool set
+  point in whole source buckets of actual active cooling, with a stable target.
+  Merged idle spells and buckets spanning target changes cannot contribute.
+  Heating offsets and
   days skip source buckets containing a known `off`/`cool` mode or cooling
   action; without thermostat history all times count. Heating verdicts,
   `consistency` heating days and heating tips use only Home source windows
@@ -706,8 +732,8 @@ about 10 days:
     leaves contribution unknown and prevents reconstructing a multi-sensor
     reference. The exception is a single configured room with the physical
     thermostat explicitly excluded, which supplies the approximation without
-    occupancy. A positively identified fresh thermostat-reported series would
-    be usable regardless of built-in membership. `followMe=false` tells the
+    occupancy. The fresh thermostat-reported climate series is usable
+    regardless of built-in membership. `followMe=false` tells the
     model to use every member. The same qualifications apply to other heat-ups
     and to cooling using its own history.
   - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a

@@ -1,4 +1,5 @@
 import IndoorClimate, { ThermostatControlError, ThermostatControls } from '../indoor-climate';
+import { ClimatePlacementService } from '../climate-placement-service';
 import { HomeAssistantClient, HomeAssistantRequestError } from '../homeassistant-client';
 
 vi.mock('../homeassistant-client', async (importOriginal) => {
@@ -338,6 +339,50 @@ describe('IndoorClimate', () => {
     });
     await indoorClimate.refresh();
     expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+  });
+
+  it('uses the discovered climate attribute history rather than the physical sensor history', async () => {
+    mockStates({
+      ...STATES,
+      'climate.home': { state: 'heat', attributes: { current_temperature: 20 } },
+      'sensor.home_current_temperature': {
+        state: '24', attributes: { device_class: 'temperature', unit_of_measurement: '°C' },
+      },
+    });
+    indoorClimate = new IndoorClimate({ client: mockClient });
+    await indoorClimate.refresh();
+    const time = '2026-01-19T06:00:00Z';
+    const row = (field: string, value: string) => ({
+      _time: time, _field: field, _value: value, domain: 'climate', entity_id: 'home',
+    });
+    const query = vi.fn(async (flux: string) => {
+      if (flux.includes('union(')) return [
+        row('state', 'heat'), row('hvac_action_str', 'heating'), row('temperature', '21'),
+        { _time: time, _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      ];
+      if (flux.includes('r._value == "cooling"')) return [];
+      if (flux.includes('r._field == "current_temperature"')) return [
+        { _time: time, _value: '20', _measurement: 'climate', domain: 'climate', entity_id: 'home' },
+      ];
+      return [
+        { _time: time, _value: '24', _measurement: '°C', entity_id: 'home_current_temperature' },
+        { _time: time, _value: '18', _measurement: '°C', entity_id: 'bedroom_temperature' },
+        { _time: time, _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      ];
+    });
+    const service = new ClimatePlacementService({
+      influxdb: { configured: true, query } as never,
+      bucket: 'home_assistant',
+      indoorClimate,
+      now: () => new Date('2026-01-20T00:00:00Z'),
+      timeZone: 'UTC',
+    });
+    const result = await service.getInsights('7', { thermostatHome: 'true' });
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+    expect(result.sensors.find((s) => s.id === 'bedroom_temperature')!.periodOffsets.home).toBe(-2);
+    expect(result.sensors.find((s) => s.id === 'home_current_temperature')!.verdictSummary).toContain('not known');
+    expect(query.mock.calls.some(([flux]) => flux.includes('r.domain == "climate" and r.entity_id == "home"')
+      && flux.includes('r._field == "current_temperature"'))).toBe(true);
   });
 
   it('leaves placement identities unknown when devices or matches are ambiguous', async () => {

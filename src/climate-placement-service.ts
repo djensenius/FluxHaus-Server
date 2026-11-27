@@ -11,12 +11,14 @@ import {
   analyzePlacement,
   BUCKET_MS,
   COMFORT_SETTINGS,
+  reportedHasUsableHistory,
   type ComfortSample,
   type CoolingInput,
   type HvacSample,
   type OccupancySample,
   type ParticipationConfig,
   type PlacementInsights,
+  type ReportedTemperatureInput,
   type SensorSeriesInput,
 } from './climate-placement';
 import logger from './logger';
@@ -220,6 +222,29 @@ export function buildPlacementQuery(bucket: string, ids: string[], start: Date, 
   |> keep(columns: ["_time", "_value", "_measurement", "unit_tag", "unit_field", "entity_id"])`;
 }
 
+// Query the selected climate attribute itself, not a sensor on its device.
+// Restrict the range to complete, epoch-aligned source windows.
+export function buildReportedTemperatureQuery(bucket: string, climate: string, start: Date, end: Date): string {
+  if (!SAFE_OBJECT_ID.test(climate)) throw new Error('Unsafe entity id');
+  const from = new Date(Math.ceil(start.getTime() / BUCKET_MS) * BUCKET_MS);
+  const to = new Date(Math.floor(end.getTime() / BUCKET_MS) * BUCKET_MS);
+  return `from(bucket: ${fluxBucketLiteral(bucket)})
+  |> range(start: time(v: "${from.toISOString()}"), stop: time(v: "${to.toISOString()}"))
+  |> filter(fn: (r) => r._measurement == "climate" or r._measurement == "°C" or r._measurement == "°F")
+  |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${climate}")
+  |> filter(fn: (r) => r._field == "current_temperature" or r._field == "unit_of_measurement_str")
+  |> pivot(rowKey: ["_time"], columnKey: ["_field"], valueColumn: "_value")
+  |> filter(fn: (r) => exists r.current_temperature)
+  |> map(fn: (r) => ({ r with
+    _value: float(v: r.current_temperature),
+    unit_tag: if exists r.unit_of_measurement then r.unit_of_measurement else "",
+    unit_field: if exists r.unit_of_measurement_str then r.unit_of_measurement_str else "",
+  }))
+  |> group(columns: ["domain", "entity_id", "_measurement", "unit_tag", "unit_field"])
+  |> aggregateWindow(every: ${BUCKET_MS / 60_000}m, fn: mean, createEmpty: false, timeSrc: "_start")
+  |> keep(columns: ["_time", "_value", "_measurement", "unit_tag", "unit_field", "domain", "entity_id"])`;
+}
+
 function plausibleSetpoint(value: number | null): number | null {
   return value !== null && value >= MIN_PLAUSIBLE_SETPOINT_C && value <= MAX_PLAUSIBLE_SETPOINT_C ? value : null;
 }
@@ -239,7 +264,7 @@ export interface StateEntities {
 
 const CLIMATE_FIELDS = [
   'state', 'hvac_action_str', 'preset_mode', 'preset_mode_str', 'temperature', 'temperature_str',
-  'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str',
+  'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str', 'current_temperature_str',
 ];
 
 function statePredicate(entities: StateEntities): string {
@@ -304,6 +329,7 @@ export interface ParsedStates {
   comfort: ComfortSample[] | null;
   // Occupancy per occupancy entity id.
   occupancy: Map<string, OccupancySample[]>;
+  reportedInvalidations: number[];
 }
 
 // Rows from buildStatesQuery → thermostat samples (one per state change; mode,
@@ -320,6 +346,7 @@ export function parseStates(
   const climate = new Map<number, Map<string, string>>();
   const comfort: ComfortSample[] = [];
   const occupancy = new Map<string, OccupancySample[]>();
+  const reportedInvalidations: number[] = [];
   rows.forEach((row) => {
     /* eslint-disable no-underscore-dangle */
     const t = Date.parse(row._time);
@@ -328,6 +355,10 @@ export function parseStates(
     /* eslint-enable no-underscore-dangle */
     if (!Number.isFinite(t)) return;
     if (row.domain === 'climate' && row.entity_id === entities.climate) {
+      if (field === 'current_temperature_str') {
+        reportedInvalidations.push(t);
+        return;
+      }
       if (!climate.has(t)) climate.set(t, new Map());
       climate.get(t)!.set(field.replace(/_str$/, ''), value);
     } else if (row.domain === 'select' && row.entity_id === entities.comfort) {
@@ -387,6 +418,7 @@ export function parseStates(
     hvac: hvac.length > 0 ? hvac : null,
     comfort: comfort.length > 0 ? comfort.sort(byTime) : null,
     occupancy,
+    reportedInvalidations: reportedInvalidations.sort((a, b) => a - b),
   };
 }
 
@@ -435,10 +467,70 @@ export function rowsToSeries(
   };
 }
 
+// Unlike room sensors, an untagged climate attribute uses HA's last known
+// climate unit as an explicitly qualified historical assumption. An explicit
+// unknown/conflicting unit is never replaced with the assumption.
+function reportedRowUnit(row: Record<string, string>): string | null | undefined {
+  /* eslint-disable-next-line no-underscore-dangle */
+  const measurement = row._measurement;
+  const units = [
+    measurement === '°C' || measurement === '°F' ? measurement : '',
+    row.unit_tag ?? '',
+    row.unit_field ?? '',
+  ].filter(Boolean);
+  if (units.length === 0) return undefined;
+  if (units.some((unit) => knownUnit(unit) === null) || new Set(units).size !== 1) return null;
+  return units[0];
+}
+
+export function rowsToReportedTemperature(
+  rows: Record<string, string>[], climate: string, unit: string | null | undefined, start: Date, end: Date,
+): ReportedTemperatureInput {
+  const entries = rows.filter((row) => row.domain === 'climate' && row.entity_id === climate);
+  const assumedUnit = knownUnit(unit ?? undefined);
+  // Evidence of a historical unit change makes the unit of untagged rows
+  // ambiguous; do not extend today's unit over those rows.
+  const conflictingHistory = entries.some((row) => {
+    const recorded = reportedRowUnit(row);
+    return recorded === null || (recorded !== undefined && assumedUnit !== null && recorded !== assumedUnit);
+  });
+  const windows = new Map<number, { value: number; unit: string | null; assumed: boolean }[]>();
+  entries.forEach((row) => {
+    /* eslint-disable no-underscore-dangle */
+    const t = Date.parse(row._time);
+    const value = row._value?.trim() ? Number(row._value) : NaN;
+    /* eslint-enable no-underscore-dangle */
+    if (!Number.isFinite(t) || t % BUCKET_MS !== 0 || t < start.getTime() || t + BUCKET_MS > end.getTime()) return;
+    const recorded = reportedRowUnit(row);
+    const assumed = recorded === undefined && !conflictingHistory && assumedUnit !== null;
+    const actual = recorded === undefined ? (assumed ? assumedUnit : null) : recorded;
+    if (!windows.has(t)) windows.set(t, []);
+    windows.get(t)!.push({ value, unit: actual, assumed });
+  });
+  const points: SensorSeriesInput['points'] = [];
+  const invalidWindows: number[] = [];
+  let usedAssumption = false;
+  windows.forEach((values, t) => {
+    const [entry] = values;
+    if (values.length !== 1 || entry.unit === null || !Number.isFinite(entry.value)) {
+      invalidWindows.push(t);
+      return;
+    }
+    points.push({ t, v: toCelsius(entry.value, entry.unit)! });
+    usedAssumption ||= entry.assumed;
+  });
+  return {
+    points: points.sort((a, b) => a.t - b.t),
+    invalidWindows: invalidWindows.sort((a, b) => a - b),
+    assumedUnit: usedAssumption,
+  };
+}
+
 interface WindowData {
   series: SensorSeriesInput[];
   unknownUnitWindows: number;
   states: ParsedStates | null;
+  reported: ReportedTemperatureInput | null;
   degraded: boolean;
 }
 
@@ -561,9 +653,10 @@ export class ClimatePlacementService {
     const unit = status.thermostat?.temperatureUnit;
 
     // Missing or unclassifiable discovery is retried soon.
-    let degraded = sensors.every((s) => s.isThermostat) || !status.thermostat || !primaryThermostatId || incompleteSensorInventory;
+    let degraded = sensors.every((s) => s.isThermostat) || !status.thermostat || incompleteSensorInventory;
+    const reportedClimate = matchingClimate ? entities?.climate ?? null : null;
     const [heat, lastCooling] = await Promise.all([
-      this.fetchWindow(sensors, entities, unit, start, end),
+      this.fetchWindow(sensors, entities, reportedClimate, unit, start, end),
       entities ? this.fetchLastCooling(entities.climate, end).catch((err) => {
         placementLogger.warn({ err }, 'Failed to look up the last cooling for placement insights');
         degraded = true;
@@ -583,11 +676,13 @@ export class ClimatePlacementService {
           coolEnd.getTime() - days * DAY_MS,
           end.getTime() - COOLING_LOOKBACK_DAYS * DAY_MS,
         ));
-        const data = await this.fetchWindow(sensors, entities, unit, coolStart, coolEnd);
+        const data = await this.fetchWindow(sensors, entities, reportedClimate, unit, coolStart, coolEnd);
         if (data.degraded) degraded = true;
         cooling = {
           start: coolStart, end: coolEnd, sensors: data.series, hvac: data.states?.hvac ?? null, comfort: data.states?.comfort ?? null,
           thermostatOccupancy: physicalOccupancy ? data.states?.occupancy.get(physicalOccupancy) ?? null : null,
+          reportedTemperature: data.reported && reportedHasUsableHistory(data.reported, data.states?.hvac ?? [])
+            ? data.reported : null,
         };
       }
     }
@@ -595,6 +690,9 @@ export class ClimatePlacementService {
     const { series, states } = heat;
     const hvac = states?.hvac ?? null;
     if (series.every((sensor) => sensor.points.length === 0)) degraded = true;
+    const reported = heat.reported && reportedHasUsableHistory(heat.reported, hvac ?? []) ? heat.reported : null;
+    const legacy = primaryThermostatId && series.some((sensor) => sensor.id === primaryThermostatId && sensor.points.length > 0);
+    if (!reported && !legacy) degraded = true;
 
     const insights = analyzePlacement({
       start,
@@ -603,6 +701,7 @@ export class ClimatePlacementService {
       timeZone: resolveTimeZone(this.deps.timeZone),
       sensors: series,
       primaryThermostatId,
+      reportedTemperature: reported,
       thermostatOccupancy: physicalOccupancy ? states?.occupancy.get(physicalOccupancy) ?? null : null,
       incompleteSensorInventory,
       hvac,
@@ -621,12 +720,13 @@ export class ClimatePlacementService {
   private async fetchWindow(
     sensors: IndoorSensor[],
     entities: StateEntities | null,
+    reportedClimate: string | null,
     unit: string | null | undefined,
     start: Date,
     end: Date,
   ): Promise<WindowData> {
     let degraded = false;
-    const [{ series, unknownUnitWindows }, states] = await Promise.all([
+    const [{ series, unknownUnitWindows }, states, reference] = await Promise.all([
       this.fetchSeries(sensors, start, end).catch((err) => {
         placementLogger.warn({ err }, 'Failed to read room temperatures for placement insights');
         degraded = true;
@@ -642,16 +742,34 @@ export class ClimatePlacementService {
         degraded = true;
         return null;
       }) : Promise.resolve(null),
+      reportedClimate ? this.fetchReported(reportedClimate, unit, start, end).catch((err) => {
+        placementLogger.warn({ err }, 'Failed to read the climate-reported temperature for placement insights');
+        degraded = true;
+        return null;
+      }) : Promise.resolve(null),
     ]);
     const withOccupancy = series.map((s) => {
       const id = sensors.find((sensor) => sensor.id === s.id)?.occupancyId;
       const occupancy = id ? states?.occupancy.get(id) : undefined;
       return occupancy ? { ...s, occupancy } : s;
     });
-    if (unknownUnitWindows > 0 || series.some((s) => s.points.length === 0)) degraded = true;
+    if (unknownUnitWindows > 0 || series.some((s) => !s.isThermostat && s.points.length === 0)) degraded = true;
     return {
-      series: withOccupancy, unknownUnitWindows, states, degraded,
+      series: withOccupancy,
+      unknownUnitWindows,
+      states,
+      reported: reference ? { ...reference, invalidations: states?.reportedInvalidations ?? [] } : null,
+      degraded,
     };
+  }
+
+  private async fetchReported(
+    climate: string, unit: string | null | undefined, start: Date, end: Date,
+  ): Promise<ReportedTemperatureInput> {
+    const rows: Record<string, string>[] = await this.deps.influxdb.query(
+      buildReportedTemperatureQuery(this.deps.bucket, climate, start, end),
+    );
+    return rowsToReportedTemperature(rows, climate, unit, start, end);
   }
 
   private async fetchSeries(

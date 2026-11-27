@@ -126,6 +126,17 @@ export interface SensorSeriesInput {
   occupancy?: OccupancySample[] | null;
 }
 
+// A climate entity's reported temperature is a separate reference, never a
+// physical sensor or evidence of the built-in sensor's participation.
+export interface ReportedTemperatureInput {
+  points: SensorSeriesInput['points'];
+  // Starts of buckets dropped for unknown/conflicting units, and explicit
+  // unavailable/unknown attribute changes, respectively.
+  invalidWindows?: number[];
+  invalidations?: number[];
+  assumedUnit?: boolean;
+}
+
 // Which room sensor ids each comfort setting uses (null = unknown), Follow Me,
 // and the separate physical thermostat sensor's participation when known.
 export interface ParticipationConfig {
@@ -163,6 +174,7 @@ export interface CoolingInput {
   hvac?: HvacSample[] | null;
   comfort?: ComfortSample[] | null;
   thermostatOccupancy?: OccupancySample[] | null;
+  reportedTemperature?: ReportedTemperatureInput | null;
 }
 
 export interface PlacementInput {
@@ -174,6 +186,7 @@ export interface PlacementInput {
   // A positively identified reported-temperature series for the selected
   // climate device; null or omitted when its meaning isn't established.
   primaryThermostatId?: string | null;
+  reportedTemperature?: ReportedTemperatureInput | null;
   // Physical built-in sensor occupancy, independent of the reported reading.
   // If omitted, an identified thermostat series may supply it for callers
   // that already associate occupancy with that series.
@@ -352,7 +365,17 @@ function isHomePreset(preset: string | null): boolean {
 }
 
 function isHeating(action: string | null): boolean {
-  return !!action && /heat/i.test(action);
+  return /^heating$/i.test(action ?? '');
+}
+
+function isCooling(action: string | null): boolean {
+  return /^cooling$/i.test(action ?? '');
+}
+
+// Only actions whose heating/cooling meaning is known can establish runtime
+// or a transition. Vendor-specific actions are not evidence of idle.
+function knownAction(action: string | null): boolean {
+  return /^(off|heating|cooling|drying|fan|idle)$/i.test(action ?? '');
 }
 
 // Modes in which the thermostat can heat; an unknown mode isn't ruled out.
@@ -365,7 +388,7 @@ function canHeat(sample: HvacSample): boolean {
 function heatingReportedWithin(samples: HvacSample[], index: number, limit: number): boolean {
   const from = samples[index].t;
   for (let j = index; j < samples.length && samples[j].t <= from + limit; j += 1) {
-    if (samples[j].gap || !isHomePreset(samples[j].presetMode)) return false;
+    if (samples[j].gap || !knownAction(samples[j].hvacAction) || !isHomePreset(samples[j].presetMode)) return false;
     if (isHeating(samples[j].hvacAction)) return true;
   }
   return false;
@@ -434,7 +457,7 @@ export function detectHvacEvents(samples: HvacSample[], timeZone: string): Place
         returns.push({ type: 'return', t: cur.t, inferred: false });
       }
     } else if (inMorning && !mornings.has(day) && !isAway(cur.presetMode) && canHeat(cur)
-      && isHeating(cur.hvacAction) && prev.hvacAction !== null && !isHeating(prev.hvacAction)) {
+      && isHeating(cur.hvacAction) && knownAction(prev.hvacAction) && !isHeating(prev.hvacAction)) {
       mornings.set(day, { type: 'morning', t: cur.t, inferred: false });
     }
   }
@@ -545,12 +568,32 @@ function stateIndexAt(samples: HvacSample[], t: number): number {
   return firstIndexAfter(samples, t, timeOf, true) - 1;
 }
 
+// A source or carried reference must not cross a known climate outage, an
+// invalid attribute state, or a bucket whose unit could not be established.
+function referenceAvailable(
+  reference: ReportedTemperatureInput, samples: HvacSample[], from: number, to: number,
+): boolean {
+  const index = stateIndexAt(samples, from);
+  if (index >= 0 && samples[index].gap) return false;
+  for (let i = index + 1; i < samples.length && samples[i].t < to; i += 1) {
+    if (samples[i].gap) return false;
+  }
+  if (reference.invalidations?.some((t) => t >= from && t < to)) return false;
+  return !reference.invalidWindows?.some((t) => t < to && t + BUCKET_MS > from);
+}
+
+export function reportedHasUsableHistory(reference: ReportedTemperatureInput, samples: HvacSample[]): boolean {
+  const sorted = [...samples].sort((a, b) => a.t - b.t);
+  return reference.points.some((point) => Number.isFinite(point.t) && Number.isFinite(point.v)
+    && referenceAvailable(reference, sorted, point.t, point.t + BUCKET_MS));
+}
+
 // A recorded mode that can't heat (off, cool, …), or a reported cooling action
 // (e.g. in heat_cool/auto), rules heating out. A reported idle action doesn't:
 // some integrations (e.g. an ecobee through homekit_controller) report idle for
 // hours after a set point increase.
 function rulesOutHeating(sample: HvacSample): boolean {
-  return !sample.gap && ((!!sample.hvacMode && !canHeat(sample)) || /cool/i.test(sample.hvacAction ?? ''));
+  return !sample.gap && ((!!sample.hvacMode && !canHeat(sample)) || isCooling(sample.hvacAction));
 }
 
 // Do not apply a later grid-time mode to a source bucket. A known off/cool
@@ -687,7 +730,7 @@ function heatUpEnd(samples: HvacSample[], event: PlacementEvent): HeatUpEnd {
     } else if (heating) {
       // An unknown action after heating ends the heat-up unsatisfied: a later
       // idle can't be told apart from the end of heating.
-      return { at: sample.t, satisfied: canHeat(sample) && sample.hvacAction !== null };
+      return { at: sample.t, satisfied: canHeat(sample) && /^idle$/i.test(sample.hvacAction ?? '') };
     }
   }
   return unknown;
@@ -704,7 +747,7 @@ function overshootWindow(
   const from = end.at;
   const state = samples[stateIndexAt(samples, from)];
   if (state.setpoint === null) return null;
-  const change = findAfter(samples, from, from + OVERSHOOT_WINDOW_MS, (s) => s.gap || isHeating(s.hvacAction)
+  const change = findAfter(samples, from, from + OVERSHOOT_WINDOW_MS, (s) => s.gap || !/^idle$/i.test(s.hvacAction ?? '')
     || s.setpoint !== state.setpoint || s.presetMode !== state.presetMode || s.hvacMode !== state.hvacMode);
   const to = Math.min(from + OVERSHOOT_WINDOW_MS, nextEvent, change?.t ?? Number.POSITIVE_INFINITY);
   return { from, to, setpoint: state.setpoint };
@@ -747,10 +790,6 @@ function normalizeSetting(raw: string | null): ComfortSetting | null {
   if (/away|vacation/i.test(raw)) return 'away';
   if (/home|comfort/i.test(raw)) return 'home';
   return null;
-}
-
-function isCooling(action: string | null): boolean {
-  return !!action && /cool/i.test(action);
 }
 
 function coolPointOf(sample: HvacSample): number | null {
@@ -869,8 +908,7 @@ function actionsKnownThroughout(samples: HvacSample[], from: number, to: number)
   const index = stateIndexAt(samples, from);
   if (index < 0 || to <= from) return false;
   for (let i = index; i < samples.length && samples[i].t < to; i += 1) {
-    const action = samples[i].hvacAction;
-    if (samples[i].gap || !action || /^(unknown|unavailable)$/i.test(action)) return false;
+    if (samples[i].gap || !knownAction(samples[i].hvacAction)) return false;
   }
   return true;
 }
@@ -946,10 +984,10 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
       const startIndex = run ? stateIndexAt(samples, run.from) : -1;
       const endIndex = run ? stateIndexAt(samples, run.to) : -1;
       const startObserved = !run || run.from > searchFrom || (startIndex > 0 && samples[startIndex].t === run.from
-        && !samples[startIndex - 1].gap && samples[startIndex - 1].hvacAction !== null
+        && !samples[startIndex - 1].gap && knownAction(samples[startIndex - 1].hvacAction)
         && !heatingNow(samples[startIndex - 1]));
       const endObserved = !run || run.to < searchTo || (endIndex >= 0 && samples[endIndex].t === run.to
-        && !samples[endIndex].gap && samples[endIndex].hvacAction !== null && !heatingNow(samples[endIndex]));
+        && !samples[endIndex].gap && knownAction(samples[endIndex].hvacAction) && !heatingNow(samples[endIndex]));
       const complete = searchFrom >= from && searchTo <= to && startObserved && endObserved
         && actionsKnownThroughout(samples, searchFrom, searchTo);
       wakes.push({
@@ -1063,6 +1101,10 @@ interface Model {
   rooms: string[];
   roomSet: Set<string>;
   thermostatId: string | null;
+  identifiedThermostatSensorId: string | null;
+  reportedUnitAssumed: boolean;
+  reportedTemperature: ReportedTemperatureInput | null;
+  referenceStates: HvacSample[];
   thermostatOccupancy: OccupancySample[] | null;
   incompleteSensorInventory: boolean;
   config: ParticipationConfig | null;
@@ -1099,6 +1141,9 @@ function effectiveAt(
   if (own !== undefined) {
     const window = sourceWindow(grid, t, [model.thermostatId!, ...(referenceId ? [referenceId] : [])]);
     if (!window || (bounds && !containsWindow(bounds, window))) return null;
+    if (model.reportedTemperature && !referenceAvailable(model.reportedTemperature, model.referenceStates, window.from, window.to)) {
+      return null;
+    }
     if (setting && settingDuring(model.timeline, window) !== setting) return null;
     return own;
   }
@@ -1429,6 +1474,7 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     const target = own.get(t);
     const window = sourceWindow(grid, t, [model.thermostatId!, ...model.rooms]);
     if (target === undefined || !window || window.from < from || window.to > to) return;
+    if (model.reportedTemperature && !referenceAvailable(model.reportedTemperature, model.referenceStates, window.from, window.to)) return;
     const setting = settingDuring(model.timeline, window);
     if (setting === null) return;
     if (thermostatMemberIn(model, setting) !== false) return;
@@ -1663,18 +1709,29 @@ function wakeOvershootOf(points: SensorSeriesInput['points'], wakes: Wake[], sam
     const state = samples[stateIndexAt(samples, start)];
     if (!state || state.gap || state.setpoint === null) return null;
     const window = wakeWindow(wake);
+    if (start > window.to) return null;
+    const matches = (sample: HvacSample | undefined) => !!sample && !sample.gap
+      && sample.setpoint === state.setpoint && sample.hvacMode === state.hvacMode && sample.presetMode === state.presetMode;
+    let from = window.from;
+    let previous = samples[stateIndexAt(samples, from)];
+    for (let i = firstIndexAfter(samples, from, timeOf, true); i < samples.length && samples[i].t <= start; i += 1) {
+      if (!matches(previous) || !matches(samples[i])) from = samples[i].t;
+      previous = samples[i];
+    }
     const change = findAfter(samples, start, window.to, (x) => x.gap || x.setpoint !== state.setpoint
       || x.hvacMode !== state.hvacMode || x.presetMode !== state.presetMode);
     return overshootIn(points, {
-      from: window.from, to: Math.min(window.to, change?.t ?? window.to), setpoint: state.setpoint,
+      from, to: Math.min(window.to, change?.t ?? window.to), setpoint: state.setpoint,
     });
   }).filter((p): p is number => p !== null);
   return mean(peaks);
 }
 
 // Mean of each cooling run's greatest dip below the cool set point in force at
-// that reading.
-function coolingUndershootOf(points: SensorSeriesInput['points'], runs: Run[], samples: HvacSample[]): number | null {
+// that reading, only in whole active-cooling buckets with a stable target.
+function coolingUndershootOf(
+  points: SensorSeriesInput['points'], runs: Run[], samples: HvacSample[], activeRuns: Run[],
+): number | null {
   const dips = runs.map((run) => {
     const inside = points.slice(
       firstIndexAfter(points, run.from, timeOf, false),
@@ -1682,9 +1739,14 @@ function coolingUndershootOf(points: SensorSeriesInput['points'], runs: Run[], s
     );
     if (inside.length === 0) return null;
     const undershoots = inside.map((reading) => {
+      if (!inActiveRuns(activeRuns, reading.t)) return null;
       const state = samples[stateIndexAt(samples, reading.t)];
       const point = state && !state.gap ? coolPointOf(state) : null;
-      return point === null ? null : point - reading.v;
+      if (point === null) return null;
+      const change = findAfter(samples, reading.t, reading.t + BUCKET_MS - 1, (sample) => (
+        sample.gap || !coolingNow(sample) || coolPointOf(sample) !== point
+      ));
+      return change ? null : point - reading.v;
     }).filter((undershoot): undershoot is number => undershoot !== null);
     return undershoots.length > 0 ? Math.max(0, ...undershoots) : null;
   }).filter((d): d is number => d !== null);
@@ -2521,6 +2583,7 @@ function dataset(
   primaryThermostatId: string | null,
   incompleteSensorInventory: boolean,
   thermostatOccupancy: OccupancySample[] | null | undefined,
+  reportedTemperature: ReportedTemperatureInput | null | undefined,
 ): Dataset {
   const raw = [...(hvac ?? [])].sort((a, b) => a.t - b.t);
   // The Ecobee comfort setting takes precedence over the thermostat's preset,
@@ -2533,6 +2596,22 @@ function dataset(
     .map((s) => [s.id, [...s.occupancy!].sort((a, b) => a.t - b.t)]));
   const primary = sensors.filter((s) => s.isThermostat && s.id === primaryThermostatId);
   const physicalOccupancy = thermostatOccupancy === undefined && primary.length === 1 ? primary[0].occupancy : thermostatOccupancy;
+  const reported = reportedTemperature?.points.length ? reportedTemperature : null;
+  let referenceId = '__climate_reported_temperature__';
+  while (sensors.some((s) => s.id === referenceId)) referenceId += '_';
+  const grid = alignSensors(reported ? [...sensors, {
+    id: referenceId, name: '', isThermostat: true, points: reported.points,
+  }] : sensors);
+  if (reported) {
+    const values = grid.values.get(referenceId)!;
+    const sources = grid.sources.get(referenceId)!;
+    values.forEach((_value, t) => {
+      if (!referenceAvailable(reported, raw, sources.get(t)!, t)) {
+        values.delete(t);
+        sources.delete(t);
+      }
+    });
+  }
   return {
     raw,
     samples: mergeComfort(raw, timeline, known),
@@ -2540,7 +2619,11 @@ function dataset(
     model: {
       rooms,
       roomSet: new Set(rooms),
-      thermostatId: primary.length === 1 ? primary[0].id : null,
+      thermostatId: reported ? referenceId : primary.length === 1 ? primary[0].id : null,
+      identifiedThermostatSensorId: primary.length === 1 ? primary[0].id : null,
+      reportedUnitAssumed: reported?.assumedUnit ?? false,
+      reportedTemperature: reported,
+      referenceStates: raw,
       thermostatOccupancy: physicalOccupancy ? [...physicalOccupancy].sort((a, b) => a.t - b.t) : null,
       incompleteSensorInventory,
       config,
@@ -2548,7 +2631,7 @@ function dataset(
       timeline,
       estimated: null,
     },
-    grid: alignSensors(sensors),
+    grid,
     points: new Map(sensors.map((s) => [s.id, cleanPoints(s.points)])),
   };
 }
@@ -2575,7 +2658,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const clock = localClock(input.timeZone);
   const heat = dataset(
     input.sensors, input.hvac, input.comfort, config, input.primaryThermostatId ?? null, input.incompleteSensorInventory ?? false,
-    input.thermostatOccupancy,
+    input.thermostatOccupancy, input.reportedTemperature,
   );
   const { samples, model } = heat;
   const recorded = heat.raw.filter((s) => !s.gap);
@@ -2630,7 +2713,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   let coolScan: ReturnType<typeof scan> | null = null;
   if (cooling) {
     const shared = cooling.sensors === undefined && cooling.hvac === undefined && cooling.comfort === undefined
-      && cooling.thermostatOccupancy === undefined;
+      && cooling.thermostatOccupancy === undefined && cooling.reportedTemperature === undefined;
     // Its own model: membership is estimated from the cooling data.
     const data = shared ? { ...heat, model: { ...heat.model } } : dataset(
       cooling.sensors ?? input.sensors,
@@ -2640,6 +2723,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       input.primaryThermostatId ?? null,
       input.incompleteSensorInventory ?? false,
       cooling.thermostatOccupancy === undefined ? input.thermostatOccupancy : cooling.thermostatOccupancy,
+      cooling.reportedTemperature === undefined ? input.reportedTemperature : cooling.reportedTemperature,
     );
     const from = cooling.start.getTime();
     const to = cooling.end.getTime();
@@ -2749,7 +2833,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
         : { wake: {}, home: null, cooling: null },
       out: {
         id: sensor.id,
-        name: !room && sensor.id === model.thermostatId ? COMFORT_AVERAGE_NAME : sensor.name,
+        name: !room && sensor.id === model.identifiedThermostatSensorId ? COMFORT_AVERAGE_NAME : sensor.name,
         isThermostat: sensor.isThermostat,
         averageOffset: offsetOf(),
         morningOffset: offsetOf(['wake', 'morning']),
@@ -2765,7 +2849,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
         verdictSummary: null,
         periodOffsets,
         wakeOvershoot: roundOrNull(wakeOvershootOf(points, wakes, samples)),
-        coolingUndershoot: cool && coolPoints ? roundOrNull(coolingUndershootOf(coolPoints, coolRuns, cool.samples)) : null,
+        coolingUndershoot: cool && coolPoints ? roundOrNull(coolingUndershootOf(coolPoints, coolRuns, cool.samples, activeCoolRuns)) : null,
         consistency: room
           ? {
             days: heatDays.days,
@@ -2822,7 +2906,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     // Dips below the cool set point in this setting's runs, for its advice.
     const undershoot = new Map(rooms.map((a) => {
       const points = cool!.points.get(a.out.id);
-      return [a.out.id, points ? roundOrNull(coolingUndershootOf(points, group.runs, cool!.samples)) : null];
+      return [a.out.id, points ? roundOrNull(coolingUndershootOf(points, group.runs, cool!.samples, activeCoolRuns)) : null];
     }));
     const scope = coolGroups.length > 1 ? ` in ${SETTING_LABEL[group.setting]}` : '';
     views.forEach((view, i) => {
@@ -2832,7 +2916,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   });
   analyzed.forEach((a) => {
     if (!a.room) {
-      a.out.verdictSummary = a.out.id === model.thermostatId ? COMFORT_AVERAGE_SUMMARY : UNSELECTED_THERMOSTAT_SUMMARY;
+      a.out.verdictSummary = a.out.id === model.identifiedThermostatSensorId ? COMFORT_AVERAGE_SUMMARY : UNSELECTED_THERMOSTAT_SUMMARY;
       return;
     }
     // Home's heating evidence only: heat-ups (and wake-ups) during Home.
@@ -2883,6 +2967,11 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       checked: input.cooling !== undefined, found: cooling !== null, events: coolRuns.length,
     });
     if (summary) recommendations.push(summary);
+  }
+  if (model.reportedUnitAssumed || cool?.model.reportedUnitAssumed) {
+    recommendations.forEach((rec) => {
+      rec.detail += ' Comparisons using climate history assume Home Assistant\'s last known temperature unit applied historically.';
+    });
   }
   analyzed.forEach((a) => {
     a.out.recommendationIds = recommendations
