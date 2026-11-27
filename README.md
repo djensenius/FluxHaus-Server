@@ -562,7 +562,15 @@ about 10 days:
   separately recorded select and preset updates reveal an intermediate effective
   setting within one millisecond, no duration is guessed: overlapping source
   buckets are excluded and wake evidence cannot be paired across the
-  interruption. The final setting and later complete buckets remain usable;
+  interruption. An HVAC action in that millisecond is ordered by its recorded
+  fraction: a heat-up before or during the interruption cannot be paired with a
+  later peak, while a start after it (or simultaneous with its end) can. A mode
+  or heating-target change after the action also interrupts that heat-up; a
+  numerically unchanged target still needs a valid observation after a mode
+  change. Identical action or target observations retain their first and last
+  recorded fractions; when those straddle a mode change, an unretained
+  intermediate observation cannot establish an earlier valid action or target.
+  The final setting and later complete buckets remain usable;
   unchanged duplicates and truly simultaneous updates create no such barrier.
 - **Occupancy** comes from each discovered `occupancy` binary sensor (`value`
   0/1, change-driven, so each value holds until the next), matched to a

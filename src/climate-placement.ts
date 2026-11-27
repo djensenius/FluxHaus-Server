@@ -164,6 +164,8 @@ export interface HvacSample {
   // Recorded digits after the millisecond for each field's earliest value.
   // Omitted by callers with millisecond-precision history.
   subMillisecondFields?: Record<string, string>;
+  // Last identical action observation when it differs from the first.
+  actionObservedLastSubMillisecond?: string;
   // History was unavailable/unknown: a discontinuity, not a state.
   gap: boolean;
   // The entity state (heat, cool, heat_cool, auto, off, …).
@@ -180,6 +182,9 @@ export interface HvacSample {
   setpointObservedAt?: number;
   // Fractional remainder of the last observation of this heating target.
   setpointObservedSubMillisecond?: string;
+  // First observation when identical target readings span different fractions
+  // in the same millisecond; an empty string is the exact millisecond.
+  setpointObservedFirstSubMillisecond?: string;
   // Cooling set point in °C (`temperature` in cool mode, else
   // `target_temp_high`); absent/null when unknown.
   coolSetpoint?: number | null;
@@ -236,6 +241,18 @@ export interface PlacementEvent {
   // True for morning warm-ups inferred from room temperatures rather than
   // observed in thermostat history.
   inferred: boolean;
+}
+
+// Internal ordering within a rounded millisecond; these do not change the
+// public timestamps or represent measurable durations.
+interface OrderedHvacSample extends HvacSample {
+  order?: string;
+  comfortInterruption?: boolean;
+  laterHvacChange?: boolean;
+}
+
+interface OrderedPlacementEvent extends PlacementEvent {
+  order?: string;
 }
 
 export interface PeriodOffsets {
@@ -515,11 +532,13 @@ export function detectHvacEvents(samples: HvacSample[], timeZone: string): Place
       const last = returns[returns.length - 1];
       if (canHeat(cur) && heatingReportedWithin(sorted, i, RETURN_HEAT_LIMIT_MS)
         && (!last || cur.t - last.t >= EVENT_WINDOW_MS)) {
-        returns.push({ type: 'return', t: cur.t, inferred: false });
+        const order = (cur as OrderedHvacSample).order;
+        returns.push({ type: 'return', t: cur.t, inferred: false, ...(order !== undefined ? { order } : {}) });
       }
     } else if (inMorning && !mornings.has(day) && !isAway(cur.presetMode) && canHeat(cur)
       && isHeating(cur.hvacAction) && knownAction(prev.hvacAction) && !isHeating(prev.hvacAction)) {
-      mornings.set(day, { type: 'morning', t: cur.t, inferred: false });
+      const order = (cur as OrderedHvacSample).order;
+      mornings.set(day, { type: 'morning', t: cur.t, inferred: false, ...(order !== undefined ? { order } : {}) });
     }
   }
 
@@ -629,6 +648,16 @@ function stateIndexAt(samples: HvacSample[], t: number): number {
   return firstIndexAfter(samples, t, timeOf, true) - 1;
 }
 
+// Last state at or before the recorded fraction, rather than the last state in
+// the whole rounded millisecond. An omitted order preserves snapshot callers.
+function stateIndexAtOrder(samples: HvacSample[], t: number, order: string | undefined): number {
+  if (order === undefined) return stateIndexAt(samples, t);
+  let index = firstIndexAfter(samples, t, timeOf, false) - 1;
+  while (index + 1 < samples.length && samples[index + 1].t === t
+    && compareSubMillisecond((samples[index + 1] as OrderedHvacSample).order ?? '', order) <= 0) index += 1;
+  return index;
+}
+
 function heatingTargetModeDuring(samples: HvacSample[], from: number, to: number): boolean {
   const index = stateIndexAt(samples, from);
   if (index < 0) return false;
@@ -641,13 +670,14 @@ function heatingTargetModeDuring(samples: HvacSample[], from: number, to: number
 // Known non-heating states can separate observed runs; missing HVAC evidence
 // or an applicable heating target cannot connect a warm-up to a later peak.
 function knownWakeEvidence(sample: HvacSample | undefined): boolean {
-  return !!sample && !sample.gap && knownAction(sample.hvacAction)
+  const ordered = sample as OrderedHvacSample | undefined;
+  return !!sample && !sample.gap && !ordered?.comfortInterruption && !ordered?.laterHvacChange && knownAction(sample.hvacAction)
     && /^(heat|cool|heat_cool|auto|off|dry|fan_only)$/i.test(sample.hvacMode ?? '')
     && (!heatingTargetMode(sample) || sample.setpoint !== null);
 }
 
-function wakeEvidenceKnownThroughout(samples: HvacSample[], from: number, to: number): boolean {
-  const index = stateIndexAt(samples, from);
+function wakeEvidenceKnownThroughout(samples: HvacSample[], from: number, to: number, order?: string): boolean {
+  const index = stateIndexAtOrder(samples, from, order);
   if (index < 0) return false;
   for (let i = index; i < samples.length && samples[i].t < to; i += 1) {
     if (!knownWakeEvidence(samples[i])) return false;
@@ -840,19 +870,24 @@ interface HeatUpEnd {
   // set point, preset or mode change during the heat-up, a gap) is an
   // interruption.
   satisfied: boolean;
+  // The actual satisfaction observation, including its order within a
+  // rounded millisecond.
+  index?: number;
 }
 
 // How the heat-up after an observed event ended, within SATISFACTION_LIMIT_MS.
 function heatUpEnd(samples: HvacSample[], event: PlacementEvent): HeatUpEnd {
   const unknown = { at: null, satisfied: false };
-  const index = stateIndexAt(samples, event.t);
+  const index = stateIndexAtOrder(samples, event.t, (event as OrderedPlacementEvent).order);
   if (index < 0 || samples[index].gap) return unknown;
+  const start = samples[index] as OrderedHvacSample;
+  if (start.comfortInterruption || start.laterHvacChange) return { at: event.t, satisfied: false };
   let heating = isHeating(samples[index].hvacAction);
   for (let i = index + 1; i < samples.length; i += 1) {
     const prev = samples[i - 1];
-    const sample = samples[i];
+    const sample = samples[i] as OrderedHvacSample;
     if (sample.t > event.t + SATISFACTION_LIMIT_MS) return unknown;
-    if (sample.gap) return { at: sample.t, satisfied: false };
+    if (sample.gap || sample.comfortInterruption || sample.laterHvacChange) return { at: sample.t, satisfied: false };
     if (sample.hvacMode !== prev.hvacMode || sample.setpoint !== prev.setpoint
       || sample.presetMode !== prev.presetMode) {
       return { at: sample.t, satisfied: false };
@@ -862,7 +897,7 @@ function heatUpEnd(samples: HvacSample[], event: PlacementEvent): HeatUpEnd {
     } else if (heating) {
       // An unknown action after heating ends the heat-up unsatisfied: a later
       // idle can't be told apart from the end of heating.
-      return { at: sample.t, satisfied: canHeat(sample) && /^idle$/i.test(sample.hvacAction ?? '') };
+      return { at: sample.t, satisfied: canHeat(sample) && /^idle$/i.test(sample.hvacAction ?? ''), index: i };
     }
   }
   return unknown;
@@ -875,13 +910,20 @@ function overshootWindow(
 ): OvershootWindow | null {
   if (event.inferred) return null;
   const end = heatUpEnd(samples, event);
-  if (!end.satisfied || end.at === null) return null;
+  if (!end.satisfied || end.at === null || end.index === undefined) return null;
   const from = end.at;
-  const state = samples[stateIndexAt(samples, from)];
+  const state = samples[end.index];
   const setpoint = heatingTargetOf(state);
   if (setpoint === null) return null;
-  const change = findAfter(samples, from, from + OVERSHOOT_WINDOW_MS, (s) => s.gap || !/^idle$/i.test(s.hvacAction ?? '')
-    || heatingTargetOf(s) !== setpoint || s.presetMode !== state.presetMode || s.hvacMode !== state.hvacMode);
+  const interrupted = (s: HvacSample) => s.gap || (s as OrderedHvacSample).comfortInterruption
+    || (s as OrderedHvacSample).laterHvacChange || !/^idle$/i.test(s.hvacAction ?? '')
+    || heatingTargetOf(s) !== setpoint || s.presetMode !== state.presetMode || s.hvacMode !== state.hvacMode;
+  // A later observation in the same rounded millisecond can still end the
+  // post-satisfaction window; findAfter alone would skip it.
+  for (let i = end.index + 1; i < samples.length && samples[i].t === from; i += 1) {
+    if (interrupted(samples[i])) return null;
+  }
+  const change = findAfter(samples, from, from + OVERSHOOT_WINDOW_MS, interrupted);
   const to = Math.min(from + OVERSHOOT_WINDOW_MS, nextEvent, change?.t ?? Number.POSITIVE_INFINITY);
   return { from, to, setpoint };
 }
@@ -911,6 +953,7 @@ interface SettingChange {
   subMillisecond?: string;
   // An intermediate effective setting was observed within this millisecond.
   interruption?: boolean;
+  interruptionUntil?: string;
 }
 
 interface Run {
@@ -985,7 +1028,10 @@ function settingTimeline(comfort: ComfortSample[] | null | undefined, samples: H
     if (transitions.length > 1) {
       // The intermediate setting cannot safely be assigned a millisecond
       // interval. Keep a barrier followed by the last observed setting.
-      changes.push({ ...transitions[0], setting: null, interruption: true });
+      changes.push({
+        ...transitions[0], setting: null, interruption: true,
+        interruptionUntil: transitions[transitions.length - 1].subMillisecond ?? '',
+      });
       if (setting !== null) changes.push(transitions[transitions.length - 1]);
     } else if (transitions.length === 1) {
       changes.push(transitions[0]);
@@ -1017,6 +1063,82 @@ function homeOvershootWindow(timeline: SettingChange[], window: OvershootWindow)
   return to > window.from ? { ...window, to } : null;
 }
 
+// A parsed sample combines fields from one millisecond. Place its action at
+// the action's recorded fraction; when no action changed, use the relevant
+// mode, target or preset change. The final field values still come from the
+// parser's conservative conflict and compatibility handling.
+function hvacUpdateOrder(sample: HvacSample, previous: HvacSample | undefined): string {
+  const fields = sample.subMillisecondFields;
+  const modeChanged = !previous || sample.gap !== previous.gap || sample.hvacMode !== previous.hvacMode;
+  if (!previous || sample.hvacAction !== previous.hvacAction) {
+    if (sample.hvacAction === null && modeChanged && fields?.hvac_action === undefined) return fields?.state ?? '';
+    const first = fields?.hvac_action ?? '';
+    // An action reported before an incompatible mode became compatible only
+    // when it was observed again after the mode change.
+    if (previous && modeChanged && sample.hvacAction !== null
+      && compareSubMillisecond(first, fields?.state ?? '') < 0
+      && (previous.gap || !previous.hvacMode || compatibleHvacAction(previous.hvacMode, sample.hvacAction) === null)) {
+      return sample.actionObservedLastSubMillisecond ?? first;
+    }
+    return first;
+  }
+  if (modeChanged) return fields?.state ?? '';
+  if (sample.setpoint !== previous.setpoint || sample.coolSetpoint !== previous.coolSetpoint) {
+    const fractions = ['temperature', 'target_temp_low', 'target_temp_high']
+      .map((field) => fields?.[field]).filter((fraction): fraction is string => fraction !== undefined);
+    return fractions.sort(compareSubMillisecond)[0] ?? '';
+  }
+  return fields?.preset_mode ?? '';
+}
+
+// If the same combined sample changes the action first and its mode or
+// heating target later, the final snapshot cannot describe an uninterrupted
+// heat-up. Keep this uncertainty only until the last recorded field change.
+function laterHvacChange(sample: HvacSample, previous: HvacSample | undefined, actionOrder: string): string | undefined {
+  if (!previous || sample.hvacAction === previous.hvacAction) return undefined;
+  const fields = sample.subMillisecondFields;
+  const later: string[] = [];
+  const modeChanged = sample.gap !== previous.gap || sample.hvacMode !== previous.hvacMode;
+  const modeOrder = fields?.state ?? '';
+  if (modeChanged && compareSubMillisecond(modeOrder, actionOrder) > 0) later.push(modeOrder);
+  const targetChanged = sample.setpoint !== previous.setpoint;
+  if ((modeChanged || targetChanged) && sample.setpoint !== null && sample.setpointObservedAt === sample.t) {
+    const last = sample.setpointObservedSubMillisecond ?? '';
+    const first = sample.setpointObservedFirstSubMillisecond ?? last;
+    // A value before the mode change was cleared, even if numerically equal.
+    // A later identical observation is needed in the new mode.
+    const applicable = modeChanged && compareSubMillisecond(first, modeOrder) < 0 ? last : first;
+    if (compareSubMillisecond(applicable, actionOrder) > 0) later.push(applicable);
+  } else if (targetChanged) {
+    const first = ['temperature', 'target_temp_low', 'target_temp_high']
+      .map((field) => fields?.[field]).filter((fraction): fraction is string => fraction !== undefined)
+      .sort(compareSubMillisecond)[0] ?? '';
+    if (compareSubMillisecond(first, actionOrder) > 0) later.push(first);
+  }
+  return later.sort(compareSubMillisecond).at(-1);
+}
+
+function comfortSnapshot(
+  sample: HvacSample, t: number, preset: string | null, order?: string, interruption = false, later = false,
+): OrderedHvacSample {
+  const snapshot: OrderedHvacSample = { ...sample, t, presetMode: sample.gap ? null : preset };
+  delete snapshot.order;
+  delete snapshot.comfortInterruption;
+  delete snapshot.laterHvacChange;
+  if (order !== undefined) snapshot.order = order;
+  if (interruption) snapshot.comfortInterruption = true;
+  if (later) snapshot.laterHvacChange = true;
+  return snapshot;
+}
+
+interface ComfortMergeEntry {
+  order: string;
+  setting?: SettingChange;
+  sample?: HvacSample;
+  laterUntil?: string;
+  resumeHvac?: boolean;
+}
+
 // Thermostat states with presetMode set to the comfort setting in force, plus a
 // copy of the state in force at each setting change, so heat-up and return
 // detection see setting changes. Without comfort history the samples are kept.
@@ -1027,16 +1149,62 @@ function mergeComfort(samples: HvacSample[], timeline: SettingChange[], comfort:
   let si = 0;
   let ci = 0;
   while (si < samples.length || ci < timeline.length) {
+    if (ci < timeline.length && timeline[ci].interruption && (si >= samples.length || timeline[ci].t <= samples[si].t)) {
+      const barrier = timeline[ci];
+      const { t } = barrier;
+      const end = barrier.interruptionUntil ?? barrier.subMillisecond ?? '';
+      const entries: ComfortMergeEntry[] = [];
+      while (ci < timeline.length && timeline[ci].t === t) {
+        entries.push({ order: timeline[ci].subMillisecond ?? '', setting: timeline[ci] });
+        ci += 1;
+      }
+      // When the final setting is unknown it is still known that the
+      // intermediate change ended; do not make a lasting HVAC outage.
+      if (!entries.some((entry) => !entry.setting?.interruption && compareSubMillisecond(entry.order, end) === 0)) {
+        entries.push({ order: end, setting: { t, setting: null } });
+      }
+      while (si < samples.length && samples[si].t === t) {
+        const sample = samples[si];
+        const previous = samples[si - 1];
+        const order = hvacUpdateOrder(sample, previous);
+        const laterUntil = laterHvacChange(sample, previous, order);
+        entries.push({ order, sample, laterUntil });
+        if (laterUntil !== undefined) entries.push({ order: laterUntil, resumeHvac: true });
+        si += 1;
+      }
+      entries.sort((a, b) => compareSubMillisecond(a.order, b.order));
+      let pending = false;
+      let i = 0;
+      while (i < entries.length) {
+        const { order } = entries[i];
+        let current: HvacSample | undefined;
+        while (i < entries.length && compareSubMillisecond(entries[i].order, order) === 0) {
+          const entry = entries[i];
+          if (entry.setting) preset = entry.setting.setting;
+          if (entry.resumeHvac) pending = false;
+          if (entry.sample) {
+            current = entry.sample;
+            pending = entry.laterUntil !== undefined;
+          }
+          i += 1;
+        }
+        const source = current ?? merged[merged.length - 1];
+        const during = compareSubMillisecond(order, barrier.subMillisecond ?? '') >= 0
+          && compareSubMillisecond(order, end) < 0;
+        if (source) merged.push(comfortSnapshot(source, t, preset, order, during, pending));
+      }
+      continue;
+    }
     if (ci < timeline.length && (si >= samples.length || timeline[ci].t <= samples[si].t)) {
       const { t, setting, interruption } = timeline[ci];
       preset = setting;
       ci += 1;
       const prev = merged[merged.length - 1];
       if (prev && (interruption || !(si < samples.length && samples[si].t === t))) {
-        merged.push({ ...prev, t, presetMode: prev.gap ? null : preset });
+        merged.push(comfortSnapshot(prev, t, preset, undefined, interruption));
       }
     } else {
-      merged.push({ ...samples[si], presetMode: samples[si].gap ? null : preset });
+      merged.push(comfortSnapshot(samples[si], samples[si].t, preset));
       si += 1;
     }
   }
@@ -1109,6 +1277,24 @@ function splitBySetting(timeline: SettingChange[], runs: Run[]): SettingRun[] {
     }
   });
   return parts;
+}
+
+function orderedAt(samples: HvacSample[], t: number): boolean {
+  const index = firstIndexAfter(samples, t, timeOf, false);
+  return samples[index]?.t === t && (samples[index] as OrderedHvacSample).order !== undefined;
+}
+
+// A run clipped to a setting boundary may already have been heating before
+// this millisecond. Otherwise use a retained mode-compatible observation.
+function heatingStartOrder(samples: HvacSample[], raw: HvacSample[], t: number): string | undefined {
+  if (!orderedAt(samples, t)) return undefined;
+  const index = stateIndexAt(raw, t);
+  const sample = raw[index];
+  const previous = raw[firstIndexAfter(raw, t, timeOf, false) - 1];
+  if (sample?.t === t && isHeating(sample.hvacAction) && !isHeating(previous?.hvacAction ?? null)) {
+    return hvacUpdateOrder(sample, previous);
+  }
+  return '';
 }
 
 interface Wake {
@@ -1201,6 +1387,11 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
         && !samples[endIndex].gap && knownAction(samples[endIndex].hvacAction) && !heatingNow(samples[endIndex]));
       const complete = scope.to > scope.from && searchFrom >= from && searchTo <= to && startObserved && endObserved
         && actionsKnownThroughout(samples, searchFrom, searchTo);
+      const start = run ? Math.min(run.from, h) : h;
+      const runOrder = run ? heatingStartOrder(samples, raw, run.from) : undefined;
+      const wakeOrder = orderedAt(samples, h) ? timeline[i].subMillisecond ?? '' : undefined;
+      const pairOrder = run && run.from < h ? runOrder : run && run.from === h && runOrder !== undefined
+        && wakeOrder !== undefined && compareSubMillisecond(runOrder, wakeOrder) < 0 ? runOrder : wakeOrder;
       wakes.push({
         h,
         next,
@@ -1208,7 +1399,7 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
         run,
         parts: splitBySetting(timeline, selectedActiveRuns),
         overshootPairable: !!run && wakeEvidenceKnownThroughout(
-          samples, Math.min(run.from, h), Math.max(run.to, h + BUCKET_MS),
+          samples, start, Math.max(run.to, h + BUCKET_MS), pairOrder,
         ),
         setback,
         heatingMs: complete ? selectedActiveRuns.reduce((sum, r) => sum + r.to - r.from, 0) : null,
@@ -1918,7 +2109,12 @@ function heatingContexts(
       // reading against the comfort setting in force then; overshoot is
       // measured once heating after the change to Home is satisfied.
       const from = Math.max(wake.run.from, wake.h);
-      const overshoot = wake.run.to > wake.h ? overshootWindow(samples, { ...event, t: from }, nextEvent) : null;
+      const start: OrderedPlacementEvent = { ...event, t: from };
+      if (from !== event.t) {
+        delete start.order;
+        if (orderedAt(samples, from)) start.order = '';
+      }
+      const overshoot = wake.run.to > wake.h && wake.overshootPairable ? overshootWindow(samples, start, nextEvent) : null;
       return eventContext(grid, model, event, 'heating', null, wakeMeasureWindow(wake), overshoot, wake.parts, null, wake, samples);
     }
     // An inferred window also ends at the first recorded state in which the
@@ -3111,7 +3307,7 @@ function dataset(
   }
   return {
     raw,
-    samples: mergeComfort(raw, timeline, known),
+    samples: mergeComfort(raw, settingHistory, known),
     timeline,
     model: {
       rooms,
@@ -3168,7 +3364,10 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const wakes = detectWakes(samples, heat.timeline, startMs, endMs, heat.raw);
   const wakeEvents = new Map<PlacementEvent, Wake>();
   wakes.forEach((wake) => {
-    if (wake.run) wakeEvents.set({ type: 'wake', t: wake.run.from, inferred: false }, wake);
+    if (wake.run) {
+      const order = heatingStartOrder(samples, heat.raw, wake.run.from);
+      wakeEvents.set({ type: 'wake', t: wake.run.from, inferred: false, ...(order !== undefined ? { order } : {}) }, wake);
+    }
   });
   const heated = wakes.filter((w) => w.run !== null);
   const nearWake = (t: number) => heated.some((w) => t >= w.scope.from && t < w.scope.to);

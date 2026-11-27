@@ -406,6 +406,137 @@ describe('thermostat, comfort and occupancy history', () => {
     _time: time, _field: field, _value: value, domain: 'binary_sensor', entity_id: 'bedroom_occupancy',
   });
 
+  it('review 693b3c0: the recorded heating start and hidden comfort change retain their fractional order', () => {
+    const start = Date.parse('2026-01-19T00:00:00Z');
+    const hour = 60 * 60_000;
+    const iso = (t: number) => new Date(t).toISOString();
+    const micro = (t: number, fraction: string) => iso(t).replace('.000Z', `.${fraction}Z`);
+    const heating = start + 6 * hour;
+    const points = Array.from({ length: 96 }, (_, i) => {
+      const t = start + i * 15 * 60_000;
+      const h = (t - start) / hour;
+      return { t, office: h >= 6 && h < 7 ? 17 : 20, kitchen: h >= 7 && h < 9 ? 23 : 21 };
+    });
+    const sensors = ['office', 'kitchen'].map((room) => ({
+      id: `${room}_temperature`, name: room, isThermostat: false,
+      points: points.map((point) => ({ t: point.t, v: room === 'office' ? point.office : point.kitchen })),
+    }));
+    const run = (action: string, first: string | null, last: string | null, reverse = false, minutes = 0) => {
+      const collision = heating + minutes * 60_000;
+      const rows = [
+        climateRow(iso(start), 'state', 'heat'),
+        climateRow(iso(start), 'hvac_action_str', 'idle'),
+        climateRow(iso(start), 'temperature', '21'),
+        climateRow(iso(start), 'preset_mode_str', 'sleep'),
+        selectRow(iso(start), 'home'),
+        climateRow(micro(collision, action), 'hvac_action_str', 'heating'),
+        ...(first && last ? [
+          selectRow(micro(collision, first), 'unknown'),
+          climateRow(micro(collision, last), 'preset_mode_str', 'home'),
+        ] : []),
+        climateRow(iso(start + 7 * hour), 'hvac_action_str', 'idle'),
+        climateRow(iso(start + 17 * hour), 'hvac_action_str', 'heating'),
+        climateRow(iso(start + 20 * hour), 'hvac_action_str', 'idle'),
+      ];
+      const parsed = parseStates(reverse ? [...rows].reverse() : rows, entities, '°C');
+      const result = analyzePlacement({
+        start: new Date(start), end: new Date(start + 24 * hour), windowDays: 1, timeZone: 'UTC',
+        sensors, hvac: parsed.hvac, comfort: parsed.comfort, cooling: null,
+        reportedTemperature: { points: points.map((p) => ({ t: p.t, v: (p.office + p.kitchen) / 2 })) },
+        participation: {
+          home: sensors.map((s) => s.id), sleep: sensors.map((s) => s.id), away: null,
+          thermostat: { home: false, sleep: false }, followMe: false,
+        },
+      });
+      return {
+        events: result.coverage.morningEvents,
+        samples: result.sensors.find((s) => s.id === 'office_temperature')!.sampleCount,
+        overshoot: result.sensors.find((s) => s.id === 'kitchen_temperature')!.overshoot,
+      };
+    };
+    expect(run('000000', '000100', '000900')).toEqual({ events: 1, samples: 0, overshoot: null });
+    expect(run('000000', '000100', '000900', true)).toEqual({ events: 1, samples: 0, overshoot: null });
+    expect(run('000000', '001100', '001900')).toEqual({ events: 1, samples: 0, overshoot: null });
+    expect(run('000999', '000100', '000900')).toEqual({ events: 1, samples: 3, overshoot: 2 });
+    expect(run('000999', '000100', '000900', true)).toEqual({ events: 1, samples: 3, overshoot: 2 });
+    expect(run('000100', '000100', '000100')).toEqual({ events: 1, samples: 3, overshoot: 2 });
+    expect(run('000000', null, null)).toEqual({ events: 1, samples: 4, overshoot: 2 });
+    expect(run('000000', '000100', '000900', false, 5)).toEqual({ events: 1, samples: 0, overshoot: null });
+    expect(run('000999', '000100', '000900', false, 5)).toEqual({ events: 1, samples: 3, overshoot: 2 });
+  });
+
+  it('review 693b3c0: an unknown-only interruption ends at its recorded final transition', () => {
+    const start = Date.parse('2026-01-19T00:00:00Z');
+    const hour = 60 * 60_000;
+    const time = (h: number) => new Date(start + h * hour).toISOString();
+    const points = Array.from({ length: 16 }, (_, i) => ({ t: start + (6 + i / 4) * hour }));
+    const sensors = ['office', 'kitchen'].map((room) => ({
+      id: `${room}_temperature`, name: room, isThermostat: false,
+      points: points.map(({ t }) => ({ t, v: room === 'kitchen' && t >= start + 7 * hour ? 23 : 20 })),
+    }));
+    const run = (action: string) => {
+      const parsed = parseStates([
+        climateRow(time(0), 'state', 'heat'), climateRow(time(0), 'hvac_action_str', 'idle'),
+        climateRow(time(0), 'temperature', '21'), climateRow(time(0), 'preset_mode_str', 'none'),
+        selectRow(time(0), 'unknown'),
+        climateRow(`2026-01-19T06:00:00.${action}Z`, 'hvac_action_str', 'heating'),
+        climateRow('2026-01-19T06:00:00.000100Z', 'preset_mode_str', 'home'),
+        selectRow('2026-01-19T06:00:00.000900Z', 'unknown'),
+        selectRow('2026-01-19T06:00:00.000900Z', 'sleep'),
+        climateRow(time(7), 'hvac_action_str', 'idle'),
+      ], entities, '°C');
+      const result = analyzePlacement({
+        start: new Date(start), end: new Date(start + 24 * hour), windowDays: 1, timeZone: 'UTC',
+        sensors, hvac: parsed.hvac, comfort: parsed.comfort, cooling: null,
+        reportedTemperature: { points: points.map(({ t }) => ({ t, v: 20 })) },
+      });
+      return {
+        schedule: result.coverage.comfortScheduleAvailable,
+        samples: result.sensors.find((s) => s.id === 'office_temperature')!.sampleCount,
+        overshoot: result.sensors.find((s) => s.id === 'kitchen_temperature')!.overshoot,
+      };
+    };
+    expect(run('000000')).toEqual({ schedule: false, samples: 0, overshoot: null });
+    expect(run('000500')).toEqual({ schedule: false, samples: 0, overshoot: null });
+    expect(run('000999')).toEqual({ schedule: false, samples: 3, overshoot: 2 });
+  });
+
+  it('review 693b3c0: an interruption at a heating stop prevents pairing its later peak', () => {
+    const start = Date.parse('2026-01-19T00:00:00Z');
+    const hour = 60 * 60_000;
+    const time = (h: number) => new Date(start + h * hour).toISOString();
+    const points = Array.from({ length: 16 }, (_, i) => ({ t: start + (5 + i / 4) * hour }));
+    const sensors = ['office', 'kitchen'].map((room) => ({
+      id: `${room}_temperature`, name: room, isThermostat: false,
+      points: points.map(({ t }) => ({ t, v: room === 'kitchen' && t >= start + 6 * hour ? 23 : 20 })),
+    }));
+    const run = (action: string, interruption: boolean) => {
+      const parsed = parseStates([
+        climateRow(time(0), 'state', 'heat'), climateRow(time(0), 'hvac_action_str', 'idle'),
+        climateRow(time(0), 'temperature', '21'), climateRow(time(0), 'preset_mode_str', 'sleep'),
+        selectRow(time(0), 'home'), climateRow(time(5), 'hvac_action_str', 'heating'),
+        climateRow(`2026-01-19T06:00:00.${action}Z`, 'hvac_action_str', 'idle'),
+        ...(interruption ? [
+          selectRow('2026-01-19T06:00:00.000100Z', 'unknown'),
+          climateRow('2026-01-19T06:00:00.000900Z', 'preset_mode_str', 'home'),
+        ] : []),
+      ], entities, '°C');
+      const result = analyzePlacement({
+        start: new Date(start), end: new Date(start + 24 * hour), windowDays: 1, timeZone: 'UTC',
+        sensors, hvac: parsed.hvac, comfort: parsed.comfort, cooling: null,
+        reportedTemperature: { points: points.map(({ t }) => ({ t, v: 20 })) },
+      });
+      return {
+        samples: result.sensors.find((s) => s.id === 'office_temperature')!.sampleCount,
+        overshoot: result.sensors.find((s) => s.id === 'kitchen_temperature')!.overshoot,
+      };
+    };
+    for (const action of ['000000', '000100', '000500', '000900', '000999']) {
+      expect(run(action, true)).toEqual({ samples: 4, overshoot: null });
+    }
+    expect(run('000000', false)).toEqual({ samples: 4, overshoot: 2 });
+  });
+
   it.each(['select-first', 'preset-first'] as const)(
     'review f8f2b2f: a hidden %s comfort transition invalidates only overlapping comparisons',
     (order) => {
@@ -2664,6 +2795,271 @@ describe('ClimatePlacementService', () => {
           severity: 'high', comfortSetting: 'sleep',
         });
       }
+    },
+  );
+
+  it.each([
+    ['before', '000000', '000100', '000900', null, 0],
+    ['at start', '000100', '000100', '000900', null, 0],
+    ['inside', '000500', '000100', '000900', null, 0],
+    ['at end', '000900', '000100', '000900', 2, 15],
+    ['after', '000999', '000100', '000900', 2, 15],
+    ['preset-first before', '000000', '000100', '000900', null, 0],
+    ['preset-first at end', '000900', '000100', '000900', 2, 15],
+    ['preset-first after', '000999', '000100', '000900', 2, 15],
+    ['next millisecond', '000000', '001100', '001900', null, 0],
+    ['simultaneous setting updates', '000100', '000100', '000100', 2, 15],
+    ['unchanged duplicates', '000000', '000100', '000900', 2, 20],
+    ['heating repeated after the barrier', '000000', '000100', '000900', null, 0],
+    ['target before heating', '000999', '000100', '000900', 2, 15],
+    ['target with heating', '000999', '000100', '000900', 2, 15],
+    ['target after heating', '000950', '000100', '000900', null, 0],
+    ['mode before heating', '000999', '000100', '000900', 2, 15],
+    ['mode after heating', '000950', '000100', '000900', null, 0],
+    ['unchanged target after mode', '000950', '000100', '000900', null, 0],
+    ['target repeated across mode', '000950', '000100', '000900', null, 0],
+    ['unchanged target repeated later', '000950', '000100', '000900', 2, 15],
+    ['unrelated cooling target later', '000950', '000100', '000900', 2, 15],
+    ['compatible action repeated after mode', '000000', '000100', '000900', null, 0],
+    ['incompatible action repeated after mode', '000000', '000100', '000900', 2, 15],
+    ['later valid heat-ups', '000000', '000100', '000900', 2, 16],
+    ['no interruption', '000000', null, null, 2, 20],
+  ] as const)(
+    'review 693b3c0: heating %s a comfort interruption uses recorded order',
+    async (description, actionFraction, firstFraction, lastFraction, expectedOvershoot, expectedSamples) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      const start = Date.parse('2026-01-15T00:00:00Z');
+      const hour = 60 * 60_000;
+      const day = 24 * hour;
+      const iso = (t: number) => new Date(t).toISOString();
+      const micro = (t: number, fraction: string) => iso(t).replace('.000Z', `.${fraction}Z`);
+      const select = (time: string, setting: string) => ({
+        _time: time, _field: 'state', _value: setting, domain: 'select', entity_id: 'home_current_mode',
+      });
+      const states: Rows = [];
+      const temperatures: Rows = [];
+      const reported: Rows = [];
+      const modeChange = description.startsWith('mode ') || description.includes('target after mode')
+        || description.includes('target repeated') || description.includes('action repeated after mode');
+      const targetChange = description.startsWith('target ');
+      const rangeTargets = description === 'unrelated cooling target later';
+      const incompatibleAction = description === 'incompatible action repeated after mode';
+      const presetFirst = description.startsWith('preset-first');
+      for (let d = 0; d < 5; d += 1) {
+        const beginning = start + d * day;
+        const heating = beginning + 6 * hour;
+        states.push(
+          climateRow(iso(beginning), 'state', incompatibleAction ? 'cool' : modeChange || rangeTargets ? 'heat_cool' : 'heat'),
+          climateRow(iso(beginning), 'hvac_action_str', 'idle'),
+          climateRow(iso(beginning), (modeChange && !incompatibleAction) || rangeTargets ? 'target_temp_low' : 'temperature',
+            targetChange || rangeTargets ? '20' : '21'),
+          climateRow(iso(beginning), 'preset_mode_str', presetFirst ? 'home' : 'sleep'),
+          select(iso(beginning), presetFirst ? 'unknown' : 'home'),
+          climateRow(micro(heating, actionFraction), 'hvac_action_str', 'heating'),
+          ...(description === 'heating repeated after the barrier'
+            ? [climateRow(micro(heating, '000999'), 'hvac_action_str', 'heating')] : []),
+          ...(description.includes('action repeated after mode')
+            ? [climateRow(micro(heating, '000999'), 'hvac_action_str', 'heating')] : []),
+          ...(targetChange ? [climateRow(micro(heating, description === 'target before heating' ? '000010'
+            : description === 'target with heating' ? actionFraction : '000990'), 'temperature', '21')] : []),
+          ...(rangeTargets ? [
+            climateRow(micro(heating, '000050'), 'target_temp_low', '21'),
+            climateRow(micro(heating, '000990'), 'target_temp_high', '25'),
+          ] : []),
+          ...(modeChange ? [
+            climateRow(micro(heating, description === 'mode after heating' ? '000970'
+              : description.includes('action repeated after mode') ? '000300' : '000010'), 'state', 'heat'),
+            climateRow(micro(heating, description === 'target repeated across mode' ? '000000'
+              : description.includes('action repeated after mode') ? '000400'
+                : description === 'mode before heating' || description === 'unchanged target repeated later' ? '000050' : '000990'),
+            'temperature', '21'),
+            ...(description.includes('target repeated') ? [climateRow(micro(heating, '000990'), 'temperature', '21')] : []),
+          ] : []),
+          ...(firstFraction && lastFraction && (description !== 'later valid heat-ups' || d === 0) ? [
+            ...(presetFirst ? [
+              climateRow(micro(heating, firstFraction), 'preset_mode_str', 'sleep'),
+              select(micro(heating, lastFraction), 'home'),
+            ] : [
+              select(micro(heating, firstFraction), description === 'unchanged duplicates' ? 'home' : 'unknown'),
+              climateRow(micro(heating, lastFraction), 'preset_mode_str', description === 'unchanged duplicates' ? 'sleep' : 'home'),
+            ]),
+          ] : []),
+          climateRow(iso(beginning + 7 * hour), 'hvac_action_str', 'idle'),
+          climateRow(iso(beginning + 17 * hour), 'hvac_action_str', 'heating'),
+          climateRow(iso(beginning + 20 * hour), 'hvac_action_str', 'idle'),
+        );
+        for (let t = beginning; t < beginning + day; t += 15 * 60_000) {
+          const localHour = (t - beginning) / hour;
+          const kitchen = localHour >= 7 && localHour < 9 ? 23 : 21;
+          const office = localHour >= 6 && localHour < 7 ? 17 : 20;
+          reported.push(reportedRow(iso(t), String((office + kitchen) / 2)));
+          [
+            ['office_temperature', office],
+            ['kitchen_temperature', kitchen],
+          ].forEach(([entityId, value]) => temperatures.push({
+            _time: iso(t), _value: String(value), _measurement: '°C', entity_id: String(entityId),
+          }));
+        }
+      }
+      fixture.rows.states = states;
+      fixture.rows.temperatures = temperatures;
+      fixture.rows.reported = reported;
+      const result = await fixture.service.getInsights('5', {
+        home: 'office_temperature,kitchen_temperature',
+        sleep: 'office_temperature,kitchen_temperature',
+        thermostatHome: 'false',
+        thermostatSleep: 'false',
+        followMe: 'false',
+      });
+      expect(result.coverage.morningEvents).toBe(5);
+      expect(result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.overshoot).toBe(expectedOvershoot);
+      expect(result.sensors.find((sensor) => sensor.id === 'office_temperature')!.sampleCount).toBe(expectedSamples);
+      const tip = result.recommendations.find((rec) => rec.id === 'move-office');
+      if (expectedOvershoot === null) {
+        expect(tip?.severity).not.toBe('high');
+        expect(tip?.detail ?? '').not.toContain('peaked 2.0 °C');
+      } else {
+        expect(tip).toMatchObject({ severity: 'high', comfortSetting: 'home' });
+        expect(tip!.detail).toContain('Kitchen peaked 2.0 °C');
+      }
+    },
+  );
+
+  it.each(['start before', 'start after', 'already heating', 'none'] as const)(
+    'review 693b3c0: %s a Sleep interruption cannot incorrectly pair a later wake peak',
+    async (kind) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      const start = Date.parse('2026-01-15T00:00:00Z');
+      const hour = 60 * 60_000;
+      const day = 24 * hour;
+      const iso = (t: number) => new Date(t).toISOString();
+      const micro = (t: number, fraction: string) => iso(t).replace('.000Z', `.${fraction}Z`);
+      const select = (time: string, setting: string) => ({
+        _time: time, _field: 'state', _value: setting, domain: 'select', entity_id: 'home_current_mode',
+      });
+      const states: Rows = [];
+      const temperatures: Rows = [];
+      const reported: Rows = [];
+      for (let d = 0; d < 5; d += 1) {
+        const beginning = start + d * day;
+        const interrupted = beginning + 6 * hour;
+        states.push(
+          climateRow(iso(beginning), 'state', 'heat'),
+          climateRow(iso(beginning), 'hvac_action_str', 'idle'),
+          climateRow(iso(beginning), 'temperature', '21'),
+          climateRow(iso(beginning), 'preset_mode_str', 'home'),
+          select(iso(beginning), 'sleep'),
+          climateRow(kind === 'already heating' ? iso(interrupted - hour / 2)
+            : micro(interrupted, kind === 'start after' ? '000999' : '000000'), 'hvac_action_str', 'heating'),
+          ...(kind === 'already heating' ? [climateRow(micro(interrupted, '000000'), 'hvac_action_str', 'heating')] : []),
+          ...(kind === 'none' ? [] : [
+            select(micro(interrupted, '000100'), 'unknown'),
+            climateRow(micro(interrupted, '000900'), 'preset_mode_str', 'sleep'),
+          ]),
+          select(iso(beginning + 7 * hour), 'home'),
+          climateRow(iso(beginning + 8 * hour), 'hvac_action_str', 'idle'),
+          climateRow(iso(beginning + 17 * hour), 'hvac_action_str', 'heating'),
+          climateRow(iso(beginning + 20 * hour), 'hvac_action_str', 'idle'),
+        );
+        for (let t = beginning; t < beginning + day; t += 15 * 60_000) {
+          const localHour = (t - beginning) / hour;
+          const kitchen = localHour >= 8 && localHour < 9 ? 23 : 21;
+          const office = localHour >= 6 && localHour < 7 ? 17 : 21;
+          reported.push(reportedRow(iso(t), String((office + kitchen) / 2)));
+          [
+            ['office_temperature', office],
+            ['kitchen_temperature', kitchen],
+          ].forEach(([entityId, value]) => temperatures.push({
+            _time: iso(t), _value: String(value), _measurement: '°C', entity_id: String(entityId),
+          }));
+        }
+      }
+      fixture.rows.states = states;
+      fixture.rows.temperatures = temperatures;
+      fixture.rows.reported = reported;
+      const result = await fixture.service.getInsights('5', {
+        home: 'office_temperature,kitchen_temperature',
+        sleep: 'office_temperature,kitchen_temperature',
+        thermostatHome: 'false',
+        thermostatSleep: 'false',
+        followMe: 'false',
+      });
+      expect(result.coverage.wakeEvents).toBe(5);
+      const tip = result.recommendations.find((rec) => rec.id === 'wake-office');
+      if (kind === 'start before' || kind === 'already heating') {
+        expect(tip).toBeUndefined();
+      } else {
+        expect(tip).toMatchObject({ severity: 'high', comfortSetting: 'sleep' });
+        expect(tip!.detail).toContain('Kitchen peaked 2.0 °C');
+      }
+    },
+  );
+
+  it.each(['before', 'after', 'already cooling'] as const)(
+    'review 693b3c0: cooling %s the interruption uses only whole source windows',
+    async (kind) => {
+      const run = async (laterBias: boolean) => {
+        const fixture = makeDeps();
+        useClimateReference(fixture);
+        const start = Date.parse('2026-01-16T00:00:00Z');
+        const hour = 60 * 60_000;
+        const day = 24 * hour;
+        const iso = (t: number) => new Date(t).toISOString();
+        const micro = (t: number, fraction: string) => iso(t).replace('.000Z', `.${fraction}Z`);
+        const select = (time: string, setting: string) => ({
+          _time: time, _field: 'state', _value: setting, domain: 'select', entity_id: 'home_current_mode',
+        });
+        const states: Rows = [];
+        const temperatures: Rows = [];
+        const reported: Rows = [];
+        for (let d = 0; d < 4; d += 1) {
+          const beginning = start + d * day;
+          const collision = beginning + 12 * hour;
+          const from = kind === 'already cooling' ? collision - hour / 2 : collision;
+          states.push(
+            climateRow(iso(beginning), 'state', 'cool'),
+            climateRow(iso(beginning), 'hvac_action_str', 'idle'),
+            climateRow(iso(beginning), 'temperature', '24'),
+            climateRow(iso(beginning), 'preset_mode_str', 'sleep'),
+            select(iso(beginning), 'home'),
+            climateRow(from === collision ? micro(from, kind === 'after' ? '000999' : '000000') : iso(from), 'hvac_action_str', 'cooling'),
+            ...(kind === 'already cooling' ? [climateRow(micro(collision, '000000'), 'hvac_action_str', 'cooling')] : []),
+            select(micro(collision, '000100'), 'unknown'),
+            climateRow(micro(collision, '000900'), 'preset_mode_str', 'home'),
+            climateRow(iso(beginning + 13 * hour), 'hvac_action_str', 'idle'),
+          );
+          for (let t = from; t < beginning + 13 * hour; t += 15 * 60_000) {
+            const office = laterBias ? (t === collision ? 20 : 26) : (t === collision ? 26 : 20);
+            reported.push(reportedRow(iso(t), '20'));
+            [
+              ['office_temperature', office],
+              ['kitchen_temperature', 20],
+            ].forEach(([entityId, value]) => temperatures.push({
+              _time: iso(t), _value: String(value), _measurement: '°C', entity_id: String(entityId),
+            }));
+          }
+        }
+        fixture.rows.states = states;
+        fixture.rows.cooling = states.filter(({ domain, _field: field, _value: value }) =>
+          domain === 'climate' && (field === 'state' || value === 'cooling'));
+        fixture.rows.temperatures = temperatures;
+        fixture.rows.reported = reported;
+        return fixture.service.getInsights('7', {
+          home: 'office_temperature,kitchen_temperature',
+          thermostatHome: 'false',
+          followMe: 'false',
+        });
+      };
+      const overlappingOnly = await run(false);
+      expect(overlappingOnly.coverage.coolingEvents).toBe(4);
+      expect(overlappingOnly.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.cooling).toBe(0);
+      expect(overlappingOnly.recommendations.some((rec) => rec.mode === 'cooling')).toBe(false);
+      const later = await run(true);
+      expect(later.coverage.coolingEvents).toBe(4);
+      expect(later.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.cooling).toBe(6);
+      expect(later.recommendations.find((rec) => rec.id === 'cooling-office')!.detail).toContain('4 of 4 cooling runs');
     },
   );
 

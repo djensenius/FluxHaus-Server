@@ -582,9 +582,14 @@ export function parseStates(
     const targetField = /^(heat_cool|auto)$/i.test(mode) || !setpoints.has('temperature') ? 'target_temp_low' : 'temperature';
     const setpoint = setpoints.get(targetField) ?? null;
     const setpointFraction = setpointFractions.get(targetField);
+    const targetObservation = fields.get(targetField);
+    const actionObservation = fields.get('hvac_action');
     return {
       t,
       ...(Object.keys(subMillisecondFields).length > 0 ? { subMillisecondFields } : {}),
+      ...(actionObservation && actionObservation.value !== null
+        && compareSubMillisecond(actionObservation.first, actionObservation.last) !== 0
+        ? { actionObservedLastSubMillisecond: actionObservation.last } : {}),
       gap: false,
       hvacMode: mode,
       hvacAction: action,
@@ -592,6 +597,9 @@ export function parseStates(
       setpoint,
       ...(setpoint !== null && setpointObservedAt !== null ? { setpointObservedAt } : {}),
       ...(setpoint !== null && setpointFraction ? { setpointObservedSubMillisecond: setpointFraction } : {}),
+      ...(setpoint !== null && setpointObservedAt === t && targetObservation
+        && compareSubMillisecond(targetObservation.first, targetObservation.last) !== 0
+        ? { setpointObservedFirstSubMillisecond: targetObservation.first } : {}),
       coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
     };
   });
