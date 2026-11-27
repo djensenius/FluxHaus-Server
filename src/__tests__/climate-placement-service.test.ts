@@ -367,7 +367,7 @@ describe('thermostat, comfort and occupancy history', () => {
       expect(read(middle, first, true)).toMatchObject({ hvacMode: next, hvacAction: action, setpoint: 23 });
     });
 
-  const collisionOffset = (extra: Rows, followMe: boolean, sourceHour = 6.25) => {
+  const collisionOffset = (extra: Rows, followMe: boolean, sourceHour = 6.25, sourceCount = 3) => {
     const start = Date.parse('2026-01-19T00:00:00Z');
     const hour = 60 * 60_000;
     const selectEntities = { ...entities, occupancy: ['bedroom_occupancy', 'living_occupancy'] };
@@ -381,7 +381,7 @@ describe('thermostat, comfort and occupancy history', () => {
       })),
       ...extra,
     ], selectEntities, '°C');
-    const times = Array.from({ length: 3 }, (_, i) => start + (sourceHour + i / 4) * hour);
+    const times = Array.from({ length: sourceCount }, (_, i) => start + (sourceHour + i / 4) * hour);
     const sensors = ['bedroom', 'living'].map((room) => ({
       id: `${room}_temperature`,
       name: room,
@@ -404,6 +404,120 @@ describe('thermostat, comfort and occupancy history', () => {
   });
   const bedroomOccupancyRow = (time: string, field: string, value: string) => ({
     _time: time, _field: field, _value: value, domain: 'binary_sensor', entity_id: 'bedroom_occupancy',
+  });
+
+  it('keeps fractional HVAC changes out of unaligned source starts while retaining later complete windows', () => {
+    const source = 6 + 17 / 60;
+    const target = (time: string, value = '21') => climateRow(time, 'temperature', value);
+    const exact = '2026-01-19T06:17:00.000000Z';
+    const fractional = '2026-01-19T06:17:00.000500Z';
+    expect(collisionOffset([target('2026-01-19T06:16:59.999900Z')], false, source, 1)).toBe(2);
+    expect(collisionOffset([target(exact)], false, source, 1)).toBe(2);
+    expect(collisionOffset([target(fractional)], false, source, 1)).toBeNull();
+    expect(collisionOffset([target('2026-01-19T06:17:00.001000Z')], false, source, 1)).toBeNull();
+    expect(collisionOffset([target(fractional, '20')], false, source, 1)).toBe(2);
+    expect(collisionOffset([target(fractional)], false, 6 + 32 / 60, 1)).toBe(2);
+    expect(collisionOffset([climateRow(fractional, 'hvac_action_str', 'heating')], false, source, 1)).toBeNull();
+    expect(collisionOffset([
+      climateRow(fractional, 'state', 'heat_cool'), climateRow(fractional, 'target_temp_low', '20'),
+    ], false, source, 1)).toBeNull();
+  });
+
+  it('does not apply a fractional cooling target to an unaligned overlapping source window', () => {
+    const run = (target: string, source: string) => {
+      const start = Date.parse('2026-01-19T00:00:00Z');
+      const t = Date.parse(source);
+      const parsed = parseStates([
+        climateRow('2026-01-19T00:00:00Z', 'state', 'cool'),
+        climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'cooling'),
+        climateRow('2026-01-19T00:00:00Z', 'temperature', '21'),
+        climateRow('2026-01-19T00:00:00Z', 'preset_mode_str', 'home'),
+        climateRow(target, 'temperature', '22'),
+      ], entities, '°C');
+      const result = analyzePlacement({
+        start: new Date(start), end: new Date(start + 8 * 60 * 60_000), windowDays: 1, timeZone: 'UTC',
+        sensors: ['office', 'kitchen'].map((room) => ({
+          id: `${room}_temperature`, name: room, isThermostat: false, points: [{ t, v: room === 'office' ? 18 : 20 }],
+        })),
+        hvac: parsed.hvac, cooling: { start: new Date(start), end: new Date(start + 8 * 60 * 60_000) },
+        reportedTemperature: { points: [{ t, v: 20 }] },
+      });
+      return result.sensors.find((sensor) => sensor.id === 'office_temperature')!.coolingUndershoot;
+    };
+    const source = '2026-01-19T06:17:00Z';
+    expect(run('2026-01-19T06:16:59.999900Z', source)).toBe(4);
+    expect(run('2026-01-19T06:17:00.000000Z', source)).toBe(4);
+    expect(run('2026-01-19T06:17:00.000500Z', source)).toBeNull();
+    expect(run('2026-01-19T06:17:00.001000Z', source)).toBeNull();
+    expect(run('2026-01-19T06:17:00.000500Z', '2026-01-19T06:32:00Z')).toBe(4);
+  });
+
+  it('does not apply a range target across an intermediate fractional target omission', () => {
+    const start = Date.parse('2026-01-19T00:00:00Z');
+    const run = (low: string, high: string, source: string) => {
+      const t = Date.parse(source);
+      const parsed = parseStates([
+        climateRow('2026-01-19T00:00:00Z', 'state', 'heat_cool'),
+        climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T00:00:00Z', 'target_temp_low', '20'),
+        climateRow('2026-01-19T00:00:00Z', 'target_temp_high', '24'),
+        climateRow('2026-01-19T00:00:00Z', 'preset_mode_str', 'home'),
+        climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'cooling'),
+        climateRow(low, 'target_temp_low', '20'),
+        climateRow(high, 'target_temp_high', '24'),
+        climateRow('2026-01-19T06:45:00Z', 'hvac_action_str', 'idle'),
+      ], entities, '°C');
+      const result = analyzePlacement({
+        start: new Date(start), end: new Date(start + 8 * 60 * 60_000), windowDays: 1, timeZone: 'UTC',
+        sensors: ['office', 'kitchen'].map((room) => ({
+          id: `${room}_temperature`, name: room, isThermostat: false, points: [{ t, v: room === 'office' ? 18 : 20 }],
+        })),
+        hvac: parsed.hvac, cooling: { start: new Date(start), end: new Date(start + 8 * 60 * 60_000) },
+        reportedTemperature: { points: [{ t, v: 20 }] },
+      });
+      return result.sensors.find((sensor) => sensor.id === 'office_temperature')!.coolingUndershoot;
+    };
+    const first = '2026-01-19T06:00:00.000100Z';
+    const later = '2026-01-19T06:00:00.000900Z';
+    expect(run(first, later, '2026-01-19T06:00:00Z')).toBeNull();
+    expect(run(first, first, '2026-01-19T06:00:00Z')).toBe(6);
+    expect(run(first, later, '2026-01-19T06:15:00Z')).toBe(6);
+  });
+
+  it('does not infer zero heating runtime before a fractional initial action, but retains later known runtime', () => {
+    const beginning = Date.parse('2026-01-15T00:00:00Z');
+    const day = 24 * 60 * 60_000;
+    const run = (kind: 'initially unknown' | 'known before' | 'simultaneous' | 'later window') => {
+      const initial = kind === 'known before' ? '2026-01-14T23:59:59.999000Z'
+        : kind === 'simultaneous' ? '2026-01-15T00:00:00.000000Z' : '2026-01-15T00:00:00.000100Z';
+      const action = kind === 'simultaneous' ? initial : '2026-01-15T00:00:00.000900Z';
+      const parsed = parseStates([
+        climateRow(initial, 'state', 'heat'),
+        climateRow(initial, 'temperature', '21'),
+        climateRow(initial, 'preset_mode_str', 'home'),
+        ...(kind === 'known before' ? [climateRow(initial, 'hvac_action_str', 'idle')] : []),
+        climateRow(action, 'hvac_action_str', 'idle'),
+        selectRow(initial, 'home'),
+      ], entities, '°C');
+      const points = Array.from({ length: 5 * 24 * 4 }, (_, i) => ({ t: beginning + i * 15 * 60_000, v: 23 }));
+      const rooms = ['office', 'kitchen'].map((room) => ({
+        id: `${room}_temperature`, name: room, isThermostat: false, points,
+      }));
+      const result = analyzePlacement({
+        start: new Date(beginning + (kind === 'later window' ? 15 * 60_000 : 0)),
+        end: new Date(beginning + 5 * day), windowDays: 5, timeZone: 'UTC',
+        sensors: rooms, hvac: parsed.hvac, comfort: parsed.comfort, cooling: null,
+        reportedTemperature: { points },
+        participation: {
+          home: rooms.map((room) => room.id), sleep: null, away: null, followMe: false, thermostat: { home: false },
+        },
+      });
+      return result.recommendations.find((rec) => rec.id === 'passive-warmth-heating')!.detail;
+    };
+    expect(run('initially unknown')).not.toContain('heating was reported running 0.0 h');
+    expect(run('known before')).toContain('heating was reported running 0.0 h');
+    expect(run('simultaneous')).toContain('heating was reported running 0.0 h');
+    expect(run('later window')).toContain('heating was reported running 0.0 h');
   });
 
   it('review 693b3c0: the recorded heating start and hidden comfort change retain their fractional order', () => {
@@ -535,6 +649,70 @@ describe('thermostat, comfort and occupancy history', () => {
       expect(run(action, true)).toEqual({ samples: 4, overshoot: null });
     }
     expect(run('000000', false)).toEqual({ samples: 4, overshoot: 2 });
+  });
+
+  it('orders a target change around heating satisfaction without requiring comfort history', () => {
+    const start = Date.parse('2026-01-19T00:00:00Z');
+    const hour = 60 * 60_000;
+    const points = Array.from({ length: 16 }, (_, i) => ({ t: start + (5 + i / 4) * hour }));
+    const sensors = ['office', 'kitchen'].map((room) => ({
+      id: `${room}_temperature`, name: room, isThermostat: false,
+      points: points.map(({ t }) => ({ t, v: room === 'kitchen' && t >= start + 6 * hour ? 23 : 20 })),
+    }));
+    const run = (action: string, target: string, value: string) => {
+      const parsed = parseStates([
+        climateRow('2026-01-19T00:00:00Z', 'state', 'heat'),
+        climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T00:00:00Z', 'temperature', '21'),
+        climateRow('2026-01-19T00:00:00Z', 'preset_mode_str', 'home'),
+        climateRow('2026-01-19T05:00:00Z', 'hvac_action_str', 'heating'),
+        climateRow(`2026-01-19T06:00:00.${action}Z`, 'hvac_action_str', 'idle'),
+        climateRow(`2026-01-19T06:00:00.${target}Z`, 'temperature', value),
+      ], entities, '°C');
+      const result = analyzePlacement({
+        start: new Date(start), end: new Date(start + 24 * hour), windowDays: 1, timeZone: 'UTC',
+        sensors, hvac: parsed.hvac, comfort: null, cooling: null,
+        reportedTemperature: { points: points.map(({ t }) => ({ t, v: 20 })) },
+      });
+      return result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.overshoot;
+    };
+    expect(run('000100', '000900', '22')).toBeNull();
+    expect(run('000900', '000100', '22')).toBeNull();
+    expect(run('000100', '000100', '22')).toBeNull();
+    expect(run('000100', '000900', '21')).toBe(2);
+  });
+
+  it('does not assume unordered fractional fields in a direct snapshot were simultaneous', () => {
+    const start = Date.parse('2026-01-19T00:00:00Z');
+    const hour = 60 * 60_000;
+    const points = Array.from({ length: 24 }, (_, i) => ({ t: start + (6 + i / 4) * hour }));
+    const run = (fields: Record<string, string>, later = false) => {
+      const sensors = ['office', 'kitchen'].map((room) => ({
+        id: `${room}_temperature`, name: room, isThermostat: false,
+        points: points.map(({ t }) => ({ t, v: room === 'kitchen' && t >= start + (later ? 9 : 7) * hour ? 23 : 20 })),
+      }));
+      const state = {
+        gap: false, hvacMode: 'heat', hvacAction: 'idle', presetMode: 'home', setpoint: 20,
+      };
+      const result = analyzePlacement({
+        start: new Date(start), end: new Date(start + 24 * hour), windowDays: 1, timeZone: 'UTC',
+        sensors, comfort: null, cooling: null, reportedTemperature: { points: points.map(({ t }) => ({ t, v: 20 })) },
+        hvac: [
+          { ...state, t: start },
+          { ...state, t: start + 6 * hour, hvacAction: 'heating', setpoint: 21, subMillisecondFields: fields },
+          { ...state, t: start + 7 * hour, setpoint: 21 },
+          ...(later ? [
+            { ...state, t: start + 8 * hour, hvacAction: 'heating', setpoint: 21 },
+            { ...state, t: start + 9 * hour, setpoint: 21 },
+          ] : []),
+        ],
+      });
+      return result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.overshoot;
+    };
+    expect(run({ hvac_action: '1', temperature: '9' })).toBeNull();
+    expect(run({ temperature: '9' })).toBeNull();
+    expect(run({ hvac_action: '1', temperature: '1' })).toBe(2);
+    expect(run({ hvac_action: '1', temperature: '9' }, true)).toBe(2);
   });
 
   it.each(['select-first', 'preset-first'] as const)(
@@ -2818,14 +2996,32 @@ describe('ClimatePlacementService', () => {
     ['mode after heating', '000950', '000100', '000900', null, 0],
     ['unchanged target after mode', '000950', '000100', '000900', null, 0],
     ['target repeated across mode', '000950', '000100', '000900', null, 0],
+    ['target repeated across mode with valid middle', '000950', '000100', '000900', 2, 15],
     ['unchanged target repeated later', '000950', '000100', '000900', 2, 15],
     ['unrelated cooling target later', '000950', '000100', '000900', 2, 15],
     ['compatible action repeated after mode', '000000', '000100', '000900', null, 0],
     ['incompatible action repeated after mode', '000000', '000100', '000900', 2, 15],
     ['later valid heat-ups', '000000', '000100', '000900', 2, 16],
     ['no interruption', '000000', null, null, 2, 20],
+    ['target after heating in stable Home', '000100', null, null, null, 0],
+    ['target after heating next millisecond', '000100', null, null, null, 0],
+    ['target with heating in stable Home', '000100', null, null, 2, 15],
+    ['target before heating in stable Home', '000900', null, null, 2, 15],
+    ['target after heating with no select', '000100', null, null, null, 0],
+    ['mode after heating in stable Home', '000100', null, null, null, 0],
+    ['mode after heating next millisecond', '000100', null, null, null, 0],
+    ['mode after heating with no select', '000100', null, null, null, 0],
+    ['mode with heating in stable Home', '000100', null, null, 2, 15],
+    ['mode before heating in stable Home', '000900', null, null, 2, 15],
+    ['select after heating', '000100', '000900', null, null, 0],
+    ['select after heating next millisecond', '000100', '001900', null, null, 0],
+    ['select before heating', '000900', '000100', null, 2, 15],
+    ['select with heating', '000100', '000100', null, 2, 15],
+    ['preset after heating', '000100', '000900', null, null, 0],
+    ['preset before heating', '000999', '000100', null, 2, 15],
+    ['preset with heating', '000500', '000500', null, 2, 15],
   ] as const)(
-    'review 693b3c0: heating %s a comfort interruption uses recorded order',
+    'review 693b3c0: heating %s uses recorded HVAC and setting order',
     async (description, actionFraction, firstFraction, lastFraction, expectedOvershoot, expectedSamples) => {
       const fixture = makeDeps();
       useClimateReference(fixture);
@@ -2846,6 +3042,11 @@ describe('ClimatePlacementService', () => {
       const rangeTargets = description === 'unrelated cooling target later';
       const incompatibleAction = description === 'incompatible action repeated after mode';
       const presetFirst = description.startsWith('preset-first');
+      const singleSelect = description.startsWith('select ');
+      const singlePreset = description.startsWith('preset ');
+      const noSelect = description.endsWith('no select');
+      const stableHome = description.includes('stable Home')
+        || description.startsWith('target after heating next millisecond') || description.startsWith('mode after heating next millisecond');
       for (let d = 0; d < 5; d += 1) {
         const beginning = start + d * day;
         const heating = beginning + 6 * hour;
@@ -2854,28 +3055,46 @@ describe('ClimatePlacementService', () => {
           climateRow(iso(beginning), 'hvac_action_str', 'idle'),
           climateRow(iso(beginning), (modeChange && !incompatibleAction) || rangeTargets ? 'target_temp_low' : 'temperature',
             targetChange || rangeTargets ? '20' : '21'),
-          climateRow(iso(beginning), 'preset_mode_str', presetFirst ? 'home' : 'sleep'),
-          select(iso(beginning), presetFirst ? 'unknown' : 'home'),
+          climateRow(iso(beginning), 'preset_mode_str',
+            singleSelect || singlePreset ? 'none' : presetFirst || noSelect || stableHome ? 'home' : 'sleep'),
+          ...(noSelect || singlePreset ? [] : [select(iso(beginning), presetFirst || singleSelect ? 'unknown' : 'home')]),
           climateRow(micro(heating, actionFraction), 'hvac_action_str', 'heating'),
           ...(description === 'heating repeated after the barrier'
             ? [climateRow(micro(heating, '000999'), 'hvac_action_str', 'heating')] : []),
           ...(description.includes('action repeated after mode')
             ? [climateRow(micro(heating, '000999'), 'hvac_action_str', 'heating')] : []),
-          ...(targetChange ? [climateRow(micro(heating, description === 'target before heating' ? '000010'
-            : description === 'target with heating' ? actionFraction : '000990'), 'temperature', '21')] : []),
+          ...(targetChange ? [climateRow(micro(heating, description === 'target before heating in stable Home' ? '000100'
+            : description.startsWith('target before heating') ? '000010'
+            : description.startsWith('target with heating') ? actionFraction
+              : description === 'target after heating next millisecond' ? '001900'
+                : description === 'target after heating in stable Home' || description === 'target after heating with no select'
+                  ? '000900' : '000990'), 'temperature', '21')] : []),
           ...(rangeTargets ? [
             climateRow(micro(heating, '000050'), 'target_temp_low', '21'),
             climateRow(micro(heating, '000990'), 'target_temp_high', '25'),
           ] : []),
           ...(modeChange ? [
-            climateRow(micro(heating, description === 'mode after heating' ? '000970'
-              : description.includes('action repeated after mode') ? '000300' : '000010'), 'state', 'heat'),
-            climateRow(micro(heating, description === 'target repeated across mode' ? '000000'
+            climateRow(micro(heating, description === 'mode after heating next millisecond' ? '001300'
+              : description === 'mode after heating in stable Home' || description === 'mode after heating with no select' ? '000300'
+                : description.startsWith('mode after heating') ? '000970'
+                  : description.startsWith('mode with heating') ? actionFraction
+                    : description.includes('action repeated after mode') || description === 'target repeated across mode with valid middle'
+                      || description === 'mode before heating in stable Home'
+                      ? '000300' : '000010'), 'state', 'heat'),
+            climateRow(micro(heating, description.startsWith('target repeated across mode') ? '000000'
               : description.includes('action repeated after mode') ? '000400'
-                : description === 'mode before heating' || description === 'unchanged target repeated later' ? '000050' : '000990'),
+                : description === 'mode after heating next millisecond' ? '001400'
+                  : description === 'mode after heating in stable Home' || description === 'mode after heating with no select'
+                    || description === 'mode before heating in stable Home' ? '000400'
+                : description.startsWith('mode before heating') || description === 'unchanged target repeated later' ? '000050'
+                  : description.startsWith('mode with heating') ? actionFraction : '000990'),
             'temperature', '21'),
+            ...(description === 'target repeated across mode with valid middle'
+              ? [climateRow(micro(heating, '000400'), 'temperature', '21')] : []),
             ...(description.includes('target repeated') ? [climateRow(micro(heating, '000990'), 'temperature', '21')] : []),
           ] : []),
+          ...(firstFraction && singleSelect ? [select(micro(heating, firstFraction), 'home')] : []),
+          ...(firstFraction && singlePreset ? [climateRow(micro(heating, firstFraction), 'preset_mode_str', 'home')] : []),
           ...(firstFraction && lastFraction && (description !== 'later valid heat-ups' || d === 0) ? [
             ...(presetFirst ? [
               climateRow(micro(heating, firstFraction), 'preset_mode_str', 'sleep'),
@@ -2926,8 +3145,15 @@ describe('ClimatePlacementService', () => {
     },
   );
 
-  it.each(['start before', 'start after', 'already heating', 'none'] as const)(
-    'review 693b3c0: %s a Sleep interruption cannot incorrectly pair a later wake peak',
+  it.each([
+    'start before', 'start after', 'already heating', 'none', 'fractional Home after preheat',
+    'fractional Home after same-ms heating start',
+    'first compatible action inside interruption', 'first compatible action after interruption',
+    'first compatible action at interruption end', 'first compatible action just after interruption',
+    'first compatible action inside interruption with reversed rows',
+    'first compatible action inside interruption with four observations', 'unknown action among duplicates',
+  ] as const)(
+    'review 693b3c0: wake pairing with %s uses recorded order',
     async (kind) => {
       const fixture = makeDeps();
       useClimateReference(fixture);
@@ -2942,23 +3168,42 @@ describe('ClimatePlacementService', () => {
       const states: Rows = [];
       const temperatures: Rows = [];
       const reported: Rows = [];
+      const repeatedAfterMode = kind.startsWith('first compatible action') || kind === 'unknown action among duplicates';
+      const fractionalHome = kind.startsWith('fractional Home');
+      const sameMsStart = kind === 'fractional Home after same-ms heating start';
       for (let d = 0; d < 5; d += 1) {
         const beginning = start + d * day;
         const interrupted = beginning + 6 * hour;
         states.push(
-          climateRow(iso(beginning), 'state', 'heat'),
+          climateRow(iso(beginning), 'state', repeatedAfterMode ? 'cool' : 'heat'),
           climateRow(iso(beginning), 'hvac_action_str', 'idle'),
-          climateRow(iso(beginning), 'temperature', '21'),
+          climateRow(iso(beginning), 'temperature', repeatedAfterMode ? '24' : '21'),
           climateRow(iso(beginning), 'preset_mode_str', 'home'),
           select(iso(beginning), 'sleep'),
           climateRow(kind === 'already heating' ? iso(interrupted - hour / 2)
-            : micro(interrupted, kind === 'start after' ? '000999' : '000000'), 'hvac_action_str', 'heating'),
+            : sameMsStart ? micro(beginning + 7 * hour, '000100')
+              : micro(interrupted, kind === 'start after' ? '000999' : '000000'), 'hvac_action_str', 'heating'),
           ...(kind === 'already heating' ? [climateRow(micro(interrupted, '000000'), 'hvac_action_str', 'heating')] : []),
-          ...(kind === 'none' ? [] : [
+          ...(repeatedAfterMode ? [
+            climateRow(micro(interrupted, '000300'), 'state', 'heat'),
+            climateRow(micro(interrupted, '000400'), 'temperature', '21'),
+            ...(kind.includes('inside interruption')
+              ? [climateRow(micro(interrupted, '000500'), 'hvac_action_str', 'heating')]
+              : kind === 'first compatible action at interruption end'
+                ? [climateRow(micro(interrupted, '000900'), 'hvac_action_str', 'heating')]
+                : kind === 'first compatible action just after interruption'
+                  ? [climateRow(micro(interrupted, '000950'), 'hvac_action_str', 'heating')]
+                  : kind === 'unknown action among duplicates'
+                    ? [climateRow(micro(interrupted, '000500'), 'hvac_action_str', 'unknown')] : []),
+            ...(kind.endsWith('four observations') ? [climateRow(micro(interrupted, '000700'), 'hvac_action_str', 'heating')] : []),
+            climateRow(micro(interrupted, '000999'), 'hvac_action_str', 'heating'),
+          ] : []),
+          ...(kind === 'none' || fractionalHome ? [] : [
             select(micro(interrupted, '000100'), 'unknown'),
             climateRow(micro(interrupted, '000900'), 'preset_mode_str', 'sleep'),
           ]),
-          select(iso(beginning + 7 * hour), 'home'),
+          select(fractionalHome ? micro(beginning + 7 * hour, '000900')
+            : iso(beginning + 7 * hour), 'home'),
           climateRow(iso(beginning + 8 * hour), 'hvac_action_str', 'idle'),
           climateRow(iso(beginning + 17 * hour), 'hvac_action_str', 'heating'),
           climateRow(iso(beginning + 20 * hour), 'hvac_action_str', 'idle'),
@@ -2966,7 +3211,7 @@ describe('ClimatePlacementService', () => {
         for (let t = beginning; t < beginning + day; t += 15 * 60_000) {
           const localHour = (t - beginning) / hour;
           const kitchen = localHour >= 8 && localHour < 9 ? 23 : 21;
-          const office = localHour >= 6 && localHour < 7 ? 17 : 21;
+          const office = localHour >= (sameMsStart ? 7 : 6) && localHour < (sameMsStart ? 8 : 7) ? 17 : 21;
           reported.push(reportedRow(iso(t), String((office + kitchen) / 2)));
           [
             ['office_temperature', office],
@@ -2976,7 +3221,7 @@ describe('ClimatePlacementService', () => {
           }));
         }
       }
-      fixture.rows.states = states;
+      fixture.rows.states = kind.endsWith('reversed rows') ? [...states].reverse() : states;
       fixture.rows.temperatures = temperatures;
       fixture.rows.reported = reported;
       const result = await fixture.service.getInsights('5', {
@@ -2987,9 +3232,19 @@ describe('ClimatePlacementService', () => {
         followMe: 'false',
       });
       expect(result.coverage.wakeEvents).toBe(5);
+      if (fractionalHome) {
+        expect(result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.overshoot).toBe(2);
+      }
+      if (repeatedAfterMode) {
+        expect(result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.wakeOvershoot)
+          .toBe(kind === 'unknown action among duplicates' ? null : 2);
+      }
       const tip = result.recommendations.find((rec) => rec.id === 'wake-office');
-      if (kind === 'start before' || kind === 'already heating') {
+      if (kind === 'start before' || kind === 'already heating' || kind.includes('inside interruption')
+        || kind === 'unknown action among duplicates') {
         expect(tip).toBeUndefined();
+      } else if (sameMsStart) {
+        expect(tip).toMatchObject({ severity: 'high', comfortSetting: 'home' });
       } else {
         expect(tip).toMatchObject({ severity: 'high', comfortSetting: 'sleep' });
         expect(tip!.detail).toContain('Kitchen peaked 2.0 °C');

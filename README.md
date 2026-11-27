@@ -525,17 +525,24 @@ about 10 days:
   the same millisecond, they are treated as unordered: a mode conflict is a gap and clears
   carried values; an action, target or preset conflict makes that field unknown
   until reported again. Independent simultaneous fields and identical
-  duplicates (including equivalent numeric targets) remain usable. For distinct
-  mode and action or target fields, the recorded fractional order is respected:
-  an earlier action must be compatible with both modes to carry through, and an
-  earlier target belongs to the old mode. A preset reported before an outage
-  recovers does not survive it. Truly simultaneous updates are retained.
-  Event timestamps remain in milliseconds, but a change just after a 15-minute
-  boundary cannot describe the entire source bucket beginning there. That
+  duplicates (including equivalent numeric targets) remain usable. Changes to
+  mode, action, target, preset and comfort-select fields use their recorded
+  fractional order, even without comfort history; updates at the same fraction
+  are atomic. An earlier action must be compatible with
+  both modes to carry through, and an earlier target belongs to the old mode.
+  All distinct fractions of identical climate-field duplicates are retained,
+  so the first compatible report after a mode change can establish the action
+  or target. A preset reported before an outage recovers does not survive it.
+  A programmatic combined snapshot with different field fractions but no
+  intermediate observations is conservatively interrupted; its final state
+  and later complete windows remain usable.
+  Event timestamps remain in milliseconds, but a change just after a source
+  window begins cannot describe the entire window. That
   overlapping bucket is excluded when HVAC mode, action, target, preset or the
   effective comfort setting changes; later whole buckets remain usable, and an
-  unchanged duplicate creates no interruption unless a mode change cleared the
-  target. In particular, a climate recovery just after a boundary cannot make the
+  unchanged duplicate creates no interruption unless a mode change cleared a
+  target or another required target attribute is temporarily unknown. In
+  particular, a climate recovery just after a boundary cannot make the
   overlapping bucket a reference-recovery anchor. This boundary uncertainty is
   not a lasting outage.
   Only `off`, `heating`, `cooling`, `drying`, `fan` and `idle` are treated as
@@ -564,14 +571,14 @@ about 10 days:
   buckets are excluded and wake evidence cannot be paired across the
   interruption. An HVAC action in that millisecond is ordered by its recorded
   fraction: a heat-up before or during the interruption cannot be paired with a
-  later peak, while a start after it (or simultaneous with its end) can. A mode
-  or heating-target change after the action also interrupts that heat-up; a
-  numerically unchanged target still needs a valid observation after a mode
-  change. Identical action or target observations retain their first and last
-  recorded fractions; when those straddle a mode change, an unretained
-  intermediate observation cannot establish an earlier valid action or target.
-  The final setting and later complete buckets remain usable;
-  unchanged duplicates and truly simultaneous updates create no such barrier.
+  later peak, while a start after it (or simultaneous with its end) can. A
+  subsequent mode, heating-target or effective setting change interrupts a
+  single-setting heat-up, whether or not a hidden comfort interruption
+  occurred. A continuous preheat can still be associated with its recorded
+  Sleep-to-Home wake. A numerically unchanged target still needs a valid
+  observation after a mode change. The final setting and later complete
+  buckets remain usable; unchanged duplicates and truly simultaneous updates
+  create no such comfort barrier.
 - **Occupancy** comes from each discovered `occupancy` binary sensor (`value`
   0/1, change-driven, so each value holds until the next), matched to a
   temperature entity by their shared Home Assistant device ID, not their names.

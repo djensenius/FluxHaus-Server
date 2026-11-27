@@ -443,7 +443,9 @@ export function parseStates(
   entities: StateEntities,
   unit: string | null | undefined,
 ): ParsedStates {
-  const climate = new Map<number, Map<string, { value: string | null; first: string; last: string }>>();
+  const climate = new Map<number, Map<string, {
+    value: string | null; first: string; fractions: Set<string>;
+  }>>();
   const comfort = new Map<number, { setting: string | null; ambiguous: boolean; first: string }>();
   const occupancy = new Map<string, Map<number, { occupied: boolean | null; afterMillisecond: boolean }>>();
   const actionObservations = new Set<number>();
@@ -478,10 +480,10 @@ export function parseStates(
       const key = field.replace(/_str$/, '');
       if (key === 'hvac_action') actionObservations.add(t);
       const previous = fields.get(key);
-      if (!previous) fields.set(key, { value, first: fraction, last: fraction });
+      if (!previous) fields.set(key, { value, first: fraction, fractions: new Set([fraction]) });
       else {
+        previous.fractions.add(fraction);
         if (compareSubMillisecond(fraction, previous.first) < 0) previous.first = fraction;
-        if (compareSubMillisecond(fraction, previous.last) > 0) previous.last = fraction;
         if (previous.value === null || !sameClimateValue(key, previous.value, value)) previous.value = null;
       }
     } else if (row.domain === 'select' && row.entity_id === entities.comfort) {
@@ -522,85 +524,79 @@ export function parseStates(
     const fields = climate.get(t)!;
     const subMillisecondFields = Object.fromEntries([...fields]
       .filter(([, field]) => field.first !== '').map(([field, observed]) => [field, observed.first]));
-    const previousMode = mode;
-    const modeField = fields.get('state');
-    if (fields.has('state')) {
-      const nextMode = modeField?.value ?? null;
-      // A single-temperature target observed in one mode is not evidence of
-      // the target in another mode until that target is reported again.
-      if (nextMode !== mode) {
+    const groups = new Map<string, Map<string, string | null>>();
+    fields.forEach((field, key) => {
+      // Conflicting values stay unknown from their first observation until a
+      // later millisecond, irrespective of the order in which rows arrived.
+      const fractions = field.value === null ? [field.first] : [...field.fractions];
+      fractions.forEach((fraction) => {
+        if (!groups.has(fraction)) groups.set(fraction, new Map());
+        groups.get(fraction)!.set(key, field.value);
+      });
+    });
+    let targetsSeen = false;
+    const orderedUpdates = [...groups].sort(([a], [b]) => compareSubMillisecond(a, b)).map(([fraction, changes]) => {
+      if (changes.has('state')) {
+        const nextMode = changes.get('state') ?? null;
+        // A target belongs to its observed mode, not a later one.
+        if (nextMode !== mode) {
+          setpoints = new Map();
+          setpointFractions = new Map();
+          setpointObservedAt = null;
+        }
+        mode = nextMode;
+      }
+      if (changes.has('hvac_action')) {
+        const value = changes.get('hvac_action') ?? '';
+        action = unknownState(value) ? null : value;
+      }
+      const incompatibleAction = changes.has('hvac_action') && action !== null && mode !== null && !unknownState(mode)
+        && compatibleHvacAction(mode, action) === null;
+      action = compatibleHvacAction(mode, action);
+      if (changes.has('preset_mode')) {
+        const value = changes.get('preset_mode') ?? '';
+        preset = value === 'none' || unknownState(value) ? null : value;
+      }
+      const targets = SETPOINT_FIELDS.filter((field) => changes.has(field));
+      if (targets.length > 0) {
+        if (!targetsSeen) {
+          setpoints = new Map();
+          setpointFractions = new Map();
+        }
+        targetsSeen = true;
+        targets.forEach((field) => {
+          setpoints.set(field, plausibleSetpoint(toCelsius(toNumber(changes.get(field)), unitConflict ? null : unit)));
+          setpointFractions.set(field, fraction);
+        });
+        setpointObservedAt = t;
+      }
+      let sample: HvacSample;
+      if (mode === null || mode === 'unavailable' || mode === 'unknown') {
+        // Outages clear carried values, including observations before recovery.
+        action = null;
+        preset = null;
         setpoints = new Map();
         setpointFractions = new Map();
         setpointObservedAt = null;
+        sample = { t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null };
+      } else {
+        const temperature = setpoints.get('temperature') ?? null;
+        const targetField = /^(heat_cool|auto)$/i.test(mode) || !setpoints.has('temperature') ? 'target_temp_low' : 'temperature';
+        const setpoint = setpoints.get(targetField) ?? null;
+        const setpointFraction = setpointFractions.get(targetField);
+        sample = {
+          t, gap: false, hvacMode: mode, hvacAction: action, presetMode: preset, setpoint,
+          ...(setpoint !== null && setpointObservedAt !== null ? { setpointObservedAt } : {}),
+          ...(setpoint !== null && setpointFraction ? { setpointObservedSubMillisecond: setpointFraction } : {}),
+          coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
+        };
       }
-      mode = nextMode;
-    }
-    const modeChanged = modeField !== undefined && mode !== previousMode;
-    const beforeModeChange = (field: { last: string }) => modeChanged
-      && compareSubMillisecond(field.last, modeField!.first) < 0;
-    // An unknown/unavailable action isn't a reported action: no heating start
-    // or satisfaction is read from (or into) it.
-    if (fields.has('hvac_action')) {
-      const actionField = fields.get('hvac_action')!;
-      const value = actionField.value ?? '';
-      action = unknownState(value) ? null : value;
-      if (beforeModeChange(actionField)) {
-        action = previousMode && !unknownState(previousMode) ? compatibleHvacAction(previousMode, action) : null;
-      }
-    }
-    action = compatibleHvacAction(mode, action);
-    if (fields.has('preset_mode')) {
-      const presetField = fields.get('preset_mode')!;
-      const value = presetField.value ?? '';
-      // Presets recorded during a climate outage do not survive its recovery.
-      const beforeRecovery = beforeModeChange(presetField) && (!previousMode || unknownState(previousMode));
-      preset = beforeRecovery || value === 'none' || unknownState(value) ? null : value;
-    }
-    if (SETPOINT_FIELDS.some((f) => fields.has(f))) {
-      // A target reported only before a mode change belongs to the old mode.
-      const current = SETPOINT_FIELDS.filter((f) => fields.has(f) && !beforeModeChange(fields.get(f)!));
-      setpoints = new Map(current.map((f) => [
-        f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)?.value), unitConflict ? null : unit)),
-      ]));
-      setpointFractions = new Map(current.map((f) => [f, fields.get(f)!.last]));
-      setpointObservedAt = current.length > 0 ? t : null;
-    }
-    if (mode === null || mode === 'unavailable' || mode === 'unknown') {
-      // An outage clears what was carried: after it, the action, preset and
-      // set points are only what is reported again, never pre-outage values.
-      action = null;
-      preset = null;
-      setpoints = new Map();
-      setpointFractions = new Map();
-      setpointObservedAt = null;
-      return {
-        t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
-        ...(Object.keys(subMillisecondFields).length > 0 ? { subMillisecondFields } : {}),
-      };
-    }
-    const temperature = setpoints.get('temperature') ?? null;
-    const targetField = /^(heat_cool|auto)$/i.test(mode) || !setpoints.has('temperature') ? 'target_temp_low' : 'temperature';
-    const setpoint = setpoints.get(targetField) ?? null;
-    const setpointFraction = setpointFractions.get(targetField);
-    const targetObservation = fields.get(targetField);
-    const actionObservation = fields.get('hvac_action');
+      return { subMillisecond: fraction, sample, ...(incompatibleAction ? { incompatibleAction: true } : {}) };
+    });
     return {
-      t,
+      ...orderedUpdates[orderedUpdates.length - 1].sample,
       ...(Object.keys(subMillisecondFields).length > 0 ? { subMillisecondFields } : {}),
-      ...(actionObservation && actionObservation.value !== null
-        && compareSubMillisecond(actionObservation.first, actionObservation.last) !== 0
-        ? { actionObservedLastSubMillisecond: actionObservation.last } : {}),
-      gap: false,
-      hvacMode: mode,
-      hvacAction: action,
-      presetMode: preset,
-      setpoint,
-      ...(setpoint !== null && setpointObservedAt !== null ? { setpointObservedAt } : {}),
-      ...(setpoint !== null && setpointFraction ? { setpointObservedSubMillisecond: setpointFraction } : {}),
-      ...(setpoint !== null && setpointObservedAt === t && targetObservation
-        && compareSubMillisecond(targetObservation.first, targetObservation.last) !== 0
-        ? { setpointObservedFirstSubMillisecond: targetObservation.first } : {}),
-      coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
+      ...(orderedUpdates.length > 1 ? { orderedUpdates } : {}),
     };
   });
   const byTime = (a: { t: number }, b: { t: number }) => a.t - b.t;
