@@ -1208,7 +1208,9 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
         ...r, occupancy: occupied(r.id !== 'bedroom_temperature' || bedroomOccupied),
       })),
-      participation: config(['bedroom_temperature', 'living_temperature'], true),
+      // Sleep is configured too, so whether it counted during the Smart
+      // Recovery preheat (in Sleep) is known.
+      participation: { ...config(['bedroom_temperature', 'living_temperature'], true), sleep: ['bedroom_temperature', 'living_temperature'] },
     }));
 
     const empty = withOccupancy(false);
@@ -1616,7 +1618,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
         ...r, occupancy: occupied(r.id === 'bedroom_temperature' ? bedroomOccupied : othersOccupied),
       })),
-      participation: config(['bedroom_temperature', 'living_temperature'], true),
+      participation: { ...config(['bedroom_temperature', 'living_temperature'], true), sleep: ['bedroom_temperature', 'living_temperature'] },
     }));
     // Nobody occupied: Ecobee averages both, so the cold Bedroom counts.
     const fallback = withBedroom(false, false);
@@ -1660,6 +1662,112 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(known.title).toBe('Kitchen is stopping the heat early');
     expect(known.detail).toContain('Because it\'s in your Home comfort setting, Ecobee stops heating');
     expect(known.detail).toContain('With Follow Me on, it counted 100% of the time in Home');
+  });
+
+  it('treats an omitted Follow Me as unknown, not off', () => {
+    const both = ['bedroom_temperature', 'living_temperature'];
+    const run = (followMe: boolean | null, othersOccupied: boolean) => analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
+        ...r, occupancy: occupied(r.id !== 'bedroom_temperature' && othersOccupied),
+      })),
+      participation: { home: both, sleep: both, away: null, followMe },
+    }));
+    const caveat = 'Follow Me wasn\'t specified, and if it\'s on it may have left it out of the average while '
+      + 'unoccupied, so whether it counted isn\'t known';
+    // The Bedroom is empty while the Living Room is occupied: with Follow Me
+    // on it would be left out, so it isn't blamed outright.
+    const mixed = run(null, true);
+    expect(mixed.coverage.followMe).toBeNull();
+    const bedroom = mixed.sensors.find((s) => s.id === 'bedroom_temperature')!;
+    // Which average Ecobee used depends on Follow Me, so it isn't assumed.
+    expect(bedroom.wakeOffset).toBeNull();
+    expect(mixed.recommendations.map((r) => [r.id, r.severity, r.title])).toEqual([
+      ['move-bedroom', 'low', 'Bedroom may be keeping the heat on'],
+    ]);
+    expect(mixed.recommendations[0].detail).toContain(`It's in your Home comfort setting, but ${caveat}. If it counted, `);
+    expect(mixed.recommendations[0].detail).not.toContain('Because it\'s in');
+    expect(bedroom.verdictSummary).toContain(`— ${caveat}, so it may or may not be pulling the average down`);
+    expect(bedroom.verdictSummary).not.toContain('likely');
+    // Nobody occupied: it counts whether Follow Me is on or off.
+    const none = run(null, false);
+    expect(none.recommendations[0]).toMatchObject({
+      id: 'wake-bedroom', severity: 'medium', title: 'Bedroom is holding the morning warm-up on',
+    });
+    expect(none.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary).toContain('— likely');
+    // Follow Me explicitly off: occupancy doesn't matter.
+    expect(run(false, true).recommendations[0]).toMatchObject({ id: 'wake-bedroom', severity: 'medium' });
+  });
+
+  it('doesn\'t estimate membership from times an omitted Follow Me would matter', () => {
+    // The thermostat reads the Bedroom and Living Room's mean; the Bedroom is
+    // always empty, the others occupied. With Follow Me off that fits
+    // {Bedroom, Living}; with it on, Ecobee would average the Living Room
+    // alone. Neither is assumed.
+    const withConfig = (participation: Parameters<typeof analyzePlacement>[0]['participation']) => analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase).map((r) => ({ ...r, occupancy: occupied(r.id !== 'bedroom_temperature') })),
+      participation,
+    }));
+    const omitted = withConfig(undefined).recommendations.find((r) => r.id === 'wake-bedroom')!;
+    expect(omitted.severity).toBe('low');
+    expect(omitted.detail).not.toContain('readings suggest');
+    expect(omitted.detail).toContain('If it\'s in your Home comfort setting and counted toward the average (Follow Me '
+      + 'wasn\'t specified');
+    const off = withConfig({
+      home: null, sleep: null, away: null, followMe: false,
+    }).recommendations.find((r) => r.id === 'wake-bedroom')!;
+    expect(off.detail).toContain('The thermostat\'s readings suggest it\'s in your Home comfort setting. Ecobee keeps heating');
+  });
+
+  it('doesn\'t treat no observed contribution over part of the time as none', () => {
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const summer = coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 });
+    // The others are always occupied. The Kitchen is empty (so left out),
+    // except optionally for the first half hour of cooling; its occupancy is
+    // unknown from day 3 until 14:00 on day 4: exactly 75% of the cooling
+    // time is known.
+    const run = (occupiedOnce: boolean, outage: boolean) => {
+      const kitchen: OccupancySample[] = [
+        { t: SUMMER - DAY, occupied: false },
+        ...(occupiedOnce
+          ? [{ t: SUMMER + 13 * HOUR, occupied: true }, { t: SUMMER + 13.5 * HOUR, occupied: false }]
+          : []),
+        ...(outage ? [{ t: SUMMER + 3 * DAY, occupied: null }, { t: SUMMER + 4 * DAY + 14 * HOUR, occupied: false }] : []),
+      ];
+      const result = analyzePlacement(wakeInput({
+        sensors: rooms(flat, wakeBase),
+        participation: config(['kitchen_temperature', 'living_temperature', 'bedroom_temperature'], true),
+        cooling: {
+          ...summer,
+          sensors: summer.sensors!.map((r) => ({
+            ...r, occupancy: r.id === 'kitchen_temperature' ? kitchen : [{ t: SUMMER - DAY, occupied: true }],
+          })),
+        },
+      }));
+      return {
+        rec: result.recommendations.find((r) => r.mode === 'cooling'),
+        summary: result.sensors.find((s) => s.id === 'kitchen_temperature')!.verdictSummary!,
+      };
+    };
+    // Never counted in the known 75%: it may have counted in the rest, so the
+    // tip stays, conditional and low.
+    const partial = run(false, true);
+    expect(partial.rec).toMatchObject({ id: 'cooling-kitchen', severity: 'low', title: 'Kitchen may be keeping the AC on' });
+    expect(partial.rec!.detail).toContain('but with Follow Me on, the occupancy and comfort-setting history couldn\'t '
+      + 'show whether it counted toward the average for enough of the time. If it counted, the AC keeps running');
+    expect(partial.summary).toContain('so it may or may not be pushing the average up');
+    expect(partial.summary).not.toContain('never counted');
+    // Never counted with occupancy known throughout: it didn't steer the AC.
+    const none = run(false, false);
+    expect(none.rec).toBeUndefined();
+    expect(none.summary).toContain('with Follow Me it never counted toward the thermostat\'s average while the AC ran in Home');
+    // A measured share over part of the time says so.
+    const some = run(true, true);
+    expect(some.rec).toMatchObject({ title: 'Kitchen is keeping the AC on' });
+    expect(some.rec!.detail).toContain('With Follow Me on, it counted 2% of the time while the AC ran in Home (while '
+      + 'occupied, or when no participating room was). Whether it counted could only be told for 75% of that time; '
+      + 'the share is of that part.');
+    expect(some.summary).toContain('(with Follow Me it counted 2% of the time while the AC ran in Home, of the 75% of '
+      + 'that time it could be told)');
   });
 
   it('qualifies cooling advice when Follow Me contribution is unknown', () => {

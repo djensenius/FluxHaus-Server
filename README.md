@@ -389,7 +389,8 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
 - `days` is an integer from 3 to 30, default 14.
 - `home`, `sleep`, `away` (optional) are comma-separated `sensors[].id` values in
   that comfort setting; an empty value means none. `followMe` (optional) is
-  `true` or `false`. Malformed values, or ids that aren't discovered sensors,
+  `true` or `false`; omitted, it is unknown, not off (see Recommendations).
+  Malformed values, or ids that aren't discovered sensors,
   return `400`. Without them, participation is unknown and the text is
   conditional ("If it's in your Home comfort setting…"), or uses what the
   thermostat reading suggests (see below).
@@ -572,15 +573,25 @@ about 10 days:
     in 60% of wake-ups while other rooms end up at least 0.5 °C over the Home
     set point. It mentions a Sleep setback of 2 °C or more, or a warm-up of an
     hour or more, and Smart Recovery. With Follow Me, a sensor counts toward
-    the average while occupied, or while no participating room is. One that
-    never counted isn't blamed; otherwise the measured share is stated
-    ("it counted 7% of the time …"), with no cutoff. When that share can't be
-    measured (occupancy known for under 75% of the time, or membership
+    the average while occupied, or while no participating room is (whether
+    it is in the setting is reported separately). A sensor is only treated as
+    never having counted, and not blamed, when that is known for the whole
+    period; otherwise the measured share is stated ("it counted 7% of the
+    time …"), with no cutoff, and when it was only known for part of the
+    period (at least 75%) that's said too ("Whether it counted could only be
+    told for 75% of that time"). When the share can't be measured (known for
+    under 75% of the time, or never counted in the known part with the rest
     unknown), the tip is `low`, says "may be" and states that it's unknown
     whether the sensor counted ("If it counted, …"), and `verdictSummary` says
-    it may or may not be skewing the average. The same applies to other
-    heat-ups (over Home) and cooling (over that setting's cooling runs, from
-    the cooling data).
+    it may or may not be skewing the average. When `followMe` is omitted and
+    rooms have occupancy history, Follow Me may be on: a sensor counts only
+    where it would either way (occupied, or no participating room occupied),
+    other times are unknown (so the same conditional wording applies), the
+    effective average is unknown where Follow Me would change it, and those
+    times aren't used to estimate membership. Without any occupancy history an
+    omitted `followMe` can't change who counts, so it's treated as before. The
+    same applies to other heat-ups (over Home) and cooling (over that
+    setting's cooling runs, from the cooling data).
   - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a
     warm Kitchen known to participate) for other heat-ups;
     `cooling-<sensor>` (always `move`) for cooling. Heating tips are about Home.

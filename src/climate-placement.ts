@@ -954,6 +954,9 @@ function occupancyUnknown(model: Model, id: string, t: number): boolean {
 // if a configured member it needs has no fresh reading (or, with Follow Me,
 // unknown occupancy) the average is unknown rather than a partial one.
 // Without a configuration, the fresh rooms stand in for the participants.
+// When Follow Me isn't given (null) and occupancy would make it matter (some
+// members occupied, others not, or a member's occupancy unknown), the average
+// is unknown.
 function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSetting | null): number | null {
   const own = model.thermostatId === null ? undefined : grid.values.get(model.thermostatId)?.get(t);
   if (own !== undefined) return own;
@@ -962,10 +965,14 @@ function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSettin
   let members = configured
     ? configured.filter((id) => model.roomSet.has(id))
     : model.rooms.filter(fresh);
-  if (model.config?.followMe === true) {
+  const followMe = model.config?.followMe ?? null;
+  if (followMe !== false && model.occupancy.size > 0) {
     if (members.some((id) => occupancyUnknown(model, id, t))) return null;
     const occupied = members.filter((id) => occupiedAt(model.occupancy.get(id), t) === true);
-    if (occupied.length > 0) members = occupied;
+    if (occupied.length > 0 && occupied.length < members.length) {
+      if (followMe === null) return null;
+      members = occupied;
+    }
   }
   if (members.length < (configured ? 1 : MIN_SENSORS_FOR_MEAN) || !members.every(fresh)) return null;
   return mean(members.map((id) => grid.values.get(id)!.get(t)!));
@@ -978,15 +985,9 @@ function memberIn(model: Model, id: string, setting: ComfortSetting): boolean | 
   return model.estimated?.get(id)?.[setting] ?? null;
 }
 
-// Whether a room counted toward Ecobee's average at t: a member of the setting
-// in force and, with Follow Me, occupied — or unoccupied while no member was
-// (Ecobee then averages all of them). Null when that can't be told.
-function contributesAt(model: Model, id: string, t: number, setting: ComfortSetting | null): boolean | null {
-  if (setting === null) return null;
-  const member = memberIn(model, id, setting);
-  if (member !== true) return member;
-  if (model.config?.followMe !== true) return true;
-  if (model.occupancy.size === 0 || occupancyUnknown(model, id, t)) return null;
+// With Follow Me on, whether a room (taken as in the setting) counted at t.
+function followMeCounts(model: Model, id: string, t: number, setting: ComfortSetting): boolean | null {
+  if (occupancyUnknown(model, id, t)) return null;
   if (occupiedAt(model.occupancy.get(id), t)) return true;
   let unknown = false;
   for (const other of model.rooms) {
@@ -1000,9 +1001,34 @@ function contributesAt(model: Model, id: string, t: number, setting: ComfortSett
   return unknown ? null : true;
 }
 
-// Share of the grid times in `windows` a room counted toward the average; null
-// unless that was known for at least OCCUPANCY_COVERAGE of them.
-function contributionShare(model: Model, grid: Grid, windows: Run[], id: string): number | null {
+// Whether a room counted toward Ecobee's average at t, if it's in the setting
+// in force (membership is reported separately; a known non-member never
+// counts): always without Follow Me; with it, while occupied — or unoccupied
+// while no member was (Ecobee then averages all of them). When Follow Me isn't
+// given, only where it would count either way. Null when that can't be told.
+function contributesAt(model: Model, id: string, t: number, setting: ComfortSetting | null): boolean | null {
+  if (setting === null) return null;
+  if (memberIn(model, id, setting) === false) return false;
+  const followMe = model.config?.followMe ?? null;
+  if (followMe === false) return true;
+  // Without occupancy history Follow Me can't be told apart from off: as
+  // before, a room isn't assumed left out unless Follow Me is known to be on.
+  if (model.occupancy.size === 0) return followMe === null ? true : null;
+  const counts = followMeCounts(model, id, t, setting);
+  return followMe === true || counts === true ? counts : null;
+}
+
+// How much a room counted toward the average over the grid times in `windows`.
+// `share` is of the times it could be told, `coverage` the share of all times
+// that was. Null below OCCUPANCY_COVERAGE, and when it never counted in the
+// known times but some were unknown (it may have counted then): a share of 0
+// is only reported when established for every time.
+interface Contribution {
+  share: number;
+  coverage: number;
+}
+
+function contributionShare(model: Model, grid: Grid, windows: Run[], id: string): Contribution | null {
   let total = 0;
   let known = 0;
   let counted = 0;
@@ -1015,7 +1041,8 @@ function contributionShare(model: Model, grid: Grid, windows: Run[], id: string)
       if (c === true) counted += 1;
     }
   });
-  return known > 0 && known >= OCCUPANCY_COVERAGE * total ? counted / known : null;
+  if (known === 0 || known < OCCUPANCY_COVERAGE * total || (counted === 0 && known < total)) return null;
+  return { share: counted / known, coverage: known / total };
 }
 
 interface Accum {
@@ -1161,7 +1188,10 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     errors: new Float64Array(size), counts: new Uint32Array(size),
   }]));
   const sums = new Float64Array(size);
-  const followMe = model.config?.followMe === true;
+  // Follow Me not given (null): times where it would change a subset's average
+  // aren't scored for that subset.
+  const followMe = model.config?.followMe ?? null;
+  const tracked = followMe !== false && model.occupancy.size > 0;
   const times = grid.times.slice(
     firstIndexAfter(grid.times, from, itself, true),
     firstIndexAfter(grid.times, to, itself, true),
@@ -1176,7 +1206,7 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     const values = model.rooms.map((id, i) => {
       const value = grid.values.get(id)!.get(t);
       if (value !== undefined) available |= 1 << i;
-      if (followMe) {
+      if (tracked) {
         const occupied = occupiedAt(model.occupancy.get(id), t);
         if (occupied === true) occupiedMask |= 1 << i;
         else if (occupancyUnknown(model, id, t)) unknownMask |= 1 << i;
@@ -1190,8 +1220,8 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     }
     const fit = fits[setting];
     for (let mask = 1; mask < size; mask += 1) {
-      if ((mask & ~available) === 0 && (mask & unknownMask) === 0) {
-        const used = (mask & occupiedMask) || mask;
+      const used = (mask & occupiedMask) || mask;
+      if ((mask & ~available) === 0 && (mask & unknownMask) === 0 && (followMe !== null || used === mask)) {
         fit.errors[mask] += Math.abs(sums[used] / sizes[used] - target);
         fit.counts[mask] += 1;
       }
@@ -1404,7 +1434,7 @@ interface Analyzed {
   estimated: Participation;
   estimatedCool: Participation;
   // Share of the time it counted toward Ecobee's average (null: unknown).
-  contribution: { wake: number | null; home: number | null; cooling: number | null };
+  contribution: { wake: Contribution | null; home: Contribution | null; cooling: Contribution | null };
 }
 
 interface SettingRun extends Run {
@@ -1443,6 +1473,8 @@ function coolingGroups(parts: SettingRun[]): { setting: ComfortSetting; runs: Se
 
 interface Env {
   followMe: boolean | null;
+  // Whether any room has occupancy history.
+  occupancy: boolean;
   // Whether the thermostat's averaged reading is available.
   hasAverage: boolean;
   heatingRuntimeMs: number | null;
@@ -1672,31 +1704,44 @@ function recBase(
   return { sensorId: a ? a.out.id : null, ...fields };
 }
 
-// Share of the time it counted toward Ecobee's average over a skew's evidence
-// (Home for heating; the cooling runs in the skew's setting for cooling), or
-// null when unknown. A share of 0 means it never steered the thermostat then.
-function shareOf(a: Analyzed, mode: PlacementMode): number | null {
+// How much it counted toward Ecobee's average over a skew's evidence (Home for
+// heating; the cooling runs in the skew's setting for cooling), or null when
+// unknown. A share of 0 (only reported when known throughout) means it never
+// steered the thermostat then.
+function shareOf(a: Analyzed, mode: PlacementMode): Contribution | null {
   return mode === 'heating' ? a.contribution.home : a.contribution.cooling;
 }
 
-// With Follow Me on and no measured share, whether it steered the thermostat
-// can't be told: tips are conditional and say so.
-function countUnknown(env: Env, share: number | null): boolean {
-  return env.followMe === true && share === null;
+function neverCounted(c: Contribution | null): boolean {
+  return c !== null && c.share === 0;
+}
+
+// Follow Me on (or not given, with occupancy history) and no measured share:
+// whether it steered the thermostat can't be told, so tips are conditional and
+// say so.
+function countUnknown(env: Env, c: Contribution | null): boolean {
+  return c === null && (env.followMe === true || (env.followMe === null && env.occupancy));
 }
 
 const COUNT_UNKNOWN = 'the occupancy and comfort-setting history couldn\'t show whether it counted toward the '
   + 'average for enough of the time';
 
+// Why whether it counted is unknown, as a clause after "but".
+function countCaveat(env: Env): string {
+  return env.followMe === true
+    ? `with Follow Me on, ${COUNT_UNKNOWN}`
+    : 'Follow Me wasn\'t specified, and if it\'s on it may have left it out of the average while unoccupied, so '
+      + 'whether it counted isn\'t known';
+}
+
 // participationLead, qualified when whether it counted is unknown.
-function countingLead(known: Known, setting: ComfortSetting, unknown: boolean): string {
+function countingLead(known: Known, setting: ComfortSetting, unknown: boolean, env: Env): string {
   if (!unknown) return participationLead(known, setting);
   const label = SETTING_LABEL[setting];
-  const caveat = `but with Follow Me on, ${COUNT_UNKNOWN}. If it counted, `;
+  const caveat = `but ${countCaveat(env)}. If it counted, `;
   if (known.source === 'configured') return `It's in your ${label} comfort setting, ${caveat}`;
   if (known.source === 'estimated') return `The thermostat's readings suggest it's in your ${label} comfort setting, ${caveat}`;
-  return `If it's in your ${label} comfort setting and counted toward the average (with Follow Me on, the occupancy and `
-    + 'comfort-setting history couldn\'t show that for enough of the time), ';
+  return `If it's in your ${label} comfort setting and counted toward the average (${countCaveat(env)}), `;
 }
 
 function shareText(share: number): string {
@@ -1705,11 +1750,16 @@ function shareText(share: number): string {
   return p === 100 && share < 1 ? 'over 99%' : `${p}%`;
 }
 
-// The measured share, stated whenever Follow Me is on and it's known.
-function countedNote(env: Env, share: number | null, when: string): string {
-  if (env.followMe !== true || share === null) return '';
-  return ` With Follow Me on, it counted ${shareText(share)} of the time ${when} (while occupied, or when no participating `
-    + 'room was).';
+// The measured share, stated whenever Follow Me is on and it's known; when it
+// was only known for part of the time, that's said too.
+function countedNote(env: Env, c: Contribution | null, when: string, member: boolean | null): string {
+  if (env.followMe !== true || c === null) return '';
+  const part = c.coverage < 1
+    ? ` Whether it counted could only be told for ${shareText(c.coverage)} of that time; the share is of that part.`
+    : '';
+  const verb = member === true ? 'it counted' : 'if it\'s in the setting, it would have counted';
+  return ` With Follow Me on, ${verb} ${shareText(c.share)} of the time ${when} (while occupied, or when no `
+    + `participating room was).${part}`;
 }
 
 function countedWhen(skew: Skew): string {
@@ -1723,7 +1773,7 @@ function skewRec(a: Analyzed, skew: Skew, env: Env, rooms: Analyzed[]): Ranked |
   if (known.value === false) return null;
   // A sensor that never counted toward the average (Follow Me) didn't steer it.
   const share = shareOf(a, skew.mode);
-  if (share === 0) return null;
+  if (neverCounted(share)) return null;
   const unknown = countUnknown(env, share);
   const heating = skew.mode === 'heating';
   // Cooling tips always recommend moving the sensor.
@@ -1762,8 +1812,8 @@ function skewRec(a: Analyzed, skew: Skew, env: Env, rooms: Analyzed[]): Ranked |
       severity,
       action: remove ? 'exclude_from_comfort' : 'move',
       title: `${a.out.name} ${titles[skew.mode][skew.direction]}`,
-      detail: `${skew.evidence}. ${withLead(countingLead(known, setting, unknown), CONSEQUENCE[skew.mode][skew.direction])}`
-        + `${effect} ${adviceFor(a, skew.direction, setting, true, !heating)}${countedNote(env, share, countedWhen(skew))}`
+      detail: `${skew.evidence}. ${withLead(countingLead(known, setting, unknown, env), CONSEQUENCE[skew.mode][skew.direction])}`
+        + `${effect} ${adviceFor(a, skew.direction, setting, true, !heating)}${countedNote(env, share, countedWhen(skew), known.value)}`
         + `${quiet}${heating ? '' : coolingNote(env)}`,
       mode: skew.mode,
       period: null,
@@ -1792,7 +1842,7 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
   if (known.value === false) return null;
   // With Follow Me, a sensor that never counted after waking didn't steer it.
   const share = a.contribution.wake;
-  if (share === 0) return null;
+  if (neverCounted(share)) return null;
   const unknown = countUnknown(env, share);
   const affected = rooms.filter((o) => o !== a && (o.out.wakeOvershoot ?? 0) >= AFFECTED_THRESHOLD)
     .sort((x, y) => y.out.wakeOvershoot! - x.out.wakeOvershoot!);
@@ -1806,7 +1856,7 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
     recovery = ` ${gap}warm-up ran ${Math.round((ramp ?? 0) / 60000)} minutes on average (Smart Recovery can start it before Home); `
       + 'a smaller Sleep setback or turning Smart Recovery off would shorten it.';
   }
-  const followMe = countedNote(env, share, 'after waking');
+  const followMe = countedNote(env, share, 'after waking', known.value);
   const quiet = quietNote(env);
   let severity: RecommendationSeverity = affected[0].out.wakeOvershoot! >= OVERSHOOT_THRESHOLD ? 'high' : 'medium';
   if (quiet || unknown) severity = 'low';
@@ -1819,7 +1869,7 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
       action: 'move',
       title: `${a.out.name} ${known.value === true && !unknown ? 'is' : 'may be'} holding the morning warm-up on`,
       detail: `In ${cold} of ${offsets.length} wake-ups (Sleep → Home), ${a.out.name} read ${fmt(offset)} °C below `
-        + `the comfort average Ecobee heats to. ${withLead(countingLead(known, 'home', unknown), 'Ecobee keeps heating until it warms up, ')}`
+        + `the comfort average Ecobee heats to. ${withLead(countingLead(known, 'home', unknown, env), 'Ecobee keeps heating until it warms up, ')}`
         + `so ${listOf(affected.map((o) => o.out.name))} ended up `
         + `${listOf(affected.map((o) => fmt(o.out.wakeOvershoot!)))} °C over the Home set point on average in the 2 hours after waking. `
         + `${adviceFor(a, 'below', 'home', true)}${recovery}${followMe}${quiet}`,
@@ -2077,14 +2127,16 @@ function verdictSummaryOf(a: Analyzed, skew: Skew | null, env: Env): string {
   let consequence = known.source === 'configured'
     ? `, but it isn't in the ${SETTING_LABEL[setting]} comfort setting, so it doesn't steer the thermostat`
     : `, but the thermostat's readings suggest it isn't in the ${SETTING_LABEL[setting]} comfort setting, so it likely doesn't steer it`;
-  if (known.value !== false && share === 0 && env.followMe === true) {
+  if (known.value !== false && neverCounted(share) && env.followMe === true) {
     consequence = `, but with Follow Me it never counted toward the thermostat's average ${countedWhen(skew)}, so it didn't steer it`;
   } else if (known.value !== false && countUnknown(env, share)) {
-    consequence = ` — with Follow Me on, ${COUNT_UNKNOWN}, so it may or may not be ${pull}`;
+    consequence = ` — ${countCaveat(env)}, so it may or may not be ${pull}`;
   } else if (known.value === true) consequence = ` — likely ${pull}`;
   else if (known.value === null) consequence = ` — if it's in the comfort setting, it may be ${pull}`;
-  if (env.followMe === true && share !== null && share > 0 && known.value !== false) {
-    consequence += ` (with Follow Me it counted ${shareText(share)} of the time ${countedWhen(skew)})`;
+  if (env.followMe === true && share !== null && share.share > 0 && known.value !== false) {
+    const part = share.coverage < 1 ? `, of the ${shareText(share.coverage)} of that time it could be told` : '';
+    consequence += ` (with Follow Me it ${known.value === true ? 'counted' : 'would have counted'} `
+      + `${shareText(share.share)} of the time ${countedWhen(skew)}${part})`;
   }
   let note = '';
   if (skew.mode === 'heating' && (env.heatingRare || env.passiveHeat)) note = '; heating rarely ran, so this matters mainly on colder days';
@@ -2249,6 +2301,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   }
   const env: Env = {
     followMe: config?.followMe ?? null,
+    occupancy: model.occupancy.size > 0,
     hasAverage: model.thermostatId !== null,
     heatingRuntimeMs: runtime,
     windowDays: input.windowDays,
