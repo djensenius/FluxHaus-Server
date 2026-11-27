@@ -249,6 +249,24 @@ describe('thermostat, comfort and occupancy history', () => {
     });
   });
 
+  it('clears the carried action, preset and set points at an outage', () => {
+    const parsed = parseStates([
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T06:00:00Z', 'preset_mode_str', 'home'),
+      climateRow('2026-01-19T06:00:00Z', 'temperature', '21'),
+      climateRow('2026-01-19T07:00:00Z', 'state', 'unavailable'),
+      // Recovery reports the mode only: nothing before the outage carries over.
+      climateRow('2026-01-19T08:00:00Z', 'state', 'heat'),
+    ], entities, '°C');
+    expect(parsed.hvac![2]).toEqual({
+      t: Date.parse('2026-01-19T08:00:00Z'), gap: false, hvacMode: 'heat', hvacAction: null, presetMode: null, setpoint: null, coolSetpoint: null,
+    });
+    // So heating isn't continued past the outage, and no heat-up is read.
+    expect(parsed.hvac!.map((s) => s.hvacAction)).toEqual(['heating', null, null]);
+    expect(detectHvacEvents(parsed.hvac!, 'UTC')).toEqual([]);
+  });
+
   it('treats implausible or unknown-unit set points as unknown', () => {
     const rows = [climateRow('2026-01-19T06:00:00Z', 'state', 'heat'), climateRow('2026-01-19T06:00:00Z', 'temperature', '70')];
     expect(parseStates(rows, entities, '°C').hvac![0].setpoint).toBeNull();

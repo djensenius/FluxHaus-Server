@@ -437,7 +437,9 @@ about 10 days:
   forward between changes; set points come from each change. The last value
   before the window (within 30 days) gives the state at its start.
   An `unavailable`/`unknown` action is unknown (not a heating start, stop or
-  satisfaction). `unavailable`/`unknown` states are gaps: no transition is read across one,
+  satisfaction). `unavailable`/`unknown` states are gaps: they clear the carried
+  action, preset and set points (a recovery row without them leaves them unknown),
+  no transition is read across one,
   and history with nothing but gaps counts as unavailable
   (`hvacHistoryAvailable: false`, retried after 1 minute).
 - **Comfort setting** is the Ecobee select `<thermostat>_current_mode` (e.g.
@@ -486,6 +488,9 @@ about 10 days:
     the wake-up heat-up and replaces the morning warm-up around it. Its room
     offsets are measured from the start of that heating through the first 2
     hours of Home, each reading against the comfort setting in force then.
+    Its warm-up time is the sum of those heating runs (not the span from the
+    first start to the last stop), and its effect on the comfort average is
+    measured per comfort setting over the time those runs heated in it.
   - A *return from Away* is only an explicit comfort setting change from `away` to
     home, in a mode that can heat, with heating reported within 30
     minutes while the preset stays home/comfort (a switch back to Away, or any
@@ -544,7 +549,8 @@ about 10 days:
   under 30 minutes (heating runs: 20 minutes), never across a gap, an unknown
   action or any other action.
 - **Passive warmth:** when the comfort average sits at least 1.0 °C over the
-  heating set point for most of the time heating is idle (or under the cool set
+  heating set point for most of the time heating is idle (not counting the
+  2 hours after any heating run, when leftover heat is expected) (or under the cool set
   point with cooling idle, in `cool` mode), a `passive-warmth-heating` /
   `passive-cooling` recommendation gives the share of the time and the mean
   distance, says sensors aren't the cause (likely a set point below what the
@@ -560,10 +566,13 @@ about 10 days:
   `periodOffsets` (`sleep`, `wake`, `home`, `heatingRuns`, `cooling`) are mean
   offsets from the house average; `wakeOffset` and `coolingOffset` are from the
   effective comfort average; `wakeOvershoot` is how far the room peaked over
-  the Home set point in the 2 hours after waking; `coolingUndershoot` is how far
+  the Home set point in the 2 hours after waking (against the set point at the
+  start, ending early at a set point, mode or preset change or a gap); `coolingUndershoot` is how far
   it ended below the cool set point while cooling ran. Heating offsets and
   days skip times the thermostat couldn't heat (`off`/`cool` mode or cooling);
-  without thermostat history all times count. `consistency` counts days
+  without thermostat history all times count. Heating verdicts, `consistency`
+  heating days and heating tips use only times in Home (all times when no
+  comfort setting is known), so overnight Sleep readings aren't blamed on Home. `consistency` counts days
   (`days`, `coldDays`, `warmDays`, `coolingDays`, `coolingColdDays`,
   `coolingWarmDays`); `participation` and `occupiedShare` (`wake`, `home`) follow
   the request and occupancy; `recommendationIds` lists the tips about it.
@@ -573,7 +582,10 @@ about 10 days:
   say what to do (`action`):
   - `wake-<sensor>` (`move`): a sensor at least 0.5 °C below the comfort average
     in 60% of wake-ups while other rooms end up at least 0.5 °C over the Home
-    set point. It mentions a Sleep setback of 2 °C or more, or a warm-up of an
+    set point. It targets the setting the measured effect happened in: Home when
+    the sensor skewed it, else the setting the preheat ran in (e.g. Sleep, "while
+    heating in Sleep before Home"); a setting the sensor is known not to be in,
+    or never counted toward, isn't blamed. It mentions a Sleep setback of 2 °C or more, or a warm-up of an
     hour or more, and Smart Recovery. With Follow Me, a sensor counts toward
     the average while occupied, or while no participating room is (whether
     it is in the setting is reported separately). A sensor is only treated as
@@ -610,14 +622,18 @@ about 10 days:
     than one. A room with the same kind of tip in two settings gets the
     setting appended (`cooling-<sensor>-sleep`). Without a heating verdict,
     `verdict` uses the first skewed setting by cooling time; `coolingOffset`, `coolingUndershoot` and the
-    cooling `consistency` counts cover all cooling.
+    cooling `consistency` counts cover all cooling; the rooms a tip says the AC
+    overcooled come from that setting's cooling only.
   - `add-<sensor>` / `add-cooling-<sensor>` (`include_in_comfort`) for a room known
     not to participate that is consistently off, or a room that overshoots by
     1.0 °C or more when no other heating tip applies.
   - `passive-warmth-heating`, `passive-cooling`, `participation-mismatch-<setting>`
     and `no-changes` (`none`). `no-changes` summarizes what the data covered (it
     only claims no overshoot when it was measured for every room, and names
-    sensors without enough data and inferred heat-ups).
+    sensors without enough data and inferred heat-ups). When a room was measured
+    as an outlier or overshooting but no tip applies (e.g. Follow Me left it
+    out, or it's already in the setting), it's titled "No changes suggested"
+    and names those rooms instead of saying there was no bias.
   `mode` (`heating`/`cooling`), `period` and `comfortSetting` say when it
   applies. `action` stays within the existing values (`move`,
   `exclude_from_comfort`, `include_in_comfort`, `none`); exclude/include refer

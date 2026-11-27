@@ -290,7 +290,7 @@ export interface ParsedStates {
 // action and preset carry forward, set points are per change since Home
 // Assistant omits empty attributes), comfort settings and occupancy.
 // Unavailable or unknown thermostat states are gaps so no transition is read
-// across them; unavailable or unknown occupancy is kept as unknown (null) so
+// across them, and they clear the carried action, preset and set points; unavailable or unknown occupancy is kept as unknown (null) so
 // the last value isn't carried across an outage.
 export function parseStates(
   rows: Record<string, string>[],
@@ -341,6 +341,11 @@ export function parseStates(
       setpoints = new Map(SETPOINT_FIELDS.map((f) => [f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unit))]));
     }
     if (mode === null || mode === 'unavailable' || mode === 'unknown') {
+      // An outage clears what was carried: after it, the action, preset and
+      // set points are only what is reported again, never pre-outage values.
+      action = null;
+      preset = null;
+      setpoints = new Map();
       return {
         t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
       };
