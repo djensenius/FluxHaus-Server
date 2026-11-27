@@ -2,6 +2,7 @@ import {
   alignSensors,
   analyzePlacement,
   detectHvacEvents,
+  inferMorningEvents,
   type HvacSample,
   type SensorSeriesInput,
 } from '../climate-placement';
@@ -564,6 +565,40 @@ describe('analyzePlacement', () => {
     // morning while the rooms still warm (sun, cooking).
     const result = analyzePlacement(input({ hvac: offMornings(3) }));
     expect(result.coverage).toMatchObject({ morningEvents: 3, inferredMorningEvents: 0 });
+  });
+
+  it.each([
+    ['off', (t: number) => state(t, 'off', { presetMode: null, setpoint: null, hvacMode: 'off' })],
+    ['cool', (t: number) => state(t, 'idle', { presetMode: null, setpoint: 24, hvacMode: 'cool' })],
+    ['unavailable', gap],
+  ])('does not start an inferred warm-up while the thermostat is already %s', (_, before) => {
+    // The thermostat is off/cool/unavailable from 03:00 and switches to heat
+    // at 07:30. The rooms warm from 06:00 (sun) while the Office stays cold;
+    // a warm-up inferred from 06:00 would count those readings and call the
+    // Office cold. One may only start once heat is in force, from 07:30.
+    const samples = Array.from({ length: 5 }, (_unused, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 18 }),
+      before(at(d, 3)),
+      state(at(d, 7.5), 'idle', { presetMode: null, setpoint: 20 }),
+    ]).flat();
+    const office = (t: number) => {
+      const h = ((t - START) % DAY) / HOUR;
+      return h >= 6 && h < 7.5 ? -3 : 0;
+    };
+    const result = analyzePlacement(input({
+      sensors: series({
+        office_temperature: office, kitchen_temperature: 0, living_temperature: 0, bedroom_temperature: 0,
+      }, 5),
+      hvac: samples,
+    }));
+    const events = inferMorningEvents(
+      series({ office_temperature: office, kitchen_temperature: 0, living_temperature: 0 }, 5),
+      'UTC',
+      samples,
+    );
+    expect(events.every((e) => ((e.t - START) % DAY) / HOUR >= 7.5)).toBe(true);
+    expect(result.recommendations.some((r) => r.sensorId === 'office_temperature')).toBe(false);
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.classification).not.toBe('cold');
   });
 
   it('infers mornings when the thermostat reports idle through a set point increase', () => {

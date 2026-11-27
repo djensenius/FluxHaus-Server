@@ -324,6 +324,16 @@ function heatingRuledOut(samples: HvacSample[], from: number, to: number): boole
   return samples.every((s) => s.t <= from || s.t > to || rulesOutHeating(s));
 }
 
+// Whether the recorded state in force at `t` (the last at or before it) is a
+// gap or a mode that can't heat, so an inferred warm-up can't start there; a
+// later grid time, once a heat-capable state is in force, still can. As in
+// heatingRuledOut, the earliest returned state is a possible snapshot from
+// before the recorder's retention, so it is never evidence on its own.
+function cannotStartAt(samples: HvacSample[], t: number): boolean {
+  const index = stateIndexAt(samples, t);
+  return index > 0 && (samples[index].gap || rulesOutHeating(samples[index]));
+}
+
 // Morning warm-ups inferred from the house mean rising in the morning window,
 // one per local day, on days without an observed morning warm-up and not near
 // another observed event, unless a recorded mode that can't heat rules it out.
@@ -348,7 +358,7 @@ export function inferMorningEvents(
       .map(([id]) => id);
     if (cohort.length < MIN_SENSORS_FOR_MEAN) return;
     if (cohortMean(grid, cohort, later) - cohortMean(grid, cohort, t) < INFERRED_RISE) return;
-    if (heatingRuledOut(samples, t, later)) return;
+    if (heatingRuledOut(samples, t, later) || cannotStartAt(samples, t)) return;
     seenDays.add(day);
     events.push({ type: 'morning', t, inferred: true });
   });

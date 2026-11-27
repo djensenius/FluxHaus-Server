@@ -433,7 +433,10 @@ alone ("the thermostat may keep heating to satisfy it").
   - On days without an observed morning warm-up (e.g. the recorder keeps fewer
     days than requested, or there's no thermostat history at all), a morning
     warm-up is *inferred* when the house average rises 0.5 °C within an hour,
-    unless the recorded thermostat mode couldn't heat then (off, cool). A
+    unless the recorded thermostat mode couldn't heat then (off, cool). It
+    never starts while an off/cool state or a gap is in force (the last
+    recorded state at or before its start); it can start later, once a
+    heat-capable state is. A
     reported `idle` action doesn't rule heating out: some integrations (e.g. an
     ecobee through `homekit_controller`) report idle for hours after a morning
     set point increase while the rooms warm. The earliest
