@@ -444,9 +444,9 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
   temperature data, no thermostat history or an ambiguous cooling anchor) are
   cached for 1 minute so they are retried soon. A separate thermostat
   temperature entity is not required, and the age of the last change-driven
-  reference value alone does not shorten the cache; stale values still cannot
-  be used in comparisons. Where evidence is missing, values are `null` or
-  events are marked inferred rather than guessed.
+  reference value or a normal sub-millisecond transition alone does not shorten
+  the cache; stale values still cannot be used in comparisons. Where evidence is
+  missing, values are `null` or events are marked inferred rather than guessed.
 
 All history comes from the InfluxDB bucket Home Assistant writes to (the
 configured `INFLUXDB_BUCKET`), since the Home Assistant recorder keeps only
@@ -522,12 +522,22 @@ about 10 days:
   target without `target_temp_low`. The last value
   before the window (within 30 days) gives the state at its start.
   When fetched values of a field differ but their timestamps collapse into
-  the same millisecond, they aren't ordered: a mode conflict is a gap and clears
+  the same millisecond, they are treated as unordered: a mode conflict is a gap and clears
   carried values; an action, target or preset conflict makes that field unknown
   until reported again. Independent simultaneous fields and identical
-  duplicates (including equivalent numeric targets) remain usable. Single
-  timestamps are still rounded down to milliseconds, so a recovery just after
-  a source-window boundary may be treated as starting at that boundary.
+  duplicates (including equivalent numeric targets) remain usable. For distinct
+  mode and action or target fields, the recorded fractional order is respected:
+  an earlier action must be compatible with both modes to carry through, and an
+  earlier target belongs to the old mode. A preset reported before an outage
+  recovers does not survive it. Truly simultaneous updates are retained.
+  Event timestamps remain in milliseconds, but a change just after a 15-minute
+  boundary cannot describe the entire source bucket beginning there. That
+  overlapping bucket is excluded when HVAC mode, action, target, preset or the
+  effective comfort setting changes; later whole buckets remain usable, and an
+  unchanged duplicate creates no interruption unless a mode change cleared the
+  target. In particular, a climate recovery just after a boundary cannot make the
+  overlapping bucket a reference-recovery anchor. This boundary uncertainty is
+  not a lasting outage.
   Only `off`, `heating`, `cooling`, `drying`, `fan` and `idle` are treated as
   known actions. An `unavailable`/`unknown` or unsupported action is unknown
   (not a heating start, stop, satisfaction or zero-runtime evidence).
@@ -571,8 +581,11 @@ about 10 days:
   known for at least 75% of the time. Reconstructed readings and contribution
   estimates require the relevant occupancy to be known and stable across the
   actual source-temperature intervals; a later grid-time change is not applied
-  retroactively. For heating or cooling contributions those intervals must also
-  lie within the relevant active run and comfort setting.
+  retroactively. An occupancy change just after a source boundary leaves
+  occupancy-dependent comparisons for that bucket unknown, without discarding
+  unrelated room data or later known occupancy. For heating or cooling
+  contributions those intervals must also lie within the relevant active run
+  and comfort setting.
 - **Thermostat-associated temperatures:** an `isThermostat` entity is not
   automatically the thermostat-reported comfort reading. A shared device, a
   name, a sole temperature entity, or even a matching current snapshot does not
@@ -707,14 +720,17 @@ about 10 days:
   The lookup also reads 30 days of prior climate modes to establish the mode at
   the boundary. An action incompatible with its known mode is ignored; when a
   newer action's mode is missing, unavailable or conflicting, the window is
-  unknown and no no-cooling claim is made. A later positively compatible action
-  can establish the window. A successful lookup with no compatible action is
+  unknown and no no-cooling claim is made. If a mode change and action share a
+  millisecond, their recorded fractional order is used so a later mode cannot
+  validate an earlier action. A later positively compatible action can establish
+  the window. A successful lookup with no compatible action is
   described as unconfirmed, not proof that cooling did not occur: records may
   be incomplete or contain incompatible actions. Because the lookup filters for
   cooling actions, the selected window is also checked for conflicting actions
-  in the anchor's millisecond. If it conflicts, the cooling window is unknown,
-  including when an older season exists; a no-change summary says cooling
-  couldn't be assessed reliably, and the result is retried sooner. A failed
+  in the anchor's millisecond. An action followed by an incompatible mode in
+  that same millisecond is also an uncertain anchor. In either case the cooling
+  window is unknown, including when an older season exists; a no-change summary
+  says cooling couldn't be assessed reliably, and the result is retried sooner. A failed
   lookup also makes no no-cooling claim. Cooling runs merge across reported
   `idle` spells under 30 minutes (heating runs: 20 minutes), never across a
   gap, an unknown action or any other action. Cooling event offsets and daily
@@ -807,7 +823,9 @@ about 10 days:
     immediately preceding continuous Sleep interval, without intervening
     incompatible states or gaps. The Sleep target must have been reported
     during that interval before the warm-up; a carried older target or a
-    synthesized setting transition isn't a new observation. If only the
+    synthesized setting transition isn't a new observation. When the target
+    and setting transition share a millisecond, their recorded fractional
+    order is used; a later identical target report still counts. If only the
     warm-up duration is known it can suggest reviewing recovery timing instead.
     Changing the setback or reviewing recovery timing does not promise a
     reduction in total heating runtime.

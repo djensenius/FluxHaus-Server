@@ -11,6 +11,7 @@ import {
   analyzePlacement,
   BUCKET_MS,
   COMFORT_SETTINGS,
+  compareSubMillisecond,
   compatibleHvacAction,
   reportedHasUsableHistory,
   type ComfortSample,
@@ -148,6 +149,13 @@ export interface IndoorSensor {
 
 function objectId(entityId: string): string {
   return entityId.slice(entityId.indexOf('.') + 1);
+}
+
+// Date.parse retains only milliseconds. Keep the recorded fractional remainder
+// separately for boundary decisions without changing the event timestamp.
+function subMillisecond(time: string): string {
+  const fraction = /\.(\d+)(?:Z|[+-]\d{2}:?\d{2})$/i.exec(time)?.[1] ?? '';
+  return fraction.slice(3).replace(/0+$/, '');
 }
 
 function toNumber(value: unknown): number | null {
@@ -346,7 +354,7 @@ union(tables: [prior, changes])
 // Most recent positively compatible cooling; undefined when a newer action's
 // mode cannot be established, null when no mode-compatible cooling was confirmed.
 function lastCompatibleCooling(rows: Record<string, string>[], start: number, end: number): number | null | undefined {
-  const changes = new Map<number, { modes: Set<string>; cooling: boolean }>();
+  const changes = new Map<number, { modes: Set<string>; firstMode: string | null; cooling: string[] }>();
   const prior = start - PRIOR_STATE_DAYS * DAY_MS;
   let malformed = false;
   rows.forEach((row) => {
@@ -365,24 +373,34 @@ function lastCompatibleCooling(rows: Record<string, string>[], start: number, en
       malformed = true;
       return;
     }
-    if (!changes.has(t)) changes.set(t, { modes: new Set(), cooling: false });
+    if (!changes.has(t)) changes.set(t, { modes: new Set(), firstMode: null, cooling: [] });
     const change = changes.get(t)!;
-    if (field === 'state') change.modes.add(typeof value === 'string' ? value.trim().toLowerCase() : '');
-    else if (t >= start && value === 'cooling') change.cooling = true;
+    const fraction = subMillisecond(time);
+    if (field === 'state') {
+      change.modes.add(typeof value === 'string' ? value.trim().toLowerCase() : '');
+      if (change.firstMode === null || compareSubMillisecond(fraction, change.firstMode) < 0) change.firstMode = fraction;
+    } else if (t >= start && value === 'cooling') change.cooling.push(fraction);
   });
   if (malformed) return undefined;
   let mode: string | null = null;
   let latest: number | null = null;
   let uncertain = false;
   [...changes.entries()].sort(([a], [b]) => a - b).forEach(([t, change]) => {
-    if (change.modes.size > 0) mode = change.modes.size === 1 ? [...change.modes][0] : null;
-    if (!change.cooling) return;
-    if (/^(cool|heat_cool|auto)$/.test(mode ?? '')) {
-      latest = t;
-      uncertain = false;
-    } else if (!/^(heat|off|dry|fan_only)$/.test(mode ?? '')) {
-      uncertain = true;
-    }
+    const previous = mode;
+    const next = change.modes.size === 0 ? previous : change.modes.size === 1 ? [...change.modes][0] : null;
+    change.cooling.sort(compareSubMillisecond).forEach((fraction) => {
+      // Conflicting modes remain unknown for this millisecond. Otherwise an
+      // action preceding a mode change uses the previously recorded mode.
+      const current = change.modes.size > 1 ? null
+        : change.firstMode !== null && compareSubMillisecond(fraction, change.firstMode) >= 0 ? next : previous;
+      if (/^(cool|heat_cool|auto)$/.test(current ?? '')) {
+        latest = t;
+        uncertain = false;
+      } else if (!/^(heat|off|dry|fan_only)$/.test(current ?? '')) {
+        uncertain = true;
+      }
+    });
+    mode = next;
   });
   return uncertain ? undefined : latest;
 }
@@ -422,20 +440,23 @@ export function parseStates(
   entities: StateEntities,
   unit: string | null | undefined,
 ): ParsedStates {
-  const climate = new Map<number, Map<string, string | null>>();
-  const comfort = new Map<number, ComfortSample>();
-  const occupancy = new Map<string, Map<number, boolean | null>>();
+  const climate = new Map<number, Map<string, { value: string | null; first: string; last: string }>>();
+  const comfort = new Map<number, { setting: string | null; ambiguous: boolean; first: string }>();
+  const occupancy = new Map<string, Map<number, { occupied: boolean | null; afterMillisecond: boolean }>>();
   const reportedInvalidations: number[] = [];
   const assumedUnit = knownUnit(unit ?? undefined);
   let unitConflict = false;
   rows.forEach((row) => {
     /* eslint-disable no-underscore-dangle */
-    const t = Date.parse(row._time);
+    const time = row._time;
+    const t = Date.parse(time);
     const field = row._field;
     const value = row._value === undefined || row._value === null ? '' : String(row._value);
     const measurement = row._measurement;
     /* eslint-enable no-underscore-dangle */
     if (!Number.isFinite(t)) return;
+    const fraction = subMillisecond(time);
+    const afterMillisecond = fraction !== '';
     if (row.domain === 'climate' && row.entity_id === entities.climate) {
       const recorded = reportedRowUnit({
         _measurement: measurement,
@@ -452,13 +473,23 @@ export function parseStates(
       const fields = climate.get(t)!;
       const key = field.replace(/_str$/, '');
       const previous = fields.get(key);
-      if (!fields.has(key)) fields.set(key, value);
-      else if (previous === null || previous === undefined || !sameClimateValue(key, previous, value)) fields.set(key, null);
+      if (!previous) fields.set(key, { value, first: fraction, last: fraction });
+      else {
+        if (compareSubMillisecond(fraction, previous.first) < 0) previous.first = fraction;
+        if (compareSubMillisecond(fraction, previous.last) > 0) previous.last = fraction;
+        if (previous.value === null || !sameClimateValue(key, previous.value, value)) previous.value = null;
+      }
     } else if (row.domain === 'select' && row.entity_id === entities.comfort) {
       const setting = unknownState(value) ? null : value;
       const previous = comfort.get(t);
-      if (!previous) comfort.set(t, { t, setting });
-      else if (previous.ambiguous || previous.setting !== setting) comfort.set(t, { t, setting: null, ambiguous: true });
+      if (!previous) comfort.set(t, { setting, ambiguous: false, first: fraction });
+      else {
+        if (compareSubMillisecond(fraction, previous.first) < 0) previous.first = fraction;
+        if (previous.ambiguous || previous.setting !== setting) {
+          previous.setting = null;
+          previous.ambiguous = true;
+        }
+      }
     } else if (row.domain === 'binary_sensor' && entities.occupancy.includes(row.entity_id)) {
       // Home Assistant writes on/off as `value` 1/0 and anything else (e.g.
       // unavailable) as a `state` string.
@@ -468,43 +499,66 @@ export function parseStates(
       else if (value === 'on' || value === 'off') occupied = value === 'on';
       if (!occupancy.has(row.entity_id)) occupancy.set(row.entity_id, new Map());
       const values = occupancy.get(row.entity_id)!;
-      if (!values.has(t)) values.set(t, occupied);
-      else if (values.get(t) !== occupied) values.set(t, null);
+      const previous = values.get(t);
+      if (!previous) values.set(t, { occupied, afterMillisecond });
+      else {
+        previous.afterMillisecond &&= afterMillisecond;
+        if (previous.occupied !== occupied) previous.occupied = null;
+      }
     }
   });
   let mode: string | null = null;
   let action: string | null = null;
   let preset: string | null = null;
   let setpoints = new Map<string, number | null>();
+  let setpointFractions = new Map<string, string>();
   let setpointObservedAt: number | null = null;
   const hvac = [...climate.keys()].sort((a, b) => a - b).map((t): HvacSample => {
     const fields = climate.get(t)!;
+    const subMillisecondFields = Object.fromEntries([...fields]
+      .filter(([, field]) => field.first !== '').map(([field, observed]) => [field, observed.first]));
+    const previousMode = mode;
+    const modeField = fields.get('state');
     if (fields.has('state')) {
-      const nextMode = fields.get('state') ?? null;
+      const nextMode = modeField?.value ?? null;
       // A single-temperature target observed in one mode is not evidence of
       // the target in another mode until that target is reported again.
       if (nextMode !== mode) {
         setpoints = new Map();
+        setpointFractions = new Map();
         setpointObservedAt = null;
       }
       mode = nextMode;
     }
+    const modeChanged = modeField !== undefined && mode !== previousMode;
+    const beforeModeChange = (field: { last: string }) => modeChanged
+      && compareSubMillisecond(field.last, modeField!.first) < 0;
     // An unknown/unavailable action isn't a reported action: no heating start
     // or satisfaction is read from (or into) it.
     if (fields.has('hvac_action')) {
-      const value = fields.get('hvac_action') ?? '';
+      const actionField = fields.get('hvac_action')!;
+      const value = actionField.value ?? '';
       action = unknownState(value) ? null : value;
+      if (beforeModeChange(actionField)) {
+        action = previousMode && !unknownState(previousMode) ? compatibleHvacAction(previousMode, action) : null;
+      }
     }
     action = compatibleHvacAction(mode, action);
     if (fields.has('preset_mode')) {
-      const value = fields.get('preset_mode') ?? '';
-      preset = value === 'none' || unknownState(value) ? null : value;
+      const presetField = fields.get('preset_mode')!;
+      const value = presetField.value ?? '';
+      // Presets recorded during a climate outage do not survive its recovery.
+      const beforeRecovery = beforeModeChange(presetField) && (!previousMode || unknownState(previousMode));
+      preset = beforeRecovery || value === 'none' || unknownState(value) ? null : value;
     }
     if (SETPOINT_FIELDS.some((f) => fields.has(f))) {
-      setpoints = new Map(SETPOINT_FIELDS.filter((f) => fields.has(f)).map((f) => [
-        f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unitConflict ? null : unit)),
+      // A target reported only before a mode change belongs to the old mode.
+      const current = SETPOINT_FIELDS.filter((f) => fields.has(f) && !beforeModeChange(fields.get(f)!));
+      setpoints = new Map(current.map((f) => [
+        f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)?.value), unitConflict ? null : unit)),
       ]));
-      setpointObservedAt = t;
+      setpointFractions = new Map(current.map((f) => [f, fields.get(f)!.last]));
+      setpointObservedAt = current.length > 0 ? t : null;
     }
     if (mode === null || mode === 'unavailable' || mode === 'unknown') {
       // An outage clears what was carried: after it, the action, preset and
@@ -512,31 +566,41 @@ export function parseStates(
       action = null;
       preset = null;
       setpoints = new Map();
+      setpointFractions = new Map();
       setpointObservedAt = null;
       return {
         t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
+        ...(Object.keys(subMillisecondFields).length > 0 ? { subMillisecondFields } : {}),
       };
     }
     const temperature = setpoints.get('temperature') ?? null;
-    const setpoint = /^(heat_cool|auto)$/i.test(mode)
-      ? setpoints.get('target_temp_low') ?? null
-      : setpoints.has('temperature') ? temperature : setpoints.get('target_temp_low') ?? null;
+    const targetField = /^(heat_cool|auto)$/i.test(mode) || !setpoints.has('temperature') ? 'target_temp_low' : 'temperature';
+    const setpoint = setpoints.get(targetField) ?? null;
+    const setpointFraction = setpointFractions.get(targetField);
     return {
       t,
+      ...(Object.keys(subMillisecondFields).length > 0 ? { subMillisecondFields } : {}),
       gap: false,
       hvacMode: mode,
       hvacAction: action,
       presetMode: preset,
       setpoint,
       ...(setpoint !== null && setpointObservedAt !== null ? { setpointObservedAt } : {}),
+      ...(setpoint !== null && setpointFraction ? { setpointObservedSubMillisecond: setpointFraction } : {}),
       coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
     };
   });
   const byTime = (a: { t: number }, b: { t: number }) => a.t - b.t;
   const occupancyHistory = new Map([...occupancy].map(([id, values]) => [
-    id, [...values].map(([t, occupied]): OccupancySample => ({ t, occupied })).sort(byTime),
+    id, [...values].map(([t, sample]): OccupancySample => ({
+      t, occupied: sample.occupied, ...(sample.afterMillisecond ? { afterMillisecond: true } : {}),
+    })).sort(byTime),
   ]));
-  const comfortHistory = [...comfort.values()].sort(byTime);
+  const comfortHistory = [...comfort].map(([t, sample]): ComfortSample => ({
+    t, setting: sample.setting,
+    ...(sample.ambiguous ? { ambiguous: true } : {}),
+    ...(sample.first ? { subMillisecond: sample.first } : {}),
+  })).sort(byTime);
   return {
     hvac: hvac.length > 0 ? hvac : null,
     comfort: comfortHistory.length > 0 ? comfortHistory : null,

@@ -105,6 +105,8 @@ export interface OccupancySample {
   t: number;
   // null: unavailable/unknown, so occupancy isn't known until the next value.
   occupied: boolean | null;
+  // The change was observed strictly after t, within the same millisecond.
+  afterMillisecond?: boolean;
 }
 
 // The thermostat's comfort setting (`select.<thermostat>_current_mode`).
@@ -114,6 +116,8 @@ export interface ComfortSample {
   // Conflicting select values at the same timestamp cannot use the preset
   // as a substitute until a later unambiguous select observation.
   ambiguous?: boolean;
+  // Recorded digits after the millisecond, with trailing zeroes removed.
+  subMillisecond?: string;
 }
 
 export interface SensorSeriesInput {
@@ -157,6 +161,9 @@ export type Participation = Record<ComfortSetting, boolean | null>;
 
 export interface HvacSample {
   t: number;
+  // Recorded digits after the millisecond for each field's earliest value.
+  // Omitted by callers with millisecond-precision history.
+  subMillisecondFields?: Record<string, string>;
   // History was unavailable/unknown: a discontinuity, not a state.
   gap: boolean;
   // The entity state (heat, cool, heat_cool, auto, off, …).
@@ -171,6 +178,8 @@ export interface HvacSample {
   // When the carried set point was last reported. Direct callers may omit
   // this when each sample is itself a complete snapshot.
   setpointObservedAt?: number;
+  // Fractional remainder of the last observation of this heating target.
+  setpointObservedSubMillisecond?: string;
   // Cooling set point in °C (`temperature` in cool mode, else
   // `target_temp_high`); absent/null when unknown.
   coolSetpoint?: number | null;
@@ -452,6 +461,15 @@ function firstIndexAfter<T>(sorted: T[], t: number, key: (item: T) => number, st
 const timeOf = (item: { t: number }) => item.t;
 const itself = (n: number) => n;
 
+// Compare the recorded decimal remainders without rounding or inventing event
+// times. Empty means an exact millisecond.
+export function compareSubMillisecond(a: string, b: string): number {
+  const length = Math.max(a.length, b.length);
+  const first = a.padEnd(length, '0');
+  const second = b.padEnd(length, '0');
+  return first < second ? -1 : first > second ? 1 : 0;
+}
+
 // First of the time-sorted items with from < t <= limit matching `match`.
 function findAfter<T extends { t: number }>(
   sorted: T[],
@@ -640,7 +658,7 @@ function wakeEvidenceKnownThroughout(samples: HvacSample[], from: number, to: nu
 interface ReferenceBarrier {
   t: number;
   until: number;
-  // An unavailable attribute at exactly the bucket start has ambiguous order.
+  // An invalidation at the boundary, or recovery after it, cannot anchor it.
   strict: boolean;
 }
 
@@ -662,7 +680,11 @@ function referenceEvidence(reference: ReportedTemperatureInput, samples: HvacSam
   samples.forEach((sample) => {
     if (sample.gap && gapStart === null) gapStart = sample.t;
     else if (!sample.gap && gapStart !== null) {
-      barriers.push({ t: gapStart, until: sample.t, strict: sample.t === gapStart });
+      barriers.push({
+        t: gapStart,
+        until: sample.t,
+        strict: sample.t === gapStart || sample.subMillisecondFields?.state !== undefined,
+      });
       gapStart = null;
     }
   });
@@ -886,6 +908,7 @@ function overshootIn(points: SensorSeriesInput['points'], window: OvershootWindo
 interface SettingChange {
   t: number;
   setting: ComfortSetting | null;
+  subMillisecond?: string;
 }
 
 interface Run {
@@ -920,27 +943,53 @@ function coolPointOf(sample: HvacSample): number | null {
 // preset isn't carried past it.
 function settingTimeline(comfort: ComfortSample[] | null | undefined, samples: HvacSample[]): SettingChange[] {
   const presets = samples
-    .map((s) => ({ t: s.t, comfort: false, setting: s.gap ? null : normalizeSetting(s.presetMode), ambiguous: false }));
+    .map((s) => ({
+      t: s.t, comfort: false, setting: s.gap ? null : normalizeSetting(s.presetMode), ambiguous: false,
+      subMillisecond: (s.gap ? s.subMillisecondFields?.state : s.subMillisecondFields?.preset_mode) ?? '',
+    }));
   const known = hasComfortEvidence(comfort);
   const events = known
     ? [...comfort!.map((c) => ({
       t: c.t, comfort: true, setting: normalizeSetting(c.setting), ambiguous: c.ambiguous === true,
+      subMillisecond: c.subMillisecond ?? '',
     })), ...presets]
       .sort((a, b) => a.t - b.t)
     : presets;
   let select: ComfortSetting | null = null;
   let selectAmbiguous = false;
   let preset: ComfortSetting | null = null;
+  let beforeSelect: ComfortSetting | null = null;
+  let beforeAmbiguous = false;
+  let beforePreset: ComfortSetting | null = null;
+  let selectFraction = '';
+  let presetFraction = '';
   const changes: SettingChange[] = [];
   events.forEach((e, i) => {
+    if (i === 0 || events[i - 1].t !== e.t) {
+      beforeSelect = select;
+      beforeAmbiguous = selectAmbiguous;
+      beforePreset = preset;
+      selectFraction = '';
+      presetFraction = '';
+    }
     if (e.comfort) {
       select = e.setting;
       selectAmbiguous = e.ambiguous;
-    } else preset = e.setting;
+      selectFraction = e.subMillisecond;
+    } else {
+      preset = e.setting;
+      presetFraction = e.subMillisecond;
+    }
     // Settle all events at one time before recording the setting in force.
     if (events[i + 1]?.t === e.t) return;
     const setting = selectAmbiguous ? null : select ?? preset;
-    if (changes.length === 0 || changes[changes.length - 1].setting !== setting) changes.push({ t: e.t, setting });
+    const withoutSelect = beforeAmbiguous ? null : beforeSelect ?? preset;
+    const withoutPreset = selectAmbiguous ? null : select ?? beforePreset;
+    let subMillisecond = withoutSelect !== setting ? selectFraction : '';
+    if (withoutPreset !== setting && compareSubMillisecond(presetFraction, subMillisecond) > 0) subMillisecond = presetFraction;
+    if (changes.length === 0 || changes[changes.length - 1].setting !== setting) {
+      changes.push({ t: e.t, setting, ...(subMillisecond ? { subMillisecond } : {}) });
+    }
   });
   return changes.some((c) => c.setting !== null) ? changes : [];
 }
@@ -951,7 +1000,10 @@ function settingAt(timeline: SettingChange[], t: number): ComfortSetting | null 
 }
 
 function settingDuring(timeline: SettingChange[], window: Run): ComfortSetting | null {
-  const setting = settingAt(timeline, window.from);
+  const index = firstIndexAfter(timeline, window.from, timeOf, true) - 1;
+  const current = timeline[index];
+  if (current?.t === window.from && current.subMillisecond) return null;
+  const setting = current?.setting ?? null;
   const next = firstIndexAfter(timeline, window.from, timeOf, true);
   return setting !== null && (timeline[next]?.t ?? Number.POSITIVE_INFINITY) >= window.to ? setting : null;
 }
@@ -1125,9 +1177,12 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
         // A synthesized comfort transition or an unrelated climate update
         // doesn't make a carried target a fresh observation in this Sleep.
         const sleepTargetAt = before?.setpointObservedAt ?? beforeRaw?.t ?? Number.NEGATIVE_INFINITY;
+        const sleepStart = timeline[i - 1];
+        const targetInSleep = sleepTargetAt > sleepStart.t || (sleepTargetAt === sleepStart.t
+          && compareSubMillisecond(before?.setpointObservedSubMillisecond ?? '', sleepStart.subMillisecond ?? '') >= 0);
         if (sleepTarget !== null && homeTarget !== null && h + BUCKET_MS < next
-          && beforeTime >= timeline[i - 1].t && settingDuring(timeline, { from: beforeTime, to: h }) === 'sleep'
-          && sleepTargetAt >= timeline[i - 1].t
+          && beforeTime >= sleepStart.t && settingDuring(timeline, { from: beforeTime, to: h }) === 'sleep'
+          && targetInSleep
           && heatingTargetModeDuring(samples, beforeTime, h + BUCKET_MS)) {
           setback = homeTarget - sleepTarget;
         }
@@ -1194,6 +1249,10 @@ function occupiedAt(occupancy: OccupancySample[] | undefined, t: number): boolea
 function occupiedDuring(occupancy: OccupancySample[] | undefined, window: Run): boolean | null {
   const initial = occupiedAt(occupancy, window.from);
   if (initial === null || !occupancy) return null;
+  const index = firstIndexAfter(occupancy, window.from, timeOf, true) - 1;
+  const current = occupancy[index];
+  if (current.t === window.from && current.afterMillisecond
+    && (index === 0 || occupancy[index - 1].occupied !== initial)) return null;
   for (let i = firstIndexAfter(occupancy, window.from, timeOf, true);
     i < occupancy.length && occupancy[i].t < window.to; i += 1) {
     if (occupancy[i].occupied !== initial) return null;
@@ -2966,6 +3025,35 @@ interface Dataset {
   points: Map<string, SensorSeriesInput['points']>;
 }
 
+// A change observed just after a bucket start cannot describe that entire
+// bucket. Leave the timestamp and subsequent history intact; discard only the
+// overlapping source bucket. Repeated observations of an unchanged field do
+// not create an interruption.
+function fractionalBoundarySources(samples: HvacSample[], timeline: SettingChange[]): Set<number> {
+  const boundaries = new Set<number>();
+  samples.forEach((sample, index) => {
+    if (sample.t % BUCKET_MS !== 0 || !sample.subMillisecondFields) return;
+    const previous = samples[index - 1];
+    const changed = Object.keys(sample.subMillisecondFields).some((field) => {
+      if (field === 'state') return !previous || previous.gap !== sample.gap || previous.hvacMode !== sample.hvacMode;
+      if (field === 'hvac_action') return !previous || previous.hvacAction !== sample.hvacAction;
+      if (field === 'preset_mode') return !previous || previous.presetMode !== sample.presetMode;
+      if (/^(temperature|target_temp_low|target_temp_high)$/.test(field)) {
+        // A mode change clears targets, even if a later target is numerically
+        // equal to the one from the preceding mode.
+        return !previous || previous.hvacMode !== sample.hvacMode
+          || previous.setpoint !== sample.setpoint || previous.coolSetpoint !== sample.coolSetpoint;
+      }
+      return false;
+    });
+    if (changed) boundaries.add(sample.t);
+  });
+  timeline.forEach((change) => {
+    if (change.subMillisecond && change.t % BUCKET_MS === 0) boundaries.add(change.t);
+  });
+  return boundaries;
+}
+
 function dataset(
   sensors: SensorSeriesInput[],
   hvac: HvacSample[] | null | undefined,
@@ -2991,11 +3079,14 @@ function dataset(
   const physicalOccupancy = thermostatOccupancy === undefined && primary.length === 1 ? primary[0].occupancy : thermostatOccupancy;
   const reported = reportedTemperature?.points.length ? reportedTemperature : null;
   const reference = reported ? referenceEvidence(reported, raw) : null;
+  const boundaries = fractionalBoundarySources(raw, timeline);
+  const safePoints = (points: SensorSeriesInput['points']) => points.filter((point) => !boundaries.has(point.t));
+  const safeSensors = sensors.map((sensor) => ({ ...sensor, points: safePoints(sensor.points) }));
   let referenceId = '__climate_reported_temperature__';
   while (sensors.some((s) => s.id === referenceId)) referenceId += '_';
-  const grid = alignSensors(reported ? [...sensors, {
-    id: referenceId, name: '', isThermostat: true, points: reported.points,
-  }] : sensors);
+  const grid = alignSensors(reported ? [...safeSensors, {
+    id: referenceId, name: '', isThermostat: true, points: safePoints(reported.points),
+  }] : safeSensors);
   if (reference) {
     const values = grid.values.get(referenceId)!;
     const sources = grid.sources.get(referenceId)!;
@@ -3025,7 +3116,7 @@ function dataset(
       estimated: null,
     },
     grid,
-    points: new Map(sensors.map((s) => [s.id, cleanPoints(s.points)])),
+    points: new Map(safeSensors.map((s) => [s.id, cleanPoints(s.points)])),
   };
 }
 
@@ -3079,7 +3170,10 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   ].sort((a, b) => a.t - b.t);
   const events = [
     ...observed,
-    ...inferMorningEvents(input.sensors, input.timeZone, samples, observed).filter(inWindow),
+    ...inferMorningEvents(
+      input.sensors.map((sensor) => ({ ...sensor, points: heat.points.get(sensor.id)! })),
+      input.timeZone, samples, observed,
+    ).filter(inWindow),
   ].sort((a, b) => a.t - b.t);
   const contexts = heatingContexts(heat.grid, model, samples, events, wakeEvents);
   const wakeWindows = wakes.map(wakeWindow);

@@ -332,9 +332,33 @@ describe('thermostat, comfort and occupancy history', () => {
       t: Date.parse(first), gap: false, hvacMode: 'heat', hvacAction: 'heating', setpoint: 21, presetMode: 'home',
     });
     expect(detectHvacEvents(parsed.hvac!, 'UTC')).toEqual([{ type: 'morning', t: Date.parse(first), inferred: false }]);
-    expect(parsed.comfort).toEqual([{ t: Date.parse(first), setting: 'home' }]);
-    expect(parsed.occupancy.get('bedroom_occupancy')).toEqual([{ t: Date.parse(first), occupied: true }]);
+    expect(parsed.comfort).toEqual([{ t: Date.parse(first), setting: 'home', subMillisecond: '1' }]);
+    expect(parsed.occupancy.get('bedroom_occupancy'))
+      .toEqual([{ t: Date.parse(first), occupied: true, afterMillisecond: true }]);
   });
+
+  it.each([
+    ['heat', 'cool', 'cooling'],
+    ['cool', 'heat', 'heating'],
+  ])('review 202e893: a %s → %s mode change does not apply an earlier action or target retroactively',
+    (previous, next, action) => {
+      const first = '2026-01-19T12:00:00.000100Z';
+      const middle = '2026-01-19T12:00:00.000500Z';
+      const last = '2026-01-19T12:00:00.000900Z';
+      const read = (modeTime: string, valueTime: string, duplicate = false) => parseStates([
+        climateRow('2026-01-19T11:00:00Z', 'state', previous),
+        climateRow('2026-01-19T11:00:00Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T11:00:00Z', 'temperature', '20'),
+        climateRow(modeTime, 'state', next),
+        climateRow(valueTime, 'hvac_action_str', action),
+        climateRow(valueTime, 'temperature', '23'),
+        ...(duplicate ? [climateRow(last, 'hvac_action_str', action), climateRow(last, 'temperature', '23')] : []),
+      ], entities, '°C').hvac![1];
+      expect(read(last, first)).toMatchObject({ hvacMode: next, hvacAction: null, setpoint: null });
+      expect(read(first, last)).toMatchObject({ hvacMode: next, hvacAction: action, setpoint: 23 });
+      expect(read(middle, middle)).toMatchObject({ hvacMode: next, hvacAction: action, setpoint: 23 });
+      expect(read(middle, first, true)).toMatchObject({ hvacMode: next, hvacAction: action, setpoint: 23 });
+    });
 
   const collisionOffset = (extra: Rows, followMe: boolean, sourceHour = 6.25) => {
     const start = Date.parse('2026-01-19T00:00:00Z');
@@ -589,6 +613,75 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(carried).toBeDefined();
     expect(carried.detail).not.toMatch(/Sleep set point|smaller Sleep setback/);
     expect(run('20').detail).toContain('The Sleep set point averaged 1.0 °C below Home');
+  });
+
+  it('review 202e893: a target just before the recorded Sleep transition is not attributed to Sleep', () => {
+    const start = Date.parse('2026-01-05T00:00:00Z');
+    const hour = 60 * 60_000;
+    const days = 5;
+    const at = (day: number, h: number) => start + (day * 24 + h) * hour;
+    const time = (day: number, h: number) => new Date(at(day, h)).toISOString();
+    const micro = (day: number, h: number, fraction: string) => time(day, h).replace('.000Z', `.${fraction}Z`);
+    const sensors = ['bedroom_temperature', 'living_temperature', 'kitchen_temperature'].map((id) => ({
+      id,
+      name: id.replace('_temperature', ''),
+      isThermostat: false,
+      points: Array.from({ length: days * 24 * 4 }, (_, i) => ({
+        t: start + (i * hour) / 4,
+        v: (i % 96 >= 24 && i % 96 < 88 ? 21 : 17) + (id === 'bedroom_temperature' ? -1.5 : 0.5),
+      })),
+    }));
+    const end = new Date(at(days, 0));
+    const select = (timestamp: string, setting: string) => ({
+      _time: timestamp, _field: 'state', _value: setting, domain: 'select', entity_id: 'home_current_mode',
+    });
+    const run = (
+      targetFraction: string, sleepFraction: string, duplicate: boolean, source: 'select' | 'preset', dual = false,
+    ) => {
+      const setting = (timestamp: string, value: string) => (
+        source === 'select' ? select(timestamp, value) : climateRow(timestamp, 'preset_mode_str', value)
+      );
+      const target = dual ? 'target_temp_low' : 'temperature';
+      const rows = Array.from({ length: days }, (_, day) => [
+        climateRow(time(day, 0), 'state', dual ? 'heat_cool' : 'heat'),
+        climateRow(time(day, 0), 'hvac_action_str', 'idle'),
+        climateRow(time(day, 0), target, '20'),
+        setting(time(day, 0), 'sleep'),
+        setting(time(day, 4.75), 'away'),
+        climateRow(micro(day, 5, targetFraction), target, '17'),
+        ...(duplicate ? [climateRow(micro(day, 5, '000900'), target, '17')] : []),
+        ...(dual ? [climateRow(micro(day, 5, '000900'), 'target_temp_high', '24')] : []),
+        setting(micro(day, 5, sleepFraction), 'sleep'),
+        climateRow(time(day, 5.5), 'hvac_action_str', 'heating'),
+        climateRow(time(day, 5.5), target, '21'),
+        setting(time(day, 6), 'home'),
+        climateRow(time(day, 7), 'hvac_action_str', 'idle'),
+        setting(time(day, 22), 'sleep'),
+      ]).flat();
+      const parsed = parseStates(rows, entities, '°C');
+      const all = sensors.map((sensor) => sensor.id);
+      return analyzePlacement({
+        sensors, primaryThermostatId: null, hvac: parsed.hvac, comfort: parsed.comfort,
+        participation: {
+          home: all, sleep: all, away: null, followMe: false, thermostat: { home: false, sleep: false, away: false },
+        },
+        start: new Date(start), end, windowDays: days, timeZone: 'UTC', generatedAt: end,
+      }).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+    };
+    for (const source of ['select', 'preset'] as const) {
+      for (const fraction of ['000000', '000100']) {
+        const earlier = run(fraction, '000500', false, source);
+        expect(earlier).toBeDefined();
+        expect(earlier.detail).not.toMatch(/Sleep set point|smaller Sleep setback/);
+      }
+      for (const fraction of ['000500', '000900']) {
+        expect(run(fraction, '000500', false, source).detail).toContain('The Sleep set point averaged 4.0 °C below Home');
+      }
+      expect(run('000100', '000000', false, source).detail).toContain('The Sleep set point averaged 4.0 °C below Home');
+      expect(run('000100', '000500', true, source).detail).toContain('The Sleep set point averaged 4.0 °C below Home');
+      expect(run('000100', '000500', false, source, true).detail).not.toMatch(/Sleep set point|smaller Sleep setback/);
+      expect(run('000900', '000500', false, source, true).detail).toContain('The Sleep set point averaged 4.0 °C below Home');
+    }
   });
 
   it.each(['heat_cool', 'auto'])(
@@ -1063,6 +1156,532 @@ describe('ClimatePlacementService', () => {
     fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await fixture.service.getInsights('7');
     expect(fixture.calls('reported')).toHaveLength(2);
+  });
+
+  it.each([
+    ['just before', '2026-01-19T00:14:59.999999Z', 3, false],
+    ['exactly at', '2026-01-19T00:15:00.000000Z', 3, false],
+    ['exactly at with a later identical duplicate', '2026-01-19T00:15:00.000000Z', 3, true],
+    ['one nanosecond after', '2026-01-19T00:15:00.000000001Z', null, false],
+    ['half a millisecond after', '2026-01-19T00:15:00.000500Z', null, false],
+    ['half a millisecond after with an offset', '2026-01-19T01:15:00.000500+01:00', null, false],
+    ['one millisecond after', '2026-01-19T00:15:00.001000Z', null, false],
+  ])('review 202e893: a climate recovery %s the source boundary only anchors a fully gap-free bucket',
+    async (_description, recovery, expected, duplicate) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      fixture.rows.states = [
+        climateRow('2026-01-19T00:00:00Z', 'state', 'heat'),
+        climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T00:01:00.000100Z', 'state', 'unavailable'),
+        climateRow('2026-01-19T00:01:00.000900Z', 'state', 'heat'),
+        climateRow(recovery, 'state', 'heat'),
+        climateRow(recovery, 'hvac_action_str', 'idle'),
+        ...(duplicate ? [climateRow('2026-01-19T00:15:00.000500Z', 'state', 'heat')] : []),
+        { _time: '2026-01-19T00:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      ];
+      // These are already 15-minute aggregate starts, not raw numeric readings.
+      fixture.rows.reported = [reportedRow('2026-01-19T00:15:00Z'), reportedRow('2026-01-19T00:30:00Z')];
+      fixture.rows.temperatures = [
+        { _time: '2026-01-19T00:30:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+        { _time: '2026-01-19T00:30:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      ];
+      const result = await fixture.service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature', followMe: 'false', thermostatHome: 'true',
+      });
+      expect(result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home).toBe(expected);
+      if (expected === null) expect(result.recommendations.some((rec) => rec.sensorId === 'office_temperature')).toBe(false);
+    });
+
+  it('review 202e893: a later complete reference bucket remains usable after fractional recovery', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.states = [
+      climateRow('2026-01-19T00:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T00:01:00.000100Z', 'state', 'unavailable'),
+      climateRow('2026-01-19T00:01:00.000900Z', 'state', 'heat'),
+      climateRow('2026-01-19T00:15:00.000500Z', 'state', 'heat'),
+      climateRow('2026-01-19T00:15:00.000500Z', 'hvac_action_str', 'idle'),
+      { _time: '2026-01-19T00:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+    ];
+    fixture.rows.reported = [
+      reportedRow('2026-01-19T00:15:00Z'), reportedRow('2026-01-19T00:30:00Z'), reportedRow('2026-01-19T00:45:00Z'),
+    ];
+    fixture.rows.temperatures = [
+      { _time: '2026-01-19T00:30:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T00:45:00Z', _value: '22', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T00:30:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      { _time: '2026-01-19T00:45:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+    ];
+    const result = await fixture.service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', followMe: 'false', thermostatHome: 'true',
+    });
+    expect(result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home).toBe(2);
+  });
+
+  it('review 202e893: a preset reported before fractional climate recovery is not carried through the outage', async () => {
+    const run = async (presetTime: string) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      fixture.rows.states = [
+        climateRow('2026-01-19T06:00:00Z', 'state', 'unavailable'),
+        climateRow('2026-01-19T06:15:00.000500Z', 'state', 'heat'),
+        climateRow('2026-01-19T06:15:00.000500Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T06:15:00.000500Z', 'temperature', '21'),
+        climateRow(presetTime, 'preset_mode_str', 'home'),
+      ];
+      fixture.rows.reported = [reportedRow('2026-01-19T06:30:00Z'), reportedRow('2026-01-19T06:45:00Z')];
+      fixture.rows.temperatures = [
+        { _time: '2026-01-19T06:45:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+        { _time: '2026-01-19T06:45:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      ];
+      const result = await fixture.service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'false',
+      });
+      return result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home;
+    };
+    expect(await run('2026-01-19T06:15:00.000100Z')).toBeNull();
+    expect(await run('2026-01-19T06:15:00.000500Z')).toBe(3);
+    expect(await run('2026-01-19T06:15:00.000900Z')).toBe(3);
+  });
+
+  it.each(['action', 'preset', 'comfort', 'occupancy'] as const)(
+    'review 202e893: a %s recovery after a source boundary cannot be applied retroactively',
+    async (field) => {
+      const run = async (recovery: string, unchanged = false) => {
+        const fixture = makeDeps();
+        useClimateReference(fixture);
+        const start = '2026-01-19T06:00:00Z';
+        const before = '2026-01-19T06:14:00Z';
+        const select = (time: string, value: string) => ({
+          _time: time, _field: 'state', _value: value, domain: 'select', entity_id: 'home_current_mode',
+        });
+        const occupancy = (time: string, id: string, name: string, value: string) => ({
+          _time: time, _field: name, _value: value, domain: 'binary_sensor', entity_id: id,
+        });
+        const states: Rows = [
+          climateRow(start, 'state', 'heat'), climateRow(start, 'hvac_action_str', 'idle'),
+          climateRow(start, 'temperature', '21'), climateRow(start, 'preset_mode_str', 'home'),
+        ];
+        if (field !== 'preset') states.push(select(start, 'home'));
+        if (field === 'action') {
+          if (!unchanged) states.push(climateRow(before, 'hvac_action_str', 'unknown'));
+          states.push(climateRow(recovery, 'hvac_action_str', 'idle'));
+        } else if (field === 'preset') {
+          if (!unchanged) states.push(climateRow(before, 'preset_mode_str', 'sleep'));
+          states.push(climateRow(recovery, 'preset_mode_str', 'home'));
+        } else if (field === 'comfort') {
+          if (!unchanged) states.push(select(before, 'sleep'));
+          states.push(select(recovery, 'home'));
+        } else {
+          fixture.deps.indoorClimate.placementDiscovery.mockReturnValue({
+            climateEntityId: 'climate.home', thermostatTemperatureEntityId: null, thermostatOccupancyEntityId: null,
+            occupancyByTemperature: new Map([
+              ['sensor.office_temperature', 'binary_sensor.office_occupancy'],
+              ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+            ]),
+            unclassifiedTemperatureIds: new Set<string>(),
+          });
+          states.push(
+            occupancy(start, 'office_occupancy', 'value', '1'),
+            occupancy(start, 'kitchen_occupancy', 'value', '1'),
+            ...(!unchanged ? [occupancy(before, 'office_occupancy', 'state', 'unavailable')] : []),
+            occupancy(recovery, 'office_occupancy', 'value', '1'),
+          );
+          fixture.rows.reported = [];
+        }
+        fixture.rows.states = states;
+        if (field !== 'occupancy') fixture.rows.reported = [reportedRow('2026-01-19T06:15:00Z')];
+        fixture.rows.temperatures = [
+          { _time: '2026-01-19T06:15:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+          { _time: '2026-01-19T06:15:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+        ];
+        const result = await fixture.service.getInsights('7', {
+          home: 'office_temperature,kitchen_temperature',
+          followMe: field === 'occupancy' ? 'true' : 'false',
+          thermostatHome: field === 'occupancy' ? 'false' : 'true',
+        });
+        return result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home;
+      };
+      const valid = field === 'occupancy' ? 1.5 : 3;
+      expect(await run('2026-01-19T06:14:59.999999Z')).toBe(valid);
+      expect(await run('2026-01-19T06:15:00.000000Z')).toBe(valid);
+      expect(await run('2026-01-19T06:15:00.000500Z')).toBeNull();
+      expect(await run('2026-01-19T06:15:00.000500Z', true)).toBe(valid);
+    },
+  );
+
+  it('review 202e893: a fractional duplicate does not invalidate a known source window', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.states = [
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T06:15:00.000000Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T06:15:00.000500Z', 'hvac_action_str', 'idle'),
+      { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+    ];
+    fixture.rows.reported = [reportedRow('2026-01-19T06:15:00Z')];
+    fixture.rows.temperatures = [
+      { _time: '2026-01-19T06:15:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T06:15:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+    ];
+    const result = await fixture.service.getInsights('7', { thermostatHome: 'true', followMe: 'false' });
+    expect(result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home).toBe(3);
+  });
+
+  it('review 202e893: fractional built-in occupancy recovery stays unknown only for the overlapping bucket', async () => {
+    const run = async (recovery: string, source: string) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      fixture.deps.indoorClimate.placementDiscovery.mockReturnValue({
+        climateEntityId: 'climate.home', thermostatTemperatureEntityId: null,
+        thermostatOccupancyEntityId: 'binary_sensor.home_occupancy',
+        occupancyByTemperature: new Map([
+          ['sensor.office_temperature', 'binary_sensor.office_occupancy'],
+          ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+        ]),
+        unclassifiedTemperatureIds: new Set<string>(),
+      });
+      const occupancy = (time: string, id: string, field: string, value: string) => ({
+        _time: time, _field: field, _value: value, domain: 'binary_sensor', entity_id: id,
+      });
+      fixture.rows.states = [
+        climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+        climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T06:00:00Z', 'temperature', '21'),
+        { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+        occupancy('2026-01-19T06:00:00Z', 'office_occupancy', 'value', '1'),
+        occupancy('2026-01-19T06:00:00Z', 'kitchen_occupancy', 'value', '1'),
+        occupancy('2026-01-19T06:00:00Z', 'home_occupancy', 'state', 'unavailable'),
+        occupancy(recovery, 'home_occupancy', 'value', '0'),
+      ];
+      fixture.rows.reported = [];
+      fixture.rows.temperatures = [
+        { _time: source, _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+        { _time: source, _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      ];
+      const result = await fixture.service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'true',
+      });
+      return result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home;
+    };
+    const source = '2026-01-19T06:15:00Z';
+    expect(await run('2026-01-19T06:14:59.999999Z', source)).toBe(1.5);
+    expect(await run('2026-01-19T06:15:00.000000Z', source)).toBe(1.5);
+    expect(await run('2026-01-19T06:15:00.000500Z', source)).toBeNull();
+    expect(await run('2026-01-19T06:15:00.000500Z', '2026-01-19T06:30:00Z')).toBe(1.5);
+  });
+
+  it('review 202e893: an ordinary fractional transition keeps later data and the healthy cache TTL', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.states = [
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T06:00:00Z', 'temperature', '21'),
+      climateRow('2026-01-19T06:15:00.000500Z', 'hvac_action_str', 'heating'),
+      { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+    ];
+    fixture.rows.reported = [reportedRow('2026-01-19T06:15:00Z'), reportedRow('2026-01-19T06:30:00Z')];
+    fixture.rows.temperatures = [
+      { _time: '2026-01-19T06:15:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T06:30:00Z', _value: '22', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T06:15:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      { _time: '2026-01-19T06:30:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+    ];
+    const config = { home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'false' };
+    const result = await fixture.service.getInsights('7', config);
+    expect(result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home).toBe(2);
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7', config);
+    expect(fixture.calls('reported')).toHaveLength(1);
+    fixture.advance(PLACEMENT_CACHE_TTL_MS);
+    await fixture.service.getInsights('7', config);
+    expect(fixture.calls('reported')).toHaveLength(2);
+  });
+
+  it('review 202e893: fractional wake recovery cannot create a reference-based wake tip', async () => {
+    const run = async (fraction: string) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      const start = Date.parse('2026-01-15T00:00:00Z');
+      const hour = 60 * 60_000;
+      const day = 24 * hour;
+      const iso = (t: number) => new Date(t).toISOString();
+      const micro = (t: number, part: string) => iso(t).replace('.000Z', `.${part}Z`);
+      const select = (t: number, setting: string) => ({
+        _time: iso(t), _field: 'state', _value: setting, domain: 'select', entity_id: 'home_current_mode',
+      });
+      const temperatures: Rows = [];
+      const reported: Rows = [];
+      const states: Rows = [];
+      for (let d = 0; d < 5; d += 1) {
+        const beginning = start + d * day;
+        const wake = beginning + 6 * hour;
+        const interruption = wake - 5 * 60_000;
+        states.push(
+          climateRow(iso(beginning), 'state', 'heat'), climateRow(iso(beginning), 'hvac_action_str', 'idle'),
+          climateRow(iso(beginning), 'temperature', '21'), select(beginning, 'sleep'),
+          climateRow(micro(interruption, '000100'), 'state', 'unavailable'),
+          climateRow(micro(interruption, '000900'), 'state', 'heat'),
+          climateRow(micro(wake, fraction), 'state', 'heat'),
+          climateRow(micro(wake, fraction), 'hvac_action_str', 'heating'),
+          climateRow(micro(wake, fraction), 'temperature', '21'),
+          select(wake, 'home'), climateRow(iso(wake + hour), 'hvac_action_str', 'idle'),
+          select(beginning + 22 * hour, 'sleep'),
+        );
+        reported.push(reportedRow(iso(wake), '21'), reportedRow(iso(wake + 15 * 60_000), '21'));
+        for (let t = wake; t < wake + 3 * hour; t += 15 * 60_000) {
+          const running = t < wake + hour;
+          [
+            ['office_temperature', running ? '18' : '21'],
+            ['kitchen_temperature', '23'],
+          ].forEach(([entityId, value]) => temperatures.push({
+            _time: iso(t), _value: value, _measurement: '°C', entity_id: entityId,
+          }));
+        }
+      }
+      fixture.rows.states = states;
+      fixture.rows.reported = reported;
+      fixture.rows.temperatures = temperatures;
+      return fixture.service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature', sleep: 'office_temperature,kitchen_temperature',
+        followMe: 'false', thermostatHome: 'true', thermostatSleep: 'true',
+      });
+    };
+    const exact = await run('000000');
+    expect(exact.recommendations.find((rec) => rec.id === 'wake-office')).toBeDefined();
+    const fractional = await run('000500');
+    expect(fractional.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.wake).toBeNull();
+    expect(fractional.recommendations.some((rec) => rec.id === 'wake-office')).toBe(false);
+  });
+
+  it('review 202e893: a fractional cooling anchor does not make partial buckets into cooling advice', async () => {
+    const run = async (position: 'before' | 'exact' | 'after', minutes = 15) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      const start = Date.parse('2026-01-16T00:00:00Z');
+      const hour = 60 * 60_000;
+      const day = 24 * hour;
+      const iso = (t: number) => new Date(t).toISOString();
+      const anchor = (t: number) => {
+        if (position === 'before') return iso(t - 1_000).replace('.000Z', '.999999Z');
+        if (position === 'after') return iso(t).replace('.000Z', '.000500Z');
+        return iso(t);
+      };
+      const temperatures: Rows = [];
+      const reported: Rows = [];
+      const states: Rows = [];
+      for (let d = 0; d < 4; d += 1) {
+        const beginning = start + d * day;
+        states.push(
+          climateRow(iso(beginning), 'state', 'cool'), climateRow(iso(beginning), 'hvac_action_str', 'idle'),
+          climateRow(iso(beginning), 'temperature', '24'),
+          { _time: iso(beginning), _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+        );
+        for (const h of [12, 14]) {
+          const beginningRun = beginning + h * hour;
+          states.push(
+            climateRow(anchor(beginningRun), 'hvac_action_str', 'cooling'),
+            climateRow(iso(beginningRun + minutes * 60_000), 'hvac_action_str', 'idle'),
+          );
+          for (let t = beginningRun; t < beginningRun + minutes * 60_000; t += 15 * 60_000) {
+            reported.push(reportedRow(iso(t), '20'));
+            [
+              ['office_temperature', '26'], ['kitchen_temperature', '20'],
+            ].forEach(([entityId, value]) => temperatures.push({
+              _time: iso(t), _value: value, _measurement: '°C', entity_id: entityId,
+            }));
+          }
+        }
+      }
+      fixture.rows.states = states;
+      fixture.rows.cooling = states.filter(({ domain, _field: field, _value: value }) =>
+        domain === 'climate' && (field === 'state' || value === 'cooling'));
+      fixture.rows.reported = reported;
+      fixture.rows.temperatures = temperatures;
+      return fixture.service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'false',
+      });
+    };
+    for (const position of ['before', 'exact'] as const) {
+      const result = await run(position);
+      expect(result.coverage.coolingEvents).toBe(8);
+      expect(result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.cooling).toBe(6);
+      expect(result.recommendations.find((rec) => rec.id === 'cooling-office')).toBeDefined();
+    }
+    const fractional = await run('after');
+    expect(fractional.coverage.coolingEvents).toBe(8);
+    expect(fractional.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.cooling).toBeNull();
+    expect(fractional.recommendations.some((rec) => rec.mode === 'cooling')).toBe(false);
+    const longer = await run('after', 60);
+    expect(longer.coverage.coolingEvents).toBe(8);
+    expect(longer.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.cooling).toBe(6);
+    expect(longer.recommendations.find((rec) => rec.id === 'cooling-office')!.detail).toContain('8 of 8 cooling runs');
+  });
+
+  it.each(['current', 'older'] as const)('review 202e893: a %s cooling run retains its later whole source bucket', async (window) => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    const date = window === 'current' ? '2026-01-19' : '2025-10-15';
+    const states = [
+      climateRow(`${date}T11:00:00Z`, 'state', 'cool'),
+      climateRow(`${date}T11:00:00Z`, 'hvac_action_str', 'idle'),
+      climateRow(`${date}T11:00:00Z`, 'temperature', '22'),
+      { _time: `${date}T11:00:00Z`, _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      climateRow(`${date}T12:00:00.000500Z`, 'hvac_action_str', 'cooling'),
+      climateRow(`${date}T12:30:00Z`, 'hvac_action_str', 'idle'),
+    ];
+    fixture.rows.cooling = [
+      climateRow(`${date}T11:00:00Z`, 'state', 'cool'),
+      climateRow(`${date}T12:00:00.000500Z`, 'hvac_action_str', 'cooling'),
+    ];
+    const reported = [
+      reportedRow(`${date}T12:00:00Z`), reportedRow(`${date}T12:15:00Z`),
+    ];
+    const temperatures = [
+      { _time: `${date}T12:00:00Z`, _value: '26', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: `${date}T12:15:00Z`, _value: '20', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: `${date}T12:00:00Z`, _value: '18', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      { _time: `${date}T12:15:00Z`, _value: '22', _measurement: '°C', entity_id: 'kitchen_temperature' },
+    ];
+    if (window === 'current') {
+      fixture.rows.states = states;
+      fixture.rows.reported = reported;
+      fixture.rows.temperatures = temperatures;
+    } else {
+      const currentQuery = fixture.deps.influxdb.query.getMockImplementation()!;
+      fixture.deps.influxdb.query.mockImplementation(async (flux: string) => {
+        if (!flux.includes('2025-10-08T14:00:00.000Z')) return currentQuery(flux);
+        if (queryKind(flux) === 'states') return states;
+        if (queryKind(flux) === 'reported') return reported;
+        if (queryKind(flux) === 'temperatures') return temperatures;
+        return [];
+      });
+    }
+    const result = await fixture.service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'false',
+    });
+    expect(result.coverage.coolingFrom).toBe(window === 'current' ? '2026-01-13T00:00:00.000Z' : '2025-10-08T14:00:00.000Z');
+    expect(result.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.cooling).toBe(0);
+    expect(result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.coolingUndershoot).toBe(0);
+  });
+
+  it('review 202e893: a fractional cooling target cannot be applied to the preceding bucket', async () => {
+    const run = async (target: string) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      fixture.rows.states = [
+        climateRow('2026-01-19T11:00:00Z', 'state', 'cool'),
+        climateRow('2026-01-19T11:00:00Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T11:59:00Z', 'temperature', 'unknown'),
+        climateRow(target, 'temperature', '22'),
+        climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+        climateRow('2026-01-19T12:15:00Z', 'hvac_action_str', 'idle'),
+        { _time: '2026-01-19T11:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      ];
+      fixture.rows.cooling = [
+        climateRow('2026-01-19T11:00:00Z', 'state', 'cool'),
+        climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+      ];
+      fixture.rows.reported = [reportedRow('2026-01-19T12:00:00Z')];
+      fixture.rows.temperatures = [
+        { _time: '2026-01-19T12:00:00Z', _value: '18', _measurement: '°C', entity_id: 'office_temperature' },
+        { _time: '2026-01-19T12:00:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+      ];
+      const result = await fixture.service.getInsights('7', { thermostatHome: 'true', followMe: 'false' });
+      return result.sensors.find((sensor) => sensor.id === 'office_temperature')!.coolingUndershoot;
+    };
+    expect(await run('2026-01-19T11:59:59.999999Z')).toBe(4);
+    expect(await run('2026-01-19T12:00:00.000000Z')).toBe(4);
+    expect(await run('2026-01-19T12:00:00.000500Z')).toBeNull();
+  });
+
+  it('review 202e893: a numerically unchanged target is not carried through a mode change', async () => {
+    const run = async (target: string) => {
+      const fixture = makeDeps();
+      useClimateReference(fixture);
+      fixture.rows.states = [
+        climateRow('2026-01-19T00:00:00Z', 'state', 'heat'),
+        climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'idle'),
+        climateRow('2026-01-19T00:00:00Z', 'temperature', '21'),
+        { _time: '2026-01-19T00:00:00Z', _field: 'state', _value: 'sleep', domain: 'select', entity_id: 'home_current_mode' },
+        climateRow('2026-01-19T05:30:00Z', 'hvac_action_str', 'heating'),
+        climateRow('2026-01-19T06:00:00Z', 'state', 'heat_cool'),
+        climateRow(target, 'target_temp_low', '21'),
+        { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+        climateRow('2026-01-19T07:00:00Z', 'hvac_action_str', 'idle'),
+      ];
+      const temperatures: Rows = [];
+      const reported: Rows = [];
+      for (let t = Date.parse('2026-01-19T06:00:00Z'); t < Date.parse('2026-01-19T08:00:00Z'); t += 15 * 60_000) {
+        const time = new Date(t).toISOString();
+        reported.push(reportedRow(time, '21'));
+        temperatures.push(
+          { _time: time, _value: '21', _measurement: '°C', entity_id: 'office_temperature' },
+          {
+            _time: time, _value: t === Date.parse('2026-01-19T06:00:00Z') ? '25' : '21',
+            _measurement: '°C', entity_id: 'kitchen_temperature',
+          },
+        );
+      }
+      fixture.rows.reported = reported;
+      fixture.rows.temperatures = temperatures;
+      const result = await fixture.service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature', sleep: 'office_temperature,kitchen_temperature',
+        thermostatHome: 'true', thermostatSleep: 'true', followMe: 'false',
+      });
+      return result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.wakeOvershoot;
+    };
+    expect(await run('2026-01-19T06:00:00.000000Z')).toBe(4);
+    expect(await run('2026-01-19T06:00:00.000500Z')).toBe(0);
+  });
+
+  it('review 202e893: a later fractional mode cannot retroactively validate a cooling anchor', async () => {
+    const run = async (mode: string, action: string) => {
+      const fixture = makeDeps();
+      const priorMode = climateRow('2026-01-19T11:00:00Z', 'state', 'heat');
+      const modeChange = climateRow(mode, 'state', 'cool');
+      const cooling = climateRow(action, 'hvac_action_str', 'cooling');
+      fixture.rows.cooling = [
+        ...coolingRows('2025-10-15T12:00:00Z'), priorMode, modeChange, cooling,
+      ];
+      fixture.rows.states = [priorMode, modeChange, cooling];
+      return fixture.service.getInsights('7');
+    };
+    const actionBeforeMode = await run('2026-01-19T12:00:00.000900Z', '2026-01-19T12:00:00.000100Z');
+    expect(actionBeforeMode.coverage.coolingFrom).toBe('2025-10-08T14:00:00.000Z');
+    for (const [mode, action] of [
+      ['2026-01-19T12:00:00.000100Z', '2026-01-19T12:00:00.000900Z'],
+      ['2026-01-19T12:00:00.000500Z', '2026-01-19T12:00:00.000500Z'],
+      ['2026-01-19T12:00:00.000000Z', '2026-01-19T12:00:00.000900Z'],
+    ]) {
+      expect((await run(mode, action)).coverage.coolingFrom).toBe('2026-01-13T00:00:00.000Z');
+    }
+  });
+
+  it('review 202e893: a cooling action followed by an incompatible mode in the same millisecond stays uncertain', async () => {
+    const run = async (mode: string) => {
+      const fixture = makeDeps();
+      neutralHeating(fixture);
+      const previous = climateRow('2026-01-19T11:00:00Z', 'state', 'cool');
+      const action = climateRow('2026-01-19T12:00:00.000100Z', 'hvac_action_str', 'cooling');
+      const next = climateRow('2026-01-19T12:00:00.000900Z', 'state', mode);
+      fixture.rows.cooling = [...coolingRows('2025-10-15T12:00:00Z'), previous, action, next];
+      fixture.rows.states.push(previous, action, next);
+      return { result: await fixture.service.getInsights('7'), fixture };
+    };
+    const interrupted = await run('heat');
+    expect(interrupted.result.coverage.coolingFrom).toBeNull();
+    expect(interrupted.result.recommendations.find((rec) => rec.id === 'no-changes')!.detail)
+      .toContain('Cooling history could not be assessed reliably.');
+    interrupted.fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await interrupted.fixture.service.getInsights('7');
+    expect(interrupted.fixture.calls('cooling')).toHaveLength(2);
+    const compatible = await run('heat_cool');
+    expect(compatible.result.coverage).toMatchObject({ coolingFrom: '2026-01-13T00:00:00.000Z', coolingEvents: 1 });
   });
 
   it('does not convert cooling targets with today’s unit when reported history contradicts it', async () => {
