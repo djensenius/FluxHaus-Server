@@ -399,8 +399,9 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
   cached for 1 minute so they are retried soon. Where the evidence is missing,
   values are `null` or events are marked inferred rather than guessed.
 
-All history comes from Home Assistant's InfluxDB bucket (`home_assistant`),
-since the Home Assistant recorder keeps only about 10 days:
+All history comes from the InfluxDB bucket Home Assistant writes to (the
+configured `INFLUXDB_BUCKET`), since the Home Assistant recorder keeps only
+about 10 days:
 
 - **Room temperatures** come from InfluxDB: the indoor sensors discovered above,
   matched on Home Assistant's `domain` (`sensor`) and `entity_id` (object id)
@@ -427,10 +428,10 @@ since the Home Assistant recorder keeps only about 10 days:
   lies inside the event window count, so readings from just before an event
   (e.g. while the thermostat was still off) never do.
 - **Thermostat history** is the climate entity's InfluxDB fields (`domain`
-  `climate`): `state` (mode), `hvac_action_str`, and set points `temperature`
+  `climate`): `state` (mode), `hvac_action_str`, `preset_mode_str`, and set points `temperature`
   (else `target_temp_low` for heating, `target_temp_high` for cooling; `_str`
   variants too) in its `temperatureUnit`, converted to °C and dropped if the
-  unit is unknown or the result is outside 5–35 °C. Mode and action carry
+  unit is unknown or the result is outside 5–35 °C. Mode, action and preset carry
   forward between changes; set points come from each change. The last value
   before the window (within 30 days) gives the state at its start.
   `unavailable`/`unknown` states are gaps: no transition is read across one,
@@ -438,29 +439,43 @@ since the Home Assistant recorder keeps only about 10 days:
   (`hvacHistoryAvailable: false`, retried after 1 minute).
 - **Comfort setting** is the Ecobee select `<thermostat>_current_mode` (e.g.
   `select.home_current_mode`: `home`, `sleep`, `away`;
-  `coverage.comfortScheduleAvailable`). The climate entity has no preset, so
-  wake-ups and returns from Away come from this history.
+  `coverage.comfortScheduleAvailable`). It takes precedence; when it has no
+  known value (e.g. a thermostat without it, or the select unavailable), the
+  climate entity's preset (`away`, `home`, `sleep`, …) is used instead, so
+  wake-ups and returns from Away still work.
 - **Occupancy** is each room's `binary_sensor.<room>_occupancy` (`value` 0/1,
   change-driven, so each value holds until the next), matched to
   `sensor.<room>_temperature` (`home_occupancy` to the thermostat's
   `home_current_temperature`). Sensors without temperature (e.g. a door) are
-  ignored. Used for Follow Me (`coverage.occupancyAvailable`).
-- **The thermostat's current temperature** (`role: "comfort_average"`, named
+  ignored. Used for Follow Me (`coverage.occupancyAvailable`). An
+  `unavailable`/`unknown` state (a `state` field) makes occupancy unknown until
+  the next value: it isn't carried across an outage, the Follow Me average
+  isn't guessed while a participating room's occupancy is unknown, and
+  `occupiedShare` is `null` unless occupancy was known for at least 75% of the
+  time.
+- **The thermostat's current temperature** (`isThermostat`, named
   "Thermostat (Ecobee average)") is Ecobee's averaged comfort reading, not a
   room. It is the effective average when it has readings (else the configured
   setting's sensors, else all rooms), it is never judged as an outlier, and
-  rooms are compared with each other without it. Sensors whose mean matches it
-  best (within 0.2 °C) are reported as `estimatedParticipation`; when that
-  contradicts the configured participation, a `participation-mismatch-<setting>`
-  recommendation says so.
+  rooms are compared with each other without it. Which rooms each setting
+  averages is estimated from it: every subset of rooms is scored over the times
+  all its members have readings (so a sparse or missing room doesn't block the
+  others), and rooms in every subset within 0.1 °C of the best fit (itself
+  within 0.2 °C) count as in. The estimate shapes the wording ("The
+  thermostat's readings suggest it's in your Home comfort setting") when
+  participation isn't configured, and when it contradicts the configured
+  participation a `participation-mismatch-<setting>` recommendation says so.
   - A *morning warm-up* is a reported heating start (`hvac_action` changing
     from a reported non-heating action to heating, in a mode that can heat)
     between 04:00 and 10:00 server time, once per day. Set point or preset
     changes alone, and anything in `cool`/`off` mode, don't count. Server time
     is `TZ`, else the system time zone, else UTC.
-  - A *wake-up* is a Sleep → Home change (`coverage.wakeEvents`). If heating ran
-    from 3 hours before it (Smart Recovery preheats) to 2 hours after, that run
-    is the wake-up heat-up and replaces the morning warm-up around it.
+  - A *wake-up* is a Sleep → Home change (`coverage.wakeEvents`). Heating that
+    started in the 3 hours before it (Smart Recovery preheats, even if it
+    finished before Home), else the first heating within 2 hours after it, is
+    the wake-up heat-up and replaces the morning warm-up around it. Its room
+    offsets are measured from the start of that heating through the first 2
+    hours of Home, each reading against the comfort setting in force then.
   - A *return from Away* is only an explicit comfort setting change from `away` to
     home, in a mode that can heat, with heating reported within 30
     minutes while the preset stays home/comfort (a switch back to Away, or any
@@ -518,12 +533,12 @@ since the Home Assistant recorder keeps only about 10 days:
   minutes.
 - **Passive warmth:** when the comfort average sits at least 1.0 °C over the
   heating set point for most of the time heating is idle (or under the cool set
-  point with cooling idle, in `cool` mode), `coverage.passiveWarmth` /
-  `passiveCooling` report the share and mean distance, and a
-  `passive-warmth-heating` / `passive-cooling` recommendation says sensors
-  aren't the cause (likely a set point below what the house naturally holds,
-  sun, or cooking and appliance heat). `coverage.heatingRuntimeHours` is the
-  reported heating time; when heating rarely ran, heating tips are `low`.
+  point with cooling idle, in `cool` mode), a `passive-warmth-heating` /
+  `passive-cooling` recommendation gives the share of the time and the mean
+  distance, says sensors aren't the cause (likely a set point below what the
+  house naturally holds, sun, or cooking and appliance heat) and how long
+  heating ran. When heating ran less than 10% of the window, heating tips are
+  `low`.
 - **Per-sensor drill-down:** `verdict` (`cold_outlier`, `warm_outlier`,
   `representative`, `insufficient`; `null` for the comfort average) with a
   one-sentence `verdictSummary`. A sensor is an outlier when it is consistently
@@ -549,7 +564,7 @@ since the Home Assistant recorder keeps only about 10 days:
     than 20% of the time isn't blamed.
   - `move-<sensor>` / `remove-<sensor>` (`move`, `remove_from_setting` for a
     warm Kitchen known to participate) for other heat-ups;
-    `cooling-<sensor>` (`move`) for cooling.
+    `cooling-<sensor>` (always `move`) for cooling.
   - `add-<sensor>` / `add-cooling-<sensor>` (`add_to_setting`) for a room known
     not to participate that is consistently off, or a room that overshoots by
     1.0 °C or more when no other heating tip applies.
@@ -569,15 +584,12 @@ since the Home Assistant recorder keeps only about 10 days:
     "morningEvents": 9, "inferredMorningEvents": 2, "returnEvents": 0,
     "unknownUnitWindows": 0, "participationConfigured": true, "followMe": false,
     "occupancyAvailable": true, "comfortScheduleAvailable": true, "wakeEvents": 14,
-    "coolingFrom": "ISO", "coolingTo": "ISO", "coolingEvents": 21,
-    "heatingRuntimeHours": 12.5, "passiveWarmth": {"share": 0.1, "offset": 0.2},
-    "passiveCooling": null, "comfortAverageSensorId": "home_current_temperature"},
+    "coolingFrom": "ISO", "coolingTo": "ISO", "coolingEvents": 21},
   "sensors": [{"id": "bedroom_temperature", "name": "Bedroom", "isThermostat": false,
-    "role": "room", "averageOffset": -1.5, "morningOffset": -1.5, "returnOffset": null,
+    "averageOffset": -1.5, "morningOffset": -1.5, "returnOffset": null,
     "overshoot": 0, "sampleCount": 120, "classification": "cold",
     "wakeOffset": -1.5, "coolingOffset": 0.1,
     "participation": {"home": true, "sleep": true, "away": null},
-    "estimatedParticipation": {"home": true, "sleep": true, "away": null},
     "occupiedShare": {"wake": null, "home": null},
     "verdict": "cold_outlier",
     "verdictSummary": "Bedroom reads 1.5 °C below the house average during morning warm-ups, …",

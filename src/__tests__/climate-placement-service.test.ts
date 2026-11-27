@@ -90,7 +90,7 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   };
   let now = NOW.getTime();
   const deps = {
-    influxdb, indoorClimate, bucket: 'home_assistant', timeZone: 'UTC', now: () => new Date(now), ...overrides,
+    influxdb, indoorClimate, bucket: 'fluxhaus', timeZone: 'UTC', now: () => new Date(now), ...overrides,
   };
   const calls = (kind: string) => influxdb.query.mock.calls.filter(([flux]) => queryKind(flux) === kind).map(([flux]) => flux);
   return {
@@ -183,6 +183,37 @@ describe('thermostat, comfort and occupancy history', () => {
         t: Date.parse('2026-01-19T10:00:00Z'), gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
       },
     ]);
+  });
+
+  it('carries the preset forward as a fallback comfort setting', () => {
+    const parsed = parseStates([
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'preset_mode_str', 'away'),
+      climateRow('2026-01-19T07:00:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T08:00:00Z', 'preset_mode_str', 'home'),
+      climateRow('2026-01-19T09:00:00Z', 'preset_mode_str', 'none'),
+    ], entities, '°C');
+    expect(parsed.hvac!.map((s) => s.presetMode)).toEqual(['away', 'away', 'home', null]);
+    const flux = buildStatesQuery('fluxhaus', entities, new Date(0), new Date(1));
+    expect(flux).toContain('"preset_mode", "preset_mode_str"');
+  });
+
+  it('keeps unavailable occupancy as unknown rather than carrying the last value', () => {
+    const occupancyRow = (time: string, field: string, value: string) => ({
+      _time: time, _field: field, _value: value, domain: 'binary_sensor', entity_id: 'bedroom_occupancy',
+    });
+    const parsed = parseStates([
+      occupancyRow('2026-01-19T11:00:00Z', 'value', '1'),
+      occupancyRow('2026-01-19T12:00:00Z', 'state', 'unavailable'),
+      occupancyRow('2026-01-19T13:00:00Z', 'state', 'off'),
+    ], entities, '°C');
+    expect(parsed.occupancy.get('bedroom_occupancy')).toEqual([
+      { t: Date.parse('2026-01-19T11:00:00Z'), occupied: true },
+      { t: Date.parse('2026-01-19T12:00:00Z'), occupied: null },
+      { t: Date.parse('2026-01-19T13:00:00Z'), occupied: false },
+    ]);
+    const flux = buildStatesQuery('fluxhaus', { ...entities, occupancy: ['bedroom_occupancy'] }, new Date(0), new Date(1));
+    expect(flux).toContain('(r._field == "value" or r._field == "state")');
   });
 
   it('does not read a heating start across unavailable history', () => {
@@ -388,8 +419,11 @@ describe('ClimatePlacementService', () => {
     expect(result.windowDays).toBe(7);
     expect(result.coverage.start).toBe('2026-01-13T00:00:00.000Z');
     expect(result.sensors.map((s) => s.id)).toEqual(['home_current_temperature', 'office_temperature', 'kitchen_temperature']);
+    // Every query reads the configured bucket.
     const [flux] = calls('temperatures');
-    expect(flux).toContain('from(bucket: "home_assistant")');
+    expect(flux).toContain('from(bucket: "fluxhaus")');
+    expect(calls('states')[0]).toContain('from(bucket: "fluxhaus")');
+    expect(calls('cooling')[0]).toContain('from(bucket: "fluxhaus")');
     expect(flux).toContain('"home_current_temperature", "office_temperature", "kitchen_temperature"');
     expect(flux).not.toContain('patio');
     expect(flux).toContain('range(start: time(v: "2026-01-13T00:00:00.000Z"), stop: time(v: "2026-01-20T00:00:00.000Z"))');

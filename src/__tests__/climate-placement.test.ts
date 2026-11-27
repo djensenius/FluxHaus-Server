@@ -264,15 +264,18 @@ describe('analyzePlacement', () => {
         coolingFrom: null,
         coolingTo: null,
         coolingEvents: 0,
-        heatingRuntimeHours: 25,
-        passiveCooling: null,
-        comfortAverageSensorId: 'home_current_temperature',
       },
     });
+    // Only the agreed contract fields.
+    expect(Object.keys(result.coverage).sort()).toEqual([
+      'comfortScheduleAvailable', 'coolingEvents', 'coolingFrom', 'coolingTo', 'end', 'followMe',
+      'hvacEarliestStateAt', 'hvacHistoryAvailable', 'inferredMorningEvents', 'morningEvents', 'occupancyAvailable',
+      'participationConfigured', 'returnEvents', 'returnHistoryAvailable', 'start', 'unknownUnitWindows', 'wakeEvents',
+    ]);
     expect(Object.keys(result.sensors[0]).sort()).toEqual([
       'averageOffset', 'classification', 'consistency', 'coolingOffset', 'coolingUndershoot',
-      'estimatedParticipation', 'id', 'isThermostat', 'morningOffset', 'name', 'occupiedShare',
-      'overshoot', 'participation', 'periodOffsets', 'recommendationIds', 'returnOffset', 'role',
+      'id', 'isThermostat', 'morningOffset', 'name', 'occupiedShare',
+      'overshoot', 'participation', 'periodOffsets', 'recommendationIds', 'returnOffset',
       'sampleCount', 'verdict', 'verdictSummary', 'wakeOffset', 'wakeOvershoot',
     ]);
     expect(Object.keys(result.recommendations[0]).sort()).toEqual([
@@ -288,7 +291,7 @@ describe('analyzePlacement', () => {
       classification: 'cold', morningOffset: -2.1, returnOffset: -2.1, averageOffset: -2.1, isThermostat: false,
     });
     expect(office.sampleCount).toBeGreaterThanOrEqual(12);
-    expect(office).toMatchObject({ verdict: 'cold_outlier', role: 'room', recommendationIds: ['wake-office', 'move-kitchen'] });
+    expect(office).toMatchObject({ verdict: 'cold_outlier', recommendationIds: ['wake-office', 'move-kitchen'] });
     const kitchen = result.sensors.find((s) => s.id === 'kitchen_temperature')!;
     expect(kitchen).toMatchObject({ classification: 'warm', overshoot: 1.5, verdict: 'warm_outlier' });
     expect(kitchen.recommendationIds).toEqual(['wake-office', 'move-kitchen']);
@@ -440,7 +443,6 @@ describe('analyzePlacement', () => {
     const thermostat = result.sensors.find((s) => s.id === 'home_current_temperature')!;
     expect(thermostat).toMatchObject({
       name: 'Thermostat (Ecobee average)',
-      role: 'comfort_average',
       isThermostat: true,
       verdict: null,
       averageOffset: null,
@@ -452,8 +454,7 @@ describe('analyzePlacement', () => {
     });
     expect(thermostat.verdictSummary).toContain('Ecobee\'s average');
     // The rooms' average excludes it, so both rooms are representative.
-    expect(result.sensors.filter((s) => s.role === 'room').map((s) => s.averageOffset)).toEqual([0, 0]);
-    expect(result.coverage.comfortAverageSensorId).toBe('home_current_temperature');
+    expect(result.sensors.filter((s) => !s.isThermostat).map((s) => s.averageOffset)).toEqual([0, 0]);
     expect(result.recommendations.map((r) => r.id)).toEqual(['no-changes']);
   });
 
@@ -514,7 +515,7 @@ describe('analyzePlacement', () => {
   it('marks sensors insufficient with too few events', () => {
     const result = analyzePlacement(input({ sensors: series(BIASES, 1), hvac: hvac(1) }));
     expect(result.coverage).toMatchObject({ morningEvents: 1, returnEvents: 1 });
-    const rooms = result.sensors.filter((s) => s.role === 'room');
+    const rooms = result.sensors.filter((s) => !s.isThermostat);
     expect(rooms.every((s) => s.classification === 'insufficient' && s.verdict === 'insufficient')).toBe(true);
     expect(rooms[0].verdictSummary).toBe('There isn\'t enough data yet to judge Office.');
     expect(result.recommendations).toEqual([]);
@@ -954,9 +955,9 @@ describe('analyzePlacement', () => {
     const samples = mornings((d) => [state(at(d, 7), 'idle')]);
     const result = analyzePlacement(input({ sensors: flatRooms(() => 22), hvac: samples }));
     expect(result.sensors.map((s) => s.overshoot)).toEqual([1, 1]);
-    expect(result.coverage.passiveWarmth).toEqual({ share: 1, offset: 2 });
     const [rec] = result.recommendations;
     expect(rec).toMatchObject({ id: 'passive-warmth-heating', action: 'none', sensorId: null, mode: 'heating' });
+    expect(rec.detail).toContain('the rooms sat 2.0 °C above the set point on average, and at least 1.0 °C above it 100% of the time');
     expect(rec.detail).toContain('Sensor placement isn\'t causing this');
     expect(result.recommendations.every((r) => !/\brose\b/.test(r.detail))).toBe(true);
   });
@@ -1136,7 +1137,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
   it('names the sensor holding the wake-up warm-up on and notes Smart Recovery', () => {
     const result = analyzePlacement(wakeInput());
     expect(result.coverage).toMatchObject({
-      comfortScheduleAvailable: true, wakeEvents: 5, morningEvents: 5, returnEvents: 0, heatingRuntimeHours: 12.5,
+      comfortScheduleAvailable: true, wakeEvents: 5, morningEvents: 5, returnEvents: 0,
     });
     const bedroom = result.sensors.find((s) => s.id === 'bedroom_temperature')!;
     expect(bedroom).toMatchObject({
@@ -1236,14 +1237,9 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
 
   it('estimates which sensors Ecobee averages from the thermostat reading', () => {
     const result = analyzePlacement(wakeInput({ sensors: rooms(EST_BIASES, wakeBase) }));
-    expect(result.coverage.comfortAverageSensorId).toBe('home_current_temperature');
-    expect(result.sensors.filter((s) => s.role === 'room').map((s) => [s.id, s.estimatedParticipation.home]))
-      .toEqual([
-        ['bedroom_temperature', true],
-        ['living_temperature', true],
-        ['kitchen_temperature', false],
-        ['office_temperature', false],
-      ]);
+    // Bedroom and Living Room are estimated in Home; Kitchen and Office out.
+    const recIds = result.recommendations.map((r) => r.id);
+    expect(recIds).toContain('wake-bedroom');
     // Offsets are measured against the thermostat's reading.
     expect(result.sensors.find((s) => s.id === 'bedroom_temperature')!.wakeOffset).toBe(-1);
     const wake = result.recommendations.find((r) => r.id === 'wake-bedroom')!;
@@ -1290,24 +1286,21 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       'Kitchen read at least 1.0 °C above the house average in 5 of 5 cooling runs (1.3 °C above on average while '
       + 'cooling ran). If it\'s in your Home comfort setting, the AC keeps running to cool it, so the other rooms end up '
       + 'colder than the set point. Living and Bedroom dipped 1.3 and 1.3 °C below the cool set point on average while '
-      + 'it ran. Cooking and appliances will keep warming it, so consider removing it from the comfort settings it skews, '
-      + 'or move it away from the stove and appliances. Based on cooling from 2026-07-04 to 2026-07-09.',
+      + 'it ran. Cooking and appliances will keep warming it, so move it away from the stove and appliances, or remove it '
+      + 'from Home. Based on cooling from 2026-07-04 to 2026-07-09.',
     );
   });
 
   it('discloses when no cooling was recorded in the past year', () => {
     const result = analyzePlacement(wakeInput({ cooling: null }));
     expect(result.coverage).toMatchObject({
-      coolingFrom: null, coolingTo: null, coolingEvents: 0, passiveCooling: null,
+      coolingFrom: null, coolingTo: null, coolingEvents: 0,
     });
     expect(result.sensors.every((s) => s.coolingOffset === null && s.coolingUndershoot === null)).toBe(true);
   });
 
   it('says sensors aren\'t the cause when the house stays warm without heating', () => {
     const result = analyzePlacement(passiveInput());
-    expect(result.coverage).toMatchObject({
-      heatingRuntimeHours: 1.3, passiveWarmth: { share: 1, offset: 3.7 }, comfortAverageSensorId: 'home_current_temperature',
-    });
     expect(result.sensors.map((s) => [s.id, s.verdict])).toEqual([
       ['home_current_temperature', null],
       ['kitchen_temperature', 'warm_outlier'],
@@ -1330,6 +1323,108 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(kitchen.detail).toContain('so this matters mainly on colder days.');
     expect(result.recommendations.some((r) => r.sensorId === 'bedroom_temperature' || r.sensorId === 'living_temperature'))
       .toBe(false);
+  });
+
+  // Smart Recovery that finishes before Home: heating 04:00–05:30, Home at 06:00.
+  function preheatHvac(days: number): HvacSample[] {
+    return Array.from({ length: days }, (_, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 17 }),
+      state(at(d, 4), 'heating', { presetMode: null, setpoint: 21 }),
+      state(at(d, 5.5), 'idle', { presetMode: null, setpoint: 21 }),
+      state(at(d, 22), 'idle', { presetMode: null, setpoint: 17 }),
+    ]).flat();
+  }
+
+  it('includes a Smart Recovery preheat that finishes before Home', () => {
+    const result = analyzePlacement(wakeInput({ hvac: preheatHvac(5) }));
+    expect(result.coverage).toMatchObject({ wakeEvents: 5, morningEvents: 5 });
+    const wake = result.recommendations.find((r) => r.id === 'wake-bedroom')!;
+    expect(wake).toMatchObject({ action: 'move', period: 'wake', sensorId: 'bedroom_temperature' });
+    expect(wake.detail).toContain('the warm-up ran 90 minutes on average');
+  });
+
+  it('measures a wake-up crossing Home against the comfort setting in force at each reading', () => {
+    // Sleep averages Bedroom and Living Room (-0.5), Home averages Bedroom,
+    // Kitchen and Office (-0.17): Bedroom is 1.0 °C below before Home and
+    // 1.3 °C below after.
+    const participation = {
+      home: ['bedroom_temperature', 'kitchen_temperature', 'office_temperature'],
+      sleep: ['bedroom_temperature', 'living_temperature'],
+      away: null,
+      followMe: false,
+    };
+    const result = analyzePlacement(wakeInput({ participation }));
+    const wake = result.recommendations.find((r) => r.id === 'wake-bedroom')!;
+    // A blend of both: readings during the preheat count against Sleep.
+    expect(wake.detail).toMatch(/^In 5 of 5 wake-ups \(Sleep → Home\), Bedroom read 1\.2 °C below/);
+    // Home only (as if measured from Home): the full 1.3 °C.
+    const homeOnly = analyzePlacement(wakeInput({ participation: { ...participation, sleep: participation.home } }));
+    expect(homeOnly.recommendations.find((r) => r.id === 'wake-bedroom')!.detail)
+      .toContain('Bedroom read 1.3 °C below');
+  });
+
+  it('falls back to the thermostat preset when the comfort setting is unavailable', () => {
+    const unavailable = analyzePlacement(input({ hvac: hvac(5), comfort: [{ t: START, setting: null }] }));
+    expect(unavailable.coverage).toMatchObject({ returnHistoryAvailable: true, returnEvents: 5 });
+    // A known Ecobee comfort setting takes precedence over the preset.
+    const ecobee = analyzePlacement(input({ hvac: hvac(5), comfort: [{ t: START - DAY, setting: 'home' }] }));
+    expect(ecobee.coverage.returnEvents).toBe(0);
+  });
+
+  it('doesn\'t assume occupancy across an outage with Follow Me', () => {
+    // Occupied, then the Bedroom's occupancy sensor goes unavailable.
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
+        ...r,
+        occupancy: r.id === 'bedroom_temperature'
+          ? [{ t: START - DAY, occupied: true }, { t: START, occupied: null }]
+          : occupied(true),
+      })),
+      participation: config(['bedroom_temperature', 'living_temperature'], true),
+    }));
+    const bedroom = result.sensors.find((s) => s.id === 'bedroom_temperature')!;
+    expect(bedroom).toMatchObject({ occupiedShare: { wake: null, home: null }, wakeOffset: null });
+    expect(result.recommendations.some((r) => r.id === 'wake-bedroom')).toBe(false);
+    expect(result.sensors.find((s) => s.id === 'living_temperature')!.occupiedShare).toEqual({ wake: 1, home: 1 });
+  });
+
+  it('doesn\'t report an occupied share from mostly unknown occupancy', () => {
+    // Known (occupied) for only the first of five days.
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
+        ...r, occupancy: [{ t: START - DAY, occupied: true }, { t: START + DAY, occupied: null }],
+      })),
+      participation: config(['bedroom_temperature', 'living_temperature'], true),
+    }));
+    expect(result.sensors.every((s) => s.occupiedShare.wake === null && s.occupiedShare.home === null)).toBe(true);
+  });
+
+  it('estimates participation when an unrelated sensor is absent or intermittent', () => {
+    const withOffice = (keep: (t: number) => boolean) => analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase).map((r) => (r.id === 'office_temperature'
+        ? { ...r, points: r.points.filter((p) => keep(p.t)) }
+        : r)),
+    }));
+    const estimated = 'The thermostat\'s readings suggest it\'s in your Home comfort setting. Ecobee keeps heating';
+    // Absent: no subset with the Office can be scored, so it doesn't block the others.
+    const absent = withOffice(() => false);
+    expect(absent.recommendations.find((r) => r.id === 'wake-bedroom')!.detail).toContain(estimated);
+    // Intermittent: readings every other hour.
+    const intermittent = withOffice((t) => Math.floor((t - START) / HOUR) % 2 === 0);
+    expect(intermittent.recommendations.find((r) => r.id === 'wake-bedroom')!.detail).toContain(estimated);
+  });
+
+  it('recommends moving, not removing, a participating warm Kitchen in cooling', () => {
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(flat, wakeBase),
+      participation: config(['kitchen_temperature', 'living_temperature', 'bedroom_temperature']),
+      cooling: coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 }),
+    }));
+    const rec = result.recommendations.find((r) => r.mode === 'cooling')!;
+    expect(rec).toMatchObject({ id: 'cooling-kitchen', action: 'move', title: 'Kitchen is keeping the AC on' });
+    expect(rec.detail).toContain('Because it\'s in your Home comfort setting, the AC keeps running');
+    expect(rec.detail).toContain('so move it away from the stove and appliances, or remove it from Home.');
   });
 
   it('keeps the original response without comfort history or configuration', () => {

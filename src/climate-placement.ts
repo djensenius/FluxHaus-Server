@@ -71,6 +71,8 @@ export const AFFECTED_THRESHOLD = 0.5;
 // With Follow Me, a sensor occupied less than this share (after waking, or
 // while Home) barely counted toward the average, so it isn't blamed.
 export const FOLLOW_ME_MIN_SHARE = 0.2;
+// occupiedShare needs occupancy known for this share of the time.
+export const OCCUPANCY_COVERAGE = 0.75;
 // A Sleep setback or Smart Recovery warm-up at least this large is mentioned.
 export const SETBACK_NOTE = 2.0;
 export const LONG_RAMP_MS = 60 * 60 * 1000;
@@ -106,7 +108,8 @@ export type PlacementPeriod = 'wake' | 'sleep' | 'home' | 'return';
 
 export interface OccupancySample {
   t: number;
-  occupied: boolean;
+  // null: unavailable/unknown, so occupancy isn't known until the next value.
+  occupied: boolean | null;
 }
 
 // The thermostat's comfort setting (`select.<thermostat>_current_mode`).
@@ -172,7 +175,7 @@ export interface PlacementInput {
   sensors: SensorSeriesInput[];
   // null when thermostat history could not be read.
   hvac: HvacSample[] | null;
-  // Comfort setting history; when given it replaces the samples' presetMode.
+  // Comfort setting history; when it has any known setting it replaces the samples' presetMode.
   comfort?: ComfortSample[] | null;
   participation?: ParticipationConfig | null;
   // null when no cooling was recorded in the past year; absent when not checked.
@@ -220,15 +223,11 @@ export interface PlacementSensor {
   overshoot: number | null;
   sampleCount: number;
   classification: SensorClassification;
-  // 'comfort_average' for the thermostat's reading (Ecobee's average).
-  role: 'room' | 'comfort_average';
   // Offsets from the effective comfort average (the thermostat's reading,
   // else the participating / occupied sensors' mean).
   wakeOffset: number | null;
   coolingOffset: number | null;
   participation: Participation;
-  // Estimated from the thermostat's reading; null when it can't be told.
-  estimatedParticipation: Participation;
   occupiedShare: { wake: number | null; home: number | null };
   verdict: SensorVerdict | null;
   verdictSummary: string | null;
@@ -291,12 +290,6 @@ export interface PlacementInsights {
     coolingFrom: string | null;
     coolingTo: string | null;
     coolingEvents: number;
-    // Hours the thermostat reported heating in the window (null without history).
-    heatingRuntimeHours: number | null;
-    // Rooms warm with heating idle / cool with cooling idle (null when unmeasured).
-    passiveWarmth: PassiveSummary | null;
-    passiveCooling: PassiveSummary | null;
-    comfortAverageSensorId: string | null;
   };
   sensors: PlacementSensor[];
   recommendations: PlacementRecommendation[];
@@ -818,7 +811,9 @@ interface Wake {
   // When Home started after Sleep, and when the next setting started.
   h: number;
   next: number;
-  // The warm-up's heating run (Smart Recovery may start it before Home).
+  // The warm-up's heating: from the first run in the WAKE_LEAD_MS before Home
+  // (Smart Recovery preheats, possibly finishing before Home) to the end of
+  // the last one starting before Home; else the first run after Home.
   run: Run | null;
   // Home set point minus the set point before the warm-up.
   setback: number | null;
@@ -826,9 +821,9 @@ interface Wake {
   heatingMs: number;
 }
 
-// Sleep → Home changes in [from, to], each with its warm-up: the heating run
-// containing the change, else one that ended just before it, else the first
-// after it.
+// Sleep → Home changes in [from, to], each with its warm-up: the heating runs
+// in the lead window before the change (ending before it or crossing it),
+// else the first run after it.
 function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: number, to: number): Wake[] {
   const wakes: Wake[] = [];
   for (let i = 1; i < timeline.length; i += 1) {
@@ -836,9 +831,10 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
     if (timeline[i - 1].setting === 'sleep' && timeline[i].setting === 'home' && h >= from && h <= to) {
       const next = timeline[i + 1]?.t ?? Number.POSITIVE_INFINITY;
       const runs = runsWithin(samples, h - WAKE_LEAD_MS, Math.min(h + WAKE_TAIL_MS, next), heatingNow, HEAT_RUN_MERGE_MS);
-      const run = runs.find((r) => r.from <= h && r.to > h)
-        ?? runs.find((r) => r.to <= h && r.to >= h - HEAT_RUN_MERGE_MS)
-        ?? runs.find((r) => r.from > h) ?? null;
+      const before = runs.filter((r) => r.from < h);
+      const run = before.length > 0
+        ? { from: before[0].from, to: before[before.length - 1].to }
+        : runs.find((r) => r.from >= h) ?? null;
       let setback: number | null = null;
       if (run) {
         const before = samples[stateIndexAt(samples, Math.min(run.from, h) - 1)];
@@ -859,6 +855,13 @@ function wakeWindow(wake: Wake): Run {
   return { from: wake.h, to: Math.min(wake.h + WAKE_OVERSHOOT_MS, wake.next) };
 }
 
+// Where a wake-up's room offsets are measured: from the start of its warm-up
+// (a pre-Home preheat included) through the first WAKE_TAIL_MS of Home.
+function wakeMeasureWindow(wake: Wake): Run {
+  const from = Math.min(wake.run?.from ?? wake.h, wake.h);
+  return { from, to: Math.max(from, Math.min(wake.h + WAKE_TAIL_MS, wake.next)) };
+}
+
 // Whether a grid time (readings in the half hour up to it) falls in one of the
 // time-sorted, non-overlapping runs.
 function inRuns(runs: Run[], t: number): boolean {
@@ -872,7 +875,8 @@ function occupiedAt(occupancy: OccupancySample[] | undefined, t: number): boolea
   return index >= 0 ? occupancy[index].occupied : null;
 }
 
-// Occupied and known milliseconds in [from, to), holding each value until the next.
+// Occupied and known milliseconds in [from, to), holding each value until the
+// next; unknown spells (and time before the first value) aren't known.
 function occupiedTime(occupancy: OccupancySample[], from: number, to: number): { occupied: number; known: number } {
   let occupied = 0;
   let known = 0;
@@ -880,7 +884,7 @@ function occupiedTime(occupancy: OccupancySample[], from: number, to: number): {
     i < occupancy.length && occupancy[i].t < to; i += 1) {
     const a = Math.max(from, occupancy[i].t);
     const b = Math.min(to, occupancy[i + 1]?.t ?? to);
-    if (b > a) {
+    if (b > a && occupancy[i].occupied !== null) {
       known += b - a;
       if (occupancy[i].occupied) occupied += b - a;
     }
@@ -888,16 +892,20 @@ function occupiedTime(occupancy: OccupancySample[], from: number, to: number): {
   return { occupied, known };
 }
 
+// Occupied share of the windows; null unless occupancy was known for at
+// least OCCUPANCY_COVERAGE of their time, so an outage isn't read as a share.
 function occupiedShare(occupancy: OccupancySample[] | undefined, windows: Run[]): number | null {
   if (!occupancy || occupancy.length === 0) return null;
   let occupied = 0;
   let known = 0;
+  let total = 0;
   windows.forEach((w) => {
     const time = occupiedTime(occupancy, w.from, w.to);
     occupied += time.occupied;
     known += time.known;
+    total += Math.max(0, w.to - w.from);
   });
-  return known > 0 ? Math.round((occupied / known) * 100) / 100 : null;
+  return known > 0 && known >= OCCUPANCY_COVERAGE * total ? Math.round((occupied / known) * 100) / 100 : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -915,6 +923,8 @@ interface Model {
 // The thermostat's reading when fresh (it is Ecobee's average); otherwise the
 // mean of the participating rooms (all rooms when unknown) — with Follow Me,
 // only the occupied ones, falling back to all participating when none are.
+// With Follow Me, a member whose occupancy history has a gap then leaves it
+// unknown rather than assuming its last value.
 function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSetting | null): number | null {
   const own = model.thermostatId === null ? undefined : grid.values.get(model.thermostatId)?.get(t);
   if (own !== undefined) return own;
@@ -922,6 +932,7 @@ function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSettin
   let members = (configured ?? model.rooms)
     .filter((id) => model.roomSet.has(id) && grid.values.get(id)?.has(t) === true);
   if (model.config?.followMe === true) {
+    if (members.some((id) => model.occupancy.has(id) && occupiedAt(model.occupancy.get(id), t) === null)) return null;
     const occupied = members.filter((id) => occupiedAt(model.occupancy.get(id), t) === true);
     if (occupied.length > 0) members = occupied;
   }
@@ -1051,8 +1062,11 @@ function unknownParticipation(): Participation {
 
 // Which rooms Ecobee averages in each setting, estimated from the thermostat's
 // reading: every subset of rooms is scored by its mean absolute error against
-// it (with Follow Me, only a subset's occupied rooms count when any are). A
-// room in every near-best subset is in; one in none is out; otherwise unknown.
+// it over the times all its members have readings (with Follow Me, only a
+// subset's occupied rooms count when any are; times a member's occupancy is
+// unknown are skipped), so a sparse room only limits the subsets containing
+// it. A room in every near-best subset is in; one in none (when subsets with
+// it could be scored) is out; otherwise unknown.
 function estimateParticipation(grid: Grid, model: Model, from: number, to: number): Map<string, Participation> {
   const result = new Map(model.rooms.map((id) => [id, unknownParticipation()]));
   const n = model.rooms.length;
@@ -1062,8 +1076,11 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
   const size = 1 << n;
   const sizes = new Uint8Array(size);
   for (let mask = 1; mask < size; mask += 1) sizes[mask] = sizes[mask & (mask - 1)] + 1;
-  const fits = Object.fromEntries(COMFORT_SETTINGS.map((s) => [s, { errors: new Float64Array(size), count: 0 }]));
+  const fits = Object.fromEntries(COMFORT_SETTINGS.map((s) => [s, {
+    errors: new Float64Array(size), counts: new Uint32Array(size),
+  }]));
   const sums = new Float64Array(size);
+  const followMe = model.config?.followMe === true;
   const times = grid.times.slice(
     firstIndexAfter(grid.times, from, itself, true),
     firstIndexAfter(grid.times, to, itself, true),
@@ -1072,39 +1089,51 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     const target = own.get(t);
     const setting = settingAt(model.timeline, t);
     if (target === undefined || setting === null) return;
-    const values = model.rooms.map((id) => grid.values.get(id)!.get(t));
-    if (values.some((v) => v === undefined)) return;
+    let available = 0;
     let occupiedMask = 0;
-    if (model.config?.followMe === true) {
-      model.rooms.forEach((id, i) => {
-        if (occupiedAt(model.occupancy.get(id), t) === true) occupiedMask |= 1 << i;
-      });
-    }
+    let unknownMask = 0;
+    const values = model.rooms.map((id, i) => {
+      const value = grid.values.get(id)!.get(t);
+      if (value !== undefined) available |= 1 << i;
+      if (followMe) {
+        const occupied = occupiedAt(model.occupancy.get(id), t);
+        if (occupied === true) occupiedMask |= 1 << i;
+        else if (occupied === null && model.occupancy.has(id)) unknownMask |= 1 << i;
+      }
+      return value ?? 0;
+    });
+    if (available === 0) return;
     for (let mask = 1; mask < size; mask += 1) {
       const low = mask & -mask;
-      sums[mask] = sums[mask ^ low] + values[31 - Math.clz32(low)]!;
+      sums[mask] = sums[mask ^ low] + values[31 - Math.clz32(low)];
     }
     const fit = fits[setting];
-    fit.count += 1;
     for (let mask = 1; mask < size; mask += 1) {
-      const used = (mask & occupiedMask) || mask;
-      fit.errors[mask] += Math.abs(sums[used] / sizes[used] - target);
+      if ((mask & ~available) === 0 && (mask & unknownMask) === 0) {
+        const used = (mask & occupiedMask) || mask;
+        fit.errors[mask] += Math.abs(sums[used] / sizes[used] - target);
+        fit.counts[mask] += 1;
+      }
     }
   });
   COMFORT_SETTINGS.forEach((setting) => {
-    const { errors, count } = fits[setting];
-    if (count < FIT_MIN_SAMPLES) return;
+    const { errors, counts } = fits[setting];
+    const scored: number[] = [];
     let best = Number.POSITIVE_INFINITY;
-    for (let mask = 1; mask < size; mask += 1) best = Math.min(best, errors[mask] / count);
-    if (best > FIT_TOLERANCE) return;
-    const near: number[] = [];
     for (let mask = 1; mask < size; mask += 1) {
-      if (errors[mask] / count <= best + FIT_MARGIN) near.push(mask);
+      if (counts[mask] >= FIT_MIN_SAMPLES) {
+        scored.push(mask);
+        best = Math.min(best, errors[mask] / counts[mask]);
+      }
     }
+    if (best > FIT_TOLERANCE) return;
+    const near = scored.filter((mask) => errors[mask] / counts[mask] <= best + FIT_MARGIN);
     model.rooms.forEach((id, i) => {
       const bit = 1 << i;
       if (near.every((mask) => (mask & bit) !== 0)) result.get(id)![setting] = true;
-      else if (near.every((mask) => (mask & bit) === 0)) result.get(id)![setting] = false;
+      else if (near.every((mask) => (mask & bit) === 0) && scored.some((mask) => (mask & bit) !== 0)) {
+        result.get(id)![setting] = false;
+      }
     });
   });
   return result;
@@ -1155,11 +1184,12 @@ function heatingContexts(
     const nextEvent = events[index + 1]?.t ?? Number.POSITIVE_INFINITY;
     const wake = wakes.get(event);
     if (wake && wake.run) {
-      // The warm-up is the heating run; overshoot is measured once heating
-      // after the change to Home is satisfied.
+      // Measured from the preheat through the first hours of Home, each
+      // reading against the comfort setting in force then; overshoot is
+      // measured once heating after the change to Home is satisfied.
       const from = Math.max(wake.run.from, wake.h);
       const overshoot = wake.run.to > wake.h ? overshootWindow(samples, { ...event, t: from }, nextEvent) : null;
-      return eventContext(grid, model, event, 'heating', 'home', wake.run, overshoot);
+      return eventContext(grid, model, event, 'heating', null, wakeMeasureWindow(wake), overshoot);
     }
     // An inferred window also ends at the first recorded state in which the
     // thermostat couldn't heat (off/cool), so later readings never count.
@@ -1288,6 +1318,8 @@ interface Analyzed {
   coolClass: SensorClassification;
   heatScan: RoomScan | undefined;
   coolScan: RoomScan | undefined;
+  // Participation estimated from the thermostat's reading (null: can't tell).
+  estimated: Participation;
 }
 
 interface Env {
@@ -1426,7 +1458,7 @@ interface Known {
 function knownIn(a: Analyzed, setting: ComfortSetting): Known {
   const configured = a.out.participation[setting];
   if (configured !== null) return { value: configured, source: 'configured' };
-  const estimated = a.out.estimatedParticipation[setting];
+  const estimated = a.estimated[setting];
   return estimated === null ? { value: null, source: null } : { value: estimated, source: 'estimated' };
 }
 
@@ -1474,8 +1506,12 @@ function causesFor(a: Analyzed, direction: BiasDirection, mode: PlacementMode): 
   return isKitchen(a) ? ['cooking and kitchen appliances', ...warm] : [...warm, 'near appliances'];
 }
 
-function adviceFor(a: Analyzed, direction: BiasDirection, setting: ComfortSetting, removable: boolean): string {
+function adviceFor(a: Analyzed, direction: BiasDirection, setting: ComfortSetting, removable: boolean, moveOnly = false): string {
   const label = SETTING_LABEL[setting];
+  if (direction === 'above' && isKitchen(a) && moveOnly) {
+    return `Cooking and appliances will keep warming it, so move it away from the stove and appliances${
+      removable ? `, or remove it from ${label}` : ''}.`;
+  }
   if (direction === 'above' && isKitchen(a)) {
     return 'Cooking and appliances will keep warming it, so consider removing it from the comfort settings it skews, '
       + 'or move it away from the stove and appliances.';
@@ -1514,7 +1550,8 @@ function skewRec(a: Analyzed, skew: Skew, env: Env, rooms: Analyzed[]): Ranked |
   const share = a.out.occupiedShare.home;
   if (env.followMe === true && share !== null && share < FOLLOW_ME_MIN_SHARE) return null;
   const heating = skew.mode === 'heating';
-  const remove = skew.direction === 'above' && isKitchen(a) && known.value === true;
+  // Cooling tips always recommend moving the sensor.
+  const remove = heating && skew.direction === 'above' && isKitchen(a) && known.value === true;
   let prefix = 'move';
   if (!heating) prefix = 'cooling';
   else if (remove) prefix = 'remove';
@@ -1550,7 +1587,7 @@ function skewRec(a: Analyzed, skew: Skew, env: Env, rooms: Analyzed[]): Ranked |
       action: remove ? 'remove_from_setting' : 'move',
       title: `${a.out.name} ${titles[skew.mode][skew.direction]}`,
       detail: `${skew.evidence}. ${withLead(participationLead(known, setting), CONSEQUENCE[skew.mode][skew.direction])}${effect} `
-        + `${adviceFor(a, skew.direction, setting, true)}${quiet}${heating ? '' : coolingNote(env)}`,
+        + `${adviceFor(a, skew.direction, setting, true, !heating)}${quiet}${heating ? '' : coolingNote(env)}`,
       mode: skew.mode,
       period: null,
       comfortSetting: setting,
@@ -1594,7 +1631,7 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
   let followMe = '';
   if (env.followMe === true) {
     followMe = share === null
-      ? ' Follow Me is on, but there is no occupancy history for it, so it was assumed to count.'
+      ? ' Follow Me is on, but its occupancy wasn\'t known for enough of the time, so it was assumed to count.'
       : ` With Follow Me on, it only counted while occupied (${percent(share)}% of the time after waking).`;
   }
   const quiet = quietNote(env);
@@ -1772,8 +1809,8 @@ function mismatchRecs(rooms: Analyzed[], config: ParticipationConfig | null): Ra
   if (!config) return [];
   return COMFORT_SETTINGS.flatMap((setting) => {
     if (config[setting] === null) return [];
-    const extra = rooms.filter((a) => a.out.estimatedParticipation[setting] === true && a.out.participation[setting] === false);
-    const missing = rooms.filter((a) => a.out.estimatedParticipation[setting] === false && a.out.participation[setting] === true);
+    const extra = rooms.filter((a) => a.estimated[setting] === true && a.out.participation[setting] === false);
+    const missing = rooms.filter((a) => a.estimated[setting] === false && a.out.participation[setting] === true);
     if (extra.length + missing.length === 0) return [];
     const label = SETTING_LABEL[setting];
     const parts: string[] = [];
@@ -1893,14 +1930,18 @@ function dataset(
   config: ParticipationConfig | null,
 ): Dataset {
   const raw = [...(hvac ?? [])].sort((a, b) => a.t - b.t);
-  const timeline = settingTimeline(comfort, raw);
+  // The Ecobee comfort setting takes precedence over the thermostat's preset;
+  // without any known comfort setting (e.g. a non-Ecobee thermostat, or the
+  // select unavailable) the preset history is used.
+  const known = comfort && comfort.some((c) => normalizeSetting(c.setting) !== null) ? comfort : null;
+  const timeline = settingTimeline(known, raw);
   const rooms = sensors.filter((s) => !s.isThermostat).map((s) => s.id);
   const occupancy = new Map(sensors
     .filter((s) => s.occupancy && s.occupancy.length > 0)
     .map((s) => [s.id, [...s.occupancy!].sort((a, b) => a.t - b.t)]));
   return {
     raw,
-    samples: mergeComfort(raw, comfort),
+    samples: mergeComfort(raw, known),
     timeline,
     model: {
       rooms,
@@ -2067,6 +2108,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       coolClass,
       heatScan: heatRoom,
       coolScan: coolRoom,
+      estimated: estimates.get(sensor.id) ?? unknownParticipation(),
       out: {
         id: sensor.id,
         name: room ? sensor.name : COMFORT_AVERAGE_NAME,
@@ -2077,11 +2119,9 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
         overshoot: roundOrNull(mean(measured.overshoots)),
         sampleCount: room ? measured.heatSamples : inWindowPoints,
         classification,
-        role: room ? 'room' : 'comfort_average',
         wakeOffset: periodOffsets.wake,
         coolingOffset: periodOffsets.cooling,
         participation: participationOf(sensor.id, config),
-        estimatedParticipation: estimates.get(sensor.id) ?? unknownParticipation(),
         occupiedShare: { wake: occupiedShare(occupancy, wakeWindows), home: occupiedShare(occupancy, homeWindows) },
         verdict: room && !assessed ? 'insufficient' : null,
         verdictSummary: null,
@@ -2187,10 +2227,6 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       coolingFrom: cooling ? cooling.start.toISOString() : null,
       coolingTo: cooling ? cooling.end.toISOString() : null,
       coolingEvents: coolRuns.length,
-      heatingRuntimeHours: runtime === null ? null : round1(runtime / (60 * 60 * 1000)),
-      passiveWarmth,
-      passiveCooling,
-      comfortAverageSensorId: model.thermostatId,
     },
     sensors: analyzed.map((a) => a.out),
     recommendations,

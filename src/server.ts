@@ -17,7 +17,7 @@ import { csrfMiddleware, issueCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
 import createMcpOAuthRouter from './routes/mcp-oauth.routes';
 import createClimatePlacementRouter from './routes/climate-placement.routes';
-import { ClimatePlacementService, HA_BUCKET } from './climate-placement-service';
+import { ClimatePlacementService } from './climate-placement-service';
 import createCarAnalyticsRouter from './routes/car-analytics.routes';
 import {
   closePool, getPool, initDatabase, initPool,
@@ -1797,9 +1797,7 @@ export async function createServer(): Promise<Express> {
   app.use(createCarAnalyticsRouter(carAnalytics, cors(corsOptions)));
   app.use(createClimatePlacementRouter(new ClimatePlacementService({
     influxdb,
-    // Room temperatures, thermostat, comfort setting and occupancy history
-    // are written by Home Assistant to its own bucket.
-    bucket: HA_BUCKET,
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
     indoorClimate,
   }), cors(corsOptions)));
   app.use('/gt3', gt3Router);

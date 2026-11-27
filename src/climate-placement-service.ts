@@ -1,7 +1,7 @@
 // Data fetching and caching for GET /climate/placement-insights. Reads room
 // temperatures, thermostat history, the Ecobee comfort setting and room
-// occupancy from Home Assistant's InfluxDB bucket (the recorder keeps only
-// days of history), then hands them to the pure analysis in
+// occupancy from the configured InfluxDB bucket that Home Assistant writes to
+// (the recorder keeps only days of history), then hands them to the pure analysis in
 // climate-placement.ts. Upstream failures degrade to an empty analysis rather
 // than an error.
 import type { InfluxDBClient } from './clients/influxdb';
@@ -28,8 +28,6 @@ export const MAX_PLACEMENT_DAYS = 30;
 export const PLACEMENT_CACHE_TTL_MS = 15 * 60 * 1000;
 // Degraded results (an upstream failed) are retried sooner.
 export const PLACEMENT_DEGRADED_TTL_MS = 60 * 1000;
-// Home Assistant writes every entity state change to this bucket.
-export const HA_BUCKET = 'home_assistant';
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Cooling tips use the most recent cooling within the past year.
 export const COOLING_LOOKBACK_DAYS = 365;
@@ -117,7 +115,7 @@ export interface PlacementIndoorClimate {
 
 export interface ClimatePlacementDeps {
   influxdb: InfluxDBClient;
-  // The Home Assistant bucket (HA_BUCKET in production).
+  // The InfluxDB bucket Home Assistant writes its history to (INFLUXDB_BUCKET).
   bucket: string;
   indoorClimate: PlacementIndoorClimate;
   timeZone?: string;
@@ -227,7 +225,7 @@ export interface StateEntities {
 }
 
 const CLIMATE_FIELDS = [
-  'state', 'hvac_action_str', 'temperature', 'temperature_str',
+  'state', 'hvac_action_str', 'preset_mode', 'preset_mode_str', 'temperature', 'temperature_str',
   'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str',
 ];
 
@@ -236,7 +234,8 @@ function statePredicate(entities: StateEntities): string {
   return `(r.domain == "climate" and r.entity_id == "${entities.climate}" and contains(value: r._field, set: [${
     CLIMATE_FIELDS.map((f) => `"${f}"`).join(', ')}]))
     or (r.domain == "select" and r.entity_id == "${entities.comfort}" and r._field == "state")
-    or (r.domain == "binary_sensor" and contains(value: r.entity_id, set: [${occupancy}]) and r._field == "value")`;
+    or (r.domain == "binary_sensor" and contains(value: r.entity_id, set: [${occupancy}])
+      and (r._field == "value" or r._field == "state"))`;
 }
 
 // Thermostat, comfort setting and occupancy changes over [start, end), plus
@@ -280,10 +279,12 @@ export interface ParsedStates {
   occupancy: Map<string, OccupancySample[]>;
 }
 
-// Rows from buildStatesQuery → thermostat samples (one per state change; mode
-// and action carry forward, set points are per change since Home Assistant
-// omits empty attributes), comfort settings and occupancy. Unavailable or
-// unknown thermostat states are gaps so no transition is read across them.
+// Rows from buildStatesQuery → thermostat samples (one per state change; mode,
+// action and preset carry forward, set points are per change since Home
+// Assistant omits empty attributes), comfort settings and occupancy.
+// Unavailable or unknown thermostat states are gaps so no transition is read
+// across them; unavailable or unknown occupancy is kept as unknown (null) so
+// the last value isn't carried across an outage.
 export function parseStates(
   rows: Record<string, string>[],
   entities: StateEntities,
@@ -305,19 +306,28 @@ export function parseStates(
     } else if (row.domain === 'select' && row.entity_id === entities.comfort) {
       comfort.push({ t, setting: value === 'unavailable' || value === 'unknown' || value === '' ? null : value });
     } else if (row.domain === 'binary_sensor' && entities.occupancy.includes(row.entity_id)) {
+      // Home Assistant writes on/off as `value` 1/0 and anything else (e.g.
+      // unavailable) as a `state` string.
       const n = Number.parseFloat(value);
-      if (!Number.isFinite(n)) return;
+      let occupied: boolean | null = null;
+      if (Number.isFinite(n)) occupied = n >= 0.5;
+      else if (value === 'on' || value === 'off') occupied = value === 'on';
       if (!occupancy.has(row.entity_id)) occupancy.set(row.entity_id, []);
-      occupancy.get(row.entity_id)!.push({ t, occupied: n >= 0.5 });
+      occupancy.get(row.entity_id)!.push({ t, occupied });
     }
   });
   let mode: string | null = null;
   let action: string | null = null;
+  let preset: string | null = null;
   let setpoints = new Map<string, number | null>();
   const hvac = [...climate.keys()].sort((a, b) => a - b).map((t): HvacSample => {
     const fields = climate.get(t)!;
     if (fields.has('state')) mode = fields.get('state')!;
     if (fields.has('hvac_action')) action = fields.get('hvac_action')!;
+    if (fields.has('preset_mode')) {
+      const value = fields.get('preset_mode')!;
+      preset = value === '' || value === 'none' || value === 'unavailable' || value === 'unknown' ? null : value;
+    }
     if (SETPOINT_FIELDS.some((f) => fields.has(f))) {
       setpoints = new Map(SETPOINT_FIELDS.map((f) => [f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unit))]));
     }
@@ -332,7 +342,7 @@ export function parseStates(
       gap: false,
       hvacMode: mode,
       hvacAction: action,
-      presetMode: null,
+      presetMode: preset,
       setpoint: temperature ?? setpoints.get('target_temp_low') ?? null,
       coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
     };
