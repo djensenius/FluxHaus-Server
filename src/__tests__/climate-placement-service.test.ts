@@ -329,6 +329,16 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(flux).not.toContain('bad');
     expect(flux).toContain('union(tables: [prior, priorStateHistory, changes])');
     expect(flux).toContain('keep(columns: ["_time", "_value", "_field", "domain", "entity_id"])');
+    const prior = flux.split('priorStateHistory =')[0];
+    const changes = flux.split('changes =')[1].split('union(tables:')[0];
+    [prior, changes].forEach((branch) => {
+      const climate = branch.split('or (r.domain == "select"')[0];
+      [
+        'state', 'hvac_action_str', 'preset_mode', 'preset_mode_str', 'temperature', 'temperature_str',
+        'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str',
+      ].forEach((field) => expect(climate).toContain(`r._field == "${field}"`));
+      expect(branch).not.toContain('r._measurement');
+    });
     expect(() => buildStatesQuery('home_assistant', { ...entities, climate: 'x") or true or ("' }, new Date(0), new Date(1))).toThrow('Unsafe entity id');
   });
 
