@@ -254,6 +254,9 @@ export function detectHvacEvents(samples: HvacSample[], timeZone: string): Place
 export interface Grid {
   times: number[];
   values: Map<string, Map<number, number>>;
+  // Start of the window of the point each value came from (its earliest
+  // possible reading time).
+  sources: Map<string, Map<number, number>>;
 }
 
 function cleanPoints(points: SensorSeriesInput['points']): SensorSeriesInput['points'] {
@@ -276,17 +279,47 @@ export function alignSensors(sensors: SensorSeriesInput[]): Grid {
     }
   }
   const values = new Map<string, Map<number, number>>();
+  const sources = new Map<string, Map<number, number>>();
   cleaned.forEach(({ id, points }) => {
     const filled = new Map<number, number>();
+    const from = new Map<number, number>();
     let index = -1;
     times.forEach((t) => {
       while (index + 1 < points.length && points[index + 1].t + BUCKET_MS <= t) index += 1;
-      if (index >= 0 && t - points[index].t <= MAX_READING_AGE_MS) filled.set(t, points[index].v);
+      if (index >= 0 && t - points[index].t <= MAX_READING_AGE_MS) {
+        filled.set(t, points[index].v);
+        from.set(t, points[index].t);
+      }
     });
     values.set(id, filled);
+    sources.set(id, from);
   });
-  return { times, values };
+  return { times, values, sources };
 }
+
+// The grid restricted to readings taken within [from, to): a value is kept
+// only when its whole window lies inside, so readings from before the start
+// (e.g. while the thermostat was off) or after the end never count.
+function windowGrid(grid: Grid, from: number, to: number): Grid {
+  const values = new Map<string, Map<number, number>>();
+  const sources = new Map<string, Map<number, number>>();
+  grid.values.forEach((filled, id) => {
+    const origin = grid.sources.get(id)!;
+    const keptValues = new Map<number, number>();
+    const keptSources = new Map<number, number>();
+    filled.forEach((v, t) => {
+      const source = origin.get(t)!;
+      if (source >= from && source + BUCKET_MS <= to) {
+        keptValues.set(t, v);
+        keptSources.set(t, source);
+      }
+    });
+    values.set(id, keptValues);
+    sources.set(id, keptSources);
+  });
+  return { times: grid.times.filter((t) => t > from && t <= to), values, sources };
+}
+
 
 // Sensors fresh at enough of `times`, and the times at which all of them are fresh.
 function cohortAt(grid: Grid, times: number[]): { cohort: string[]; times: number[] } {
@@ -313,6 +346,12 @@ function stateIndexAt(samples: HvacSample[], t: number): number {
 // homekit_controller) report idle for hours after a set point increase.
 function rulesOutHeating(sample: HvacSample): boolean {
   return !sample.gap && !!sample.hvacMode && !canHeat(sample);
+}
+
+// First recorded state after `t` in which heating is impossible (off/cool) or
+// unknown (a gap), if any.
+function nextNoHeat(samples: HvacSample[], t: number): number | undefined {
+  return samples.find((s) => s.t > t && (s.gap || rulesOutHeating(s)))?.t;
 }
 
 // Whether recorded thermostat modes show it couldn't heat throughout
@@ -351,14 +390,21 @@ export function inferMorningEvents(
     const { day, hour } = clock(t);
     if (seenDays.has(day) || hour < MORNING_START_HOUR || hour >= MORNING_END_HOUR) return;
     if (observed.some((e) => Math.abs(e.t - t) < EVENT_WINDOW_MS)) return;
-    const later = t + INFERRED_RISE_WINDOW_MS;
+    if (cannotStartAt(samples, t)) return;
+    // The rise must happen while heating is possible: only readings taken
+    // from t until the first off/cool state or gap (at most an hour) count.
+    const riseEnd = Math.min(t + INFERRED_RISE_WINDOW_MS, nextNoHeat(samples, t) ?? Number.POSITIVE_INFINITY);
+    const window = windowGrid(grid, t, riseEnd);
+    if (window.times.length < 2) return;
+    const first = window.times[0];
+    const last = window.times[window.times.length - 1];
     // Same sensors at both instants, so membership can't fake a rise.
-    const cohort = [...grid.values.entries()]
-      .filter(([, filled]) => filled.has(t) && filled.has(later))
+    const cohort = [...window.values.entries()]
+      .filter(([, filled]) => filled.has(first) && filled.has(last))
       .map(([id]) => id);
     if (cohort.length < MIN_SENSORS_FOR_MEAN) return;
-    if (cohortMean(grid, cohort, later) - cohortMean(grid, cohort, t) < INFERRED_RISE) return;
-    if (heatingRuledOut(samples, t, later) || cannotStartAt(samples, t)) return;
+    if (cohortMean(window, cohort, last) - cohortMean(window, cohort, first) < INFERRED_RISE) return;
+    if (heatingRuledOut(samples, t, riseEnd)) return;
     seenDays.add(day);
     events.push({ type: 'morning', t, inferred: true });
   });
@@ -375,6 +421,8 @@ interface EventContext {
   event: PlacementEvent;
   cohort: Set<string>;
   times: number[];
+  // The grid restricted to readings taken within the event window.
+  grid: Grid;
   // Post-satisfaction window and the set point in force; null when the
   // thermostat history can't establish it.
   overshoot: OvershootWindow | null;
@@ -441,10 +489,12 @@ function eventContexts(grid: Grid, events: PlacementEvent[], samples: HvacSample
       : heatUpEnd(samples, event).at;
     const gap = samples.find((s) => s.t > event.t && s.gap)?.t;
     const end = Math.min(event.t + EVENT_WINDOW_MS, stopped ?? Number.POSITIVE_INFINITY, gap ?? Number.POSITIVE_INFINITY);
-    const { cohort, times } = cohortAt(grid, grid.times.filter((t) => t >= event.t && t <= end));
+    // Only readings taken within [event, end) count.
+    const window = windowGrid(grid, event.t, end);
+    const { cohort, times } = cohortAt(window, window.times);
     const nextEvent = events[index + 1]?.t ?? Number.POSITIVE_INFINITY;
     return {
-      event, cohort: new Set(cohort), times, overshoot: overshootWindow(samples, event, nextEvent),
+      event, cohort: new Set(cohort), times, grid: window, overshoot: overshootWindow(samples, event, nextEvent),
     };
   });
 }
@@ -470,16 +520,16 @@ interface SensorStats {
   absoluteOffsetSum: number;
 }
 
-function measure(sensor: SensorSeriesInput, contexts: EventContext[], grid: Grid): SensorStats {
+function measure(sensor: SensorSeriesInput, contexts: EventContext[]): SensorStats {
   const stats: SensorStats = {
     sensor, eventOffsets: [], overshoots: [], sampleCount: 0, absoluteOffsetSum: 0,
   };
-  const filled = grid.values.get(sensor.id)!;
   const points = cleanPoints(sensor.points);
   contexts.forEach((ctx) => {
     if (ctx.cohort.has(sensor.id) && ctx.times.length >= MIN_EVENT_SAMPLES) {
       const members = [...ctx.cohort];
-      const offsets = ctx.times.map((t) => filled.get(t)! - cohortMean(grid, members, t));
+      const filled = ctx.grid.values.get(sensor.id)!;
+      const offsets = ctx.times.map((t) => filled.get(t)! - cohortMean(ctx.grid, members, t));
       stats.sampleCount += offsets.length;
       stats.absoluteOffsetSum += offsets.reduce((sum, o) => sum + Math.abs(o), 0);
       stats.eventOffsets.push({ type: ctx.event.type, offset: mean(offsets)!, inferred: ctx.event.inferred });
@@ -680,7 +730,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const grid = alignSensors(sensors);
   const contexts = eventContexts(grid, events, samples);
   const analyzed: Analyzed[] = sensors.map((sensor) => {
-    const stats = measure(sensor, contexts, grid);
+    const stats = measure(sensor, contexts);
     const offsetsOf = (type?: PlacementEventType) => stats.eventOffsets
       .filter((e) => !type || e.type === type)
       .map((e) => e.offset);

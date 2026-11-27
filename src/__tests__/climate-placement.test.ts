@@ -522,7 +522,10 @@ describe('analyzePlacement', () => {
     }));
     const office = result.sensors.find((s) => s.id === 'office_temperature')!;
     expect(office).toMatchObject({ averageOffset: -2, classification: 'cold' });
-    expect(office.sampleCount).toBe(90);
+    // 10 events × 7 shared instants (06:30–08:00): only readings taken inside
+    // each 2-hour window count, and the staggered sensors' first in-window
+    // readings (06:07, 06:11) can only be used from 06:30.
+    expect(office.sampleCount).toBe(70);
   });
 
   it('never compares stale readings across gaps and keeps the house average membership fixed', () => {
@@ -596,9 +599,67 @@ describe('analyzePlacement', () => {
       'UTC',
       samples,
     );
+    expect(events).toHaveLength(5);
     expect(events.every((e) => ((e.t - START) % DAY) / HOUR >= 7.5)).toBe(true);
     expect(result.recommendations.some((r) => r.sensorId === 'office_temperature')).toBe(false);
     expect(result.sensors.find((s) => s.id === 'office_temperature')!.classification).not.toBe('cold');
+  });
+
+  // Four sensors with readings every 15 minutes from `value(sensor, hour)`.
+  const rooms = (value: (id: string, hour: number) => number): SensorSeriesInput[] => [
+    'office_temperature', 'kitchen_temperature', 'living_temperature', 'bedroom_temperature',
+  ].map((id) => {
+    const points = [];
+    for (let t = START; t < START + 5 * DAY; t += 15 * 60 * 1000) {
+      points.push({ t, v: value(id, ((t - START) % DAY) / HOUR) });
+    }
+    return {
+      id, name: id, isThermostat: false, points,
+    };
+  });
+
+  it('only infers a warm-up from a rise while heating is possible', () => {
+    // Off from 03:00, heat from 07:30, off again from 08:15. The rooms stay at
+    // 17 °C while heat is possible and only warm (sun) once it's off again,
+    // with the Office lagging; that warming isn't a heat-up.
+    const samples = Array.from({ length: 5 }, (_unused, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 18 }),
+      state(at(d, 3), 'off', { presetMode: null, setpoint: null, hvacMode: 'off' }),
+      state(at(d, 7.5), 'idle', { presetMode: null, setpoint: 20 }),
+      state(at(d, 8.25), 'off', { presetMode: null, setpoint: null, hvacMode: 'off' }),
+      state(at(d, 12), 'idle', { presetMode: null, setpoint: 18 }),
+    ]).flat();
+    const sensors = rooms((id, h) => {
+      if (h < 8.25 || h >= 12) return 17;
+      return id === 'office_temperature' ? 17 : 21;
+    });
+    expect(inferMorningEvents(sensors, 'UTC', samples)).toEqual([]);
+    const result = analyzePlacement(input({ sensors, hvac: samples }));
+    expect(result.coverage).toMatchObject({ morningEvents: 0, inferredMorningEvents: 0 });
+    expect(result.recommendations.some((r) => r.sensorId === 'office_temperature')).toBe(false);
+  });
+
+  it('only uses readings taken inside the heat-up window', () => {
+    // Off from 03:00, heat from 07:30 until 08:15. The rooms warm 1 °C per 15
+    // minutes from 07:30. The Office's 07:15–07:30 reading, taken while the
+    // thermostat was still off, is 6 °C low; it must not make the Office cold.
+    const samples = Array.from({ length: 5 }, (_unused, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 18 }),
+      state(at(d, 3), 'off', { presetMode: null, setpoint: null, hvacMode: 'off' }),
+      state(at(d, 7.5), 'idle', { presetMode: null, setpoint: 20 }),
+      state(at(d, 8.25), 'off', { presetMode: null, setpoint: null, hvacMode: 'off' }),
+      state(at(d, 12), 'idle', { presetMode: null, setpoint: 18 }),
+    ]).flat();
+    const sensors = rooms((id, h) => {
+      if (id === 'office_temperature' && h === 7.25) return 11;
+      if (h < 7.5 || h >= 12) return 17;
+      return Math.min(21, 18 + (h - 7.5) * 4);
+    });
+    const result = analyzePlacement(input({ sensors, hvac: samples }));
+    expect(result.coverage).toMatchObject({ morningEvents: 5, inferredMorningEvents: 5 });
+    const office = result.sensors.find((s) => s.id === 'office_temperature')!;
+    expect(office).toMatchObject({ classification: 'representative', morningOffset: 0 });
+    expect(result.recommendations.some((r) => r.sensorId === 'office_temperature')).toBe(false);
   });
 
   it('infers mornings when the thermostat reports idle through a set point increase', () => {

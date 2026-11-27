@@ -413,7 +413,9 @@ alone ("the thermostat may keep heating to satisfy it").
   window started, so stale readings are never compared. A sensor joins an
   event's house average only if it is fresh for at least 75% of the event, and
   the average is only taken where every joined sensor is fresh, so membership
-  doesn't change within an event.
+  doesn't change within an event. Only 15-minute averages whose whole window
+  lies inside the event window count, so readings from just before an event
+  (e.g. while the thermostat was still off) never do.
 - **Events** come from Home Assistant's `/api/history/period` for the reported
   thermostat (mode, `hvac_action`, `preset_mode`, set points in its
   `temperatureUnit`, converted to °C; dropped if the unit is unknown or the
@@ -433,6 +435,8 @@ alone ("the thermostat may keep heating to satisfy it").
   - On days without an observed morning warm-up (e.g. the recorder keeps fewer
     days than requested, or there's no thermostat history at all), a morning
     warm-up is *inferred* when the house average rises 0.5 °C within an hour,
+    measured only from readings taken from the candidate start until the first
+    off/cool state or gap (so the rise happens while heating is possible),
     unless the recorded thermostat mode couldn't heat then (off, cool). It
     never starts while an off/cool state or a gap is in force (the last
     recorded state at or before its start); it can start later, once a
