@@ -1451,6 +1451,73 @@ describe('ClimatePlacementService', () => {
     expect(old.calls('states')[1]).toContain('stop: time(v: "2025-10-15T14:00:00.000Z")');
   });
 
+  it('review 57a228c: does not pair a preheat across a parsed climate outage', async () => {
+    const run = async (outage: boolean) => {
+      const fixture = makeDeps();
+      const start = Date.parse('2026-01-15T00:00:00Z');
+      const hour = 60 * 60_000;
+      const day = 24 * hour;
+      const iso = (t: number) => new Date(t).toISOString();
+      const comfort = (t: number, setting: string) => ({
+        _time: iso(t), _field: 'state', _value: setting, domain: 'select', entity_id: 'home_current_mode',
+      });
+      const temperatures: Rows = [];
+      const states: Rows = [];
+      for (let d = 0; d < 5; d += 1) {
+        const beginning = start + d * day;
+        const wake = beginning + 6 * hour;
+        states.push(
+          climateRow(iso(beginning), 'state', 'heat'),
+          climateRow(iso(beginning), 'hvac_action_str', 'idle'),
+          climateRow(iso(beginning), 'temperature', '21'),
+          comfort(beginning, 'sleep'),
+          climateRow(iso(beginning + 5.5 * hour), 'hvac_action_str', 'heating'),
+          comfort(wake, 'home'),
+          ...(outage
+            ? [
+              climateRow(iso(wake + 5 * 60_000), 'state', 'unavailable'),
+              climateRow(iso(wake + 10 * 60_000), 'state', 'heat'),
+              climateRow(iso(wake + 10 * 60_000), 'hvac_action_str', 'idle'),
+              climateRow(iso(wake + 10 * 60_000), 'temperature', '21'),
+            ] : [climateRow(iso(wake + 5 * 60_000), 'hvac_action_str', 'idle')]),
+          climateRow(iso(beginning + 17 * hour), 'hvac_action_str', 'heating'),
+          climateRow(iso(beginning + 20 * hour), 'hvac_action_str', 'idle'),
+          comfort(beginning + 22 * hour, 'sleep'),
+        );
+        for (let t = beginning; t < beginning + day; t += 15 * 60_000) {
+          const localHour = (t - beginning) / hour;
+          const reference = localHour >= 6.25 && localHour < 8 ? 23 : 21;
+          [
+            ['home_current_temperature', reference],
+            ['office_temperature', reference - (localHour >= 5.5 && localHour < 6 ? 3 : 0)],
+            ['kitchen_temperature', reference],
+          ].forEach(([entityId, value]) => temperatures.push({
+            _time: iso(t), _value: String(value), _measurement: '°C', entity_id: String(entityId),
+          }));
+        }
+      }
+      fixture.rows.temperatures = temperatures;
+      fixture.rows.states = states;
+      return fixture.service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature',
+        sleep: 'office_temperature,kitchen_temperature',
+        followMe: 'false',
+        thermostatHome: 'false',
+        thermostatSleep: 'false',
+      });
+    };
+    const interrupted = await run(true);
+    expect(interrupted.coverage.wakeEvents).toBe(5);
+    expect(interrupted.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.wakeOvershoot).toBeNull();
+    expect(interrupted.recommendations.some((rec) => rec.id === 'wake-office')).toBe(false);
+
+    const continuous = await run(false);
+    expect(continuous.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.wakeOvershoot).toBe(2);
+    expect(continuous.recommendations.find((rec) => rec.id === 'wake-office')).toMatchObject({
+      severity: 'high', comfortSetting: 'sleep',
+    });
+  });
+
   it('review 017f8c1: finds older compatible cooling when a newer cooling action is in heat mode', async () => {
     const fixture = makeDeps();
     fixture.rows.cooling = [
@@ -1536,6 +1603,7 @@ describe('ClimatePlacementService', () => {
     const result = await fixture.service.getInsights('7');
     expect(result.coverage.coolingFrom).toBeNull();
     expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail).not.toContain('No cooling was found');
+    expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail).not.toContain('No cooling action was confirmed');
     fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await fixture.service.getInsights('7');
     expect(fixture.calls('cooling')).toHaveLength(2);
@@ -1548,6 +1616,7 @@ describe('ClimatePlacementService', () => {
     const result = await fixture.service.getInsights('7');
     expect(result.coverage.coolingFrom).toBeNull();
     expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail).not.toContain('No cooling was found');
+    expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail).not.toContain('No cooling action was confirmed');
     fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await fixture.service.getInsights('7');
     expect(fixture.calls('cooling')).toHaveLength(2);
@@ -1566,21 +1635,26 @@ describe('ClimatePlacementService', () => {
     expect(fixture.calls('temperatures')).toHaveLength(2);
   });
 
-  it('review 017f8c1: can conclude no compatible cooling from a known incompatible action', async () => {
-    const fixture = makeDeps();
-    neutralHeating(fixture);
-    fixture.rows.cooling = [
-      climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
-      climateRow('2026-01-19T12:00:00Z', 'state', 'heat'),
-    ];
-    const result = await fixture.service.getInsights('7');
-    expect(result.coverage.coolingFrom).toBeNull();
-    expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail)
-      .toContain('No cooling was found in the available history for the past year.');
-    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
-    await fixture.service.getInsights('7');
-    expect(fixture.calls('cooling')).toHaveLength(1);
-  });
+  it.each(['incompatible', 'empty'] as const)(
+    'review 57a228c: describes %s cooling history as unconfirmed, not absent',
+    async (history) => {
+      const fixture = makeDeps();
+      neutralHeating(fixture);
+      fixture.rows.cooling = history === 'empty' ? [] : [
+        climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+        climateRow('2026-01-19T12:00:00Z', 'state', 'heat'),
+      ];
+      const result = await fixture.service.getInsights('7');
+      expect(result.coverage.coolingFrom).toBeNull();
+      const summary = result.recommendations.find((rec) => rec.id === 'no-changes')!.detail;
+      expect(summary).toContain('No cooling action was confirmed with a compatible thermostat mode in the available history for the past year.');
+      expect(summary).toContain('Gaps or conflicting records do not rule out cooling.');
+      expect(summary).not.toContain('No cooling was found');
+      fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+      await fixture.service.getInsights('7');
+      expect(fixture.calls('cooling')).toHaveLength(1);
+    },
+  );
 
   it('review 017f8c1: accepts a later verified cooling action after an uncertain candidate', async () => {
     const fixture = makeDeps();
@@ -1612,14 +1686,18 @@ describe('ClimatePlacementService', () => {
   });
 
   it('degrades when the cooling lookup fails and retries sooner', async () => {
-    const { service, rows, calls, advance } = makeDeps();
-    rows.cooling = new Error('influx down');
-    const result = await service.getInsights('7');
+    const fixture = makeDeps();
+    neutralHeating(fixture);
+    fixture.rows.cooling = new Error('influx down');
+    const result = await fixture.service.getInsights('7');
     expect(result.coverage.coolingFrom).toBeNull();
-    expect(result.recommendations.map((rec) => rec.detail).join(' ')).not.toContain('No cooling was found');
-    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
-    await service.getInsights('7');
-    expect(calls('cooling')).toHaveLength(2);
+    expect(result.recommendations.find((rec) => rec.id === 'no-changes')).toBeDefined();
+    const details = result.recommendations.map((rec) => rec.detail).join(' ');
+    expect(details).not.toContain('No cooling was found');
+    expect(details).not.toContain('No cooling action was confirmed');
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('cooling')).toHaveLength(2);
   });
 
   it('caches per participation configuration and rejects unknown sensor ids', async () => {

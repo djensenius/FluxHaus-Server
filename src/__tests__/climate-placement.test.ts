@@ -326,7 +326,8 @@ describe('analyzePlacement', () => {
     expect(result.recommendations[0].detail).toBe(
       'In 5 of 5 wake-ups (Sleep → Home), Office read 2.4 °C below the reported or approximated comfort reading. '
       + 'If it\'s in your Home comfort setting, a low reading could contribute to a longer warm-up. Kitchen peaked 1.0 °C over '
-      + 'the Home set point on average in the 2 hours after those cold, heated wake-ups with sufficient readings. '
+      + 'the Home set point on average in the 2 hours after those cold, heated wake-ups with continuous thermostat history '
+      + 'and sufficient room readings. '
       + 'Move it to an interior wall at about chest height, away from windows, doors and vents, or remove it from Home. '
       + 'The Sleep set point averaged 4.0 °C below Home for those cold wake-ups. '
       + 'Smart Recovery can start heating before Home; consider a smaller Sleep setback or reviewing Smart Recovery timing.',
@@ -1565,7 +1566,8 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       'In 5 of 5 wake-ups (Sleep → Home), Bedroom read 1.5 °C below the reported or approximated comfort reading. '
       + 'If it\'s in your Home comfort setting, a low reading could contribute to a longer warm-up. Living, Kitchen and Office '
       + 'peaked 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after those cold, heated wake-ups '
-      + 'with sufficient readings. Move it to an interior wall at about chest height, away from windows, doors and vents, '
+      + 'with continuous thermostat history and sufficient room readings. Move it to an interior wall at about chest height, '
+      + 'away from windows, doors and vents, '
       + 'or remove it from Home. The Sleep '
       + 'set point averaged 4.0 °C below Home for those cold wake-ups. The warm-up ran 150 minutes on average for those '
       + 'cold wake-ups. Smart Recovery can start heating '
@@ -2500,7 +2502,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(tip.detail).not.toContain('dipped');
   });
 
-  it('discloses when no cooling was recorded in the past year', () => {
+  it('reports no selected cooling window when cooling was not confirmed', () => {
     const result = analyzePlacement(wakeInput({ cooling: null }));
     expect(result.coverage).toMatchObject({
       coolingFrom: null, coolingTo: null, coolingEvents: 0,
@@ -4276,6 +4278,133 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       expect(modeled.detail).toContain('approximately 0% of comparable samples');
     });
 
+    type WakeInterruption =
+      | 'none' | 'gap' | 'brief-gap' | 'unknown-action' | 'unsupported-action' | 'missing-mode' | 'missing-target'
+      | 'missing-preheat-mode' | 'missing-preheat-target' | 'target-change' | 'late-gap';
+    const interruptedWake = (
+      kind: WakeInterruption, interruptedDays = [0, 1, 2, 3, 4], peakDays = [0, 1, 2, 3, 4],
+    ) => {
+      const preheat = kind.startsWith('missing-preheat') ? 5 : 5.5;
+      const sensors = rooms({
+        home_current_temperature: 0,
+        bedroom_temperature: (t) => {
+          const hour = ((t - START) % DAY) / HOUR;
+          return hour >= preheat && hour < 6 ? -3 : 0;
+        },
+        living_temperature: 0,
+        kitchen_temperature: 0,
+      }, (t) => {
+        const day = Math.floor((t - START) / DAY);
+        const hour = ((t - START) % DAY) / HOUR;
+        if (!peakDays.includes(day) || hour < 6.25 || hour >= 8) return 21;
+        return kind === 'late-gap' && hour >= 6.75 ? 28 : 23;
+      });
+      const history = Array.from({ length: 5 }, (_, d) => {
+        const h = at(d, 6);
+        const dayKind = interruptedDays.includes(d) ? kind : 'none';
+        const preheatChanges = dayKind === 'missing-preheat-mode' || dayKind === 'missing-preheat-target'
+          ? [
+            state(at(d, 5.25), 'heating', {
+              presetMode: null,
+              ...(dayKind === 'missing-preheat-mode' ? { hvacMode: null } : { setpoint: null }),
+            }),
+            state(at(d, 5) + 20 * 60_000, 'heating', { presetMode: null }),
+          ] : [];
+        const interruption = dayKind === 'gap' || dayKind === 'brief-gap'
+          ? [
+            gap(h + 5 * 60_000),
+            state(h + 5 * 60_000 + (dayKind === 'brief-gap' ? 1 : 5 * 60_000), 'idle', { presetMode: null }),
+          ]
+          : dayKind === 'unknown-action' || dayKind === 'unsupported-action'
+            || dayKind === 'missing-mode' || dayKind === 'missing-target'
+            ? [
+              state(h + 5 * 60_000, dayKind === 'unknown-action' ? null : dayKind === 'unsupported-action' ? 'vendor_wait' : 'idle', {
+                presetMode: null,
+                ...(dayKind === 'missing-mode' ? { hvacMode: null } : {}),
+                ...(dayKind === 'missing-target' ? { setpoint: null } : {}),
+              }),
+              state(h + 10 * 60_000, 'idle', { presetMode: null }),
+            ]
+            : [
+              state(h + 5 * 60_000, 'idle', { presetMode: null, setpoint: dayKind === 'target-change' ? 20 : 21 }),
+              ...(dayKind === 'target-change'
+                ? [state(h + 10 * 60_000, 'idle', { presetMode: null })] : []),
+              ...(dayKind === 'late-gap'
+                ? [gap(h + 45 * 60_000), state(h + 50 * 60_000, 'idle', { presetMode: null })] : []),
+            ];
+        return [
+          state(at(d, 0), 'idle', { presetMode: null }),
+          state(at(d, preheat), 'heating', { presetMode: null }),
+          ...preheatChanges,
+          ...interruption,
+          state(at(d, 17), 'heating', { presetMode: null }),
+          state(at(d, 20), 'idle', { presetMode: null }),
+          state(at(d, 22), 'idle', { presetMode: null }),
+        ];
+      }).flat();
+      const members = ['bedroom_temperature', 'living_temperature', 'kitchen_temperature'];
+      return analyzePlacement(wakeInput({
+        sensors, hvac: history, participation: { ...config(members), sleep: members },
+      }));
+    };
+
+    it.each(['gap', 'brief-gap', 'unknown-action', 'unsupported-action', 'missing-mode', 'missing-target'] as const)(
+      'review 57a228c: does not pair preheat with a post-recovery peak after %s in the first wake bucket',
+      (kind) => {
+        const result = interruptedWake(kind);
+        expect(result.coverage.wakeEvents).toBe(5);
+        expect(result.recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+        expect(result.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBeNull();
+      },
+    );
+
+    it.each(['missing-preheat-mode', 'missing-preheat-target'] as const)(
+      'review 57a228c: retains an independent wake peak but does not pair it across %s',
+      (kind) => {
+        const result = interruptedWake(kind);
+        expect(result.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(2);
+        expect(result.recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+      },
+    );
+
+    it('review 57a228c: averages wake peaks only from uninterrupted wakes', () => {
+      const gapPeaks = interruptedWake('gap', [0, 1, 2], [0, 1, 2]);
+      expect(gapPeaks.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(0);
+      expect(gapPeaks.recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+
+      const continuousPeaks = interruptedWake('gap', [0, 1, 2], [3, 4]);
+      expect(continuousPeaks.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(2);
+      expect(continuousPeaks.recommendations.find((rec) => rec.id === 'wake-bedroom')).toMatchObject({ severity: 'high' });
+    });
+
+    it('review 57a228c: does not restart an unheated wake peak after an early outage', () => {
+      const sensors = rooms({ bedroom_temperature: 0 }, (t) => {
+        const hour = ((t - START) % DAY) / HOUR;
+        return hour >= 6.25 && hour < 8 ? 23 : 21;
+      });
+      const history = (outage: boolean) => Array.from({ length: 5 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null }),
+        ...(outage
+          ? [gap(at(d, 6) + 5 * 60_000), state(at(d, 6) + 10 * 60_000, 'idle', { presetMode: null })] : []),
+        state(at(d, 22), 'idle', { presetMode: null }),
+      ]).flat();
+      const peak = (outage: boolean) => analyzePlacement(wakeInput({ sensors, hvac: history(outage) }))
+        .sensors.find((sensor) => sensor.id === 'bedroom_temperature')!.wakeOvershoot;
+      expect(peak(true)).toBeNull();
+      expect(peak(false)).toBe(2);
+    });
+
+    it.each(['none', 'target-change', 'late-gap'] as const)(
+      'review 57a228c: preserves continuously paired preheat and whole wake peaks with %s',
+      (kind) => {
+        const result = interruptedWake(kind);
+        expect(result.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(2);
+        const tip = result.recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+        expect(tip).toMatchObject({ severity: 'high', comfortSetting: 'sleep' });
+        expect(tip.detail).toContain('peaked 2.0 and 2.0 °C over the Home set point');
+      },
+    );
+
     it.each(['heating', 'cooling'] as const)(
       'review d29c8d1: describes the signed passive %s mean independently of the threshold share',
       (mode) => {
@@ -4888,19 +5017,27 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       expect(estimated).not.toContain("doesn't steer");
     });
 
-    it('qualifies no cooling as a finding in available history, not proof for the year', () => {
+    it('review 57a228c: qualifies unconfirmed cooling and distinguishes an unchecked lookup', () => {
       const settings = {
         sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5),
       };
       const result = analyzePlacement(input({ ...settings, cooling: null }));
       const noChanges = result.recommendations.find((r) => r.id === 'no-changes')!;
-      expect(noChanges.detail).toContain('No cooling was found in the available history');
+      expect(noChanges.detail).toContain('No cooling action was confirmed with a compatible thermostat mode in the available history');
+      expect(noChanges.detail).toContain('Gaps or conflicting records do not rule out cooling.');
+      expect(noChanges.detail).not.toContain('No cooling was found');
       expect(noChanges.detail).not.toContain('No cooling was recorded in the past year.');
 
       const unchecked = analyzePlacement(input({ ...settings, cooling: undefined }))
         .recommendations.find((r) => r.id === 'no-changes')!;
       expect(unchecked).toBeDefined();
       expect(unchecked.detail).not.toContain('No cooling');
+
+      const noRuns = analyzePlacement(input({
+        ...settings, cooling: { start: new Date(START), end: new Date(START + 5 * DAY) },
+      })).recommendations.find((r) => r.id === 'no-changes')!;
+      expect(noRuns.detail).toContain('No mode-compatible cooling runs were found to compare in the selected window.');
+      expect(noRuns.detail).toContain('Gaps or conflicting records do not rule out cooling.');
     });
   });
 });

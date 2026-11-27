@@ -210,7 +210,7 @@ export interface PlacementInput {
   // Comfort setting history; where known it takes precedence over the samples' presetMode.
   comfort?: ComfortSample[] | null;
   participation?: ParticipationConfig | null;
-  // null when none was found in the available history; absent when not checked.
+  // null when no mode-compatible cooling was confirmed; absent when not checked.
   cooling?: CoolingInput | null;
   // 15-minute sensor windows whose readings were dropped because their unit
   // was unknown or conflicting.
@@ -613,6 +613,23 @@ function heatingTargetModeDuring(samples: HvacSample[], from: number, to: number
   if (index < 0) return false;
   for (let i = index; i < samples.length && samples[i].t < to; i += 1) {
     if (!heatingTargetMode(samples[i])) return false;
+  }
+  return true;
+}
+
+// Known non-heating states can separate observed runs; missing HVAC evidence
+// or an applicable heating target cannot connect a warm-up to a later peak.
+function knownWakeEvidence(sample: HvacSample | undefined): boolean {
+  return !!sample && !sample.gap && knownAction(sample.hvacAction)
+    && /^(heat|cool|heat_cool|auto|off|dry|fan_only)$/i.test(sample.hvacMode ?? '')
+    && (!heatingTargetMode(sample) || sample.setpoint !== null);
+}
+
+function wakeEvidenceKnownThroughout(samples: HvacSample[], from: number, to: number): boolean {
+  const index = stateIndexAt(samples, from);
+  if (index < 0) return false;
+  for (let i = index; i < samples.length && samples[i].t < to; i += 1) {
+    if (!knownWakeEvidence(samples[i])) return false;
   }
   return true;
 }
@@ -1039,6 +1056,9 @@ interface Wake {
   run: Run | null;
   // Active heating intervals split where the comfort setting changes.
   parts: SettingRun[];
+  // Whether known, compatible thermostat evidence connects this warm-up
+  // through Home's first source bucket and the selected heating run.
+  overshootPairable: boolean;
   // Home set point minus the set point before the warm-up.
   setback: number | null;
   // Active heating time in the selected warm-up, null when the search period
@@ -1117,6 +1137,9 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
         scope,
         run,
         parts: splitBySetting(timeline, selectedActiveRuns),
+        overshootPairable: !!run && wakeEvidenceKnownThroughout(
+          samples, Math.min(run.from, h), Math.max(run.to, h + BUCKET_MS),
+        ),
         setback,
         heatingMs: complete ? selectedActiveRuns.reduce((sum, r) => sum + r.to - r.from, 0) : null,
       });
@@ -1981,18 +2004,23 @@ function wakeOvershootIn(points: SensorSeriesInput['points'], wake: Wake, sample
   const setpoint = heatingTargetOf(state);
   if (setpoint === null) return null;
   const window = wakeWindow(wake);
-  if (start > window.to) return null;
+  const to = Math.min(window.to, wake.scope.to);
+  if (start > to) return null;
   const matches = (sample: HvacSample | undefined) => !!sample && heatingTargetOf(sample) === setpoint
     && sample.hvacMode === state.hvacMode && sample.presetMode === state.presetMode;
+  // A known mode or target change can move the start past its overlapping
+  // source bucket; an outage or unknown state cannot establish continuity.
   let from = window.from;
   let previous = samples[stateIndexAt(samples, from)];
+  if (!knownWakeEvidence(previous)) return null;
   for (let i = firstIndexAfter(samples, from, timeOf, true); i < samples.length && samples[i].t <= start; i += 1) {
+    if (!knownWakeEvidence(samples[i])) return null;
     if (!matches(previous) || !matches(samples[i])) from = samples[i].t;
     previous = samples[i];
   }
-  const change = findAfter(samples, start, window.to, (sample) => !matches(sample));
+  const change = findAfter(samples, start, to, (sample) => !matches(sample));
   return overshootIn(points, {
-    from, to: Math.min(window.to, change?.t ?? window.to), setpoint,
+    from, to: Math.min(to, change?.t ?? to), setpoint,
   });
 }
 
@@ -2517,9 +2545,10 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[], model: Model, grid: G
   if (typical === null || own === null || own - typical > -AFFECTED_THRESHOLD) return null;
   const label = SETTING_LABEL[setting];
   const unknown = countUnknown(env, share);
+  const pairable = wakes.filter((wake) => wake.overshootPairable);
   const affected = rooms.filter((o) => o !== a).map((room) => ({
     room,
-    peak: mean(wakes.map((wake) => room.wakePeaks.get(wake) ?? null).filter((p): p is number => p !== null)),
+    peak: mean(pairable.map((wake) => room.wakePeaks.get(wake) ?? null).filter((p): p is number => p !== null)),
   })).filter((item): item is { room: Analyzed; peak: number } => item.peak !== null && item.peak >= AFFECTED_THRESHOLD)
     .sort((x, y) => y.peak - x.peak);
   if (affected.length === 0) return null;
@@ -2553,7 +2582,7 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[], model: Model, grid: G
         + `${withLead(countingLead(known, setting, unknown, env, share), 'a low reading could contribute to a longer warm-up.')} `
         + `${listOf(affected.map((o) => o.room.out.name))} peaked `
         + `${listOf(affected.map((o) => fmt(o.peak)))} °C over the Home set point on average `
-        + 'in the 2 hours after those cold, heated wake-ups with sufficient readings. '
+        + 'in the 2 hours after those cold, heated wake-ups with continuous thermostat history and sufficient room readings. '
         + `${adviceFor(a, 'below', setting, true)}${recovery}${followMe}${quiet}`,
       mode: 'heating',
       period: 'wake',
@@ -2825,8 +2854,13 @@ function noChanges(
   } else {
     parts.push('Overshoot after heating stopped couldn\'t be measured.');
   }
-  if (cooling.checked && !cooling.found) parts.push('No cooling was found in the available history for the past year.');
-  else if (cooling.found && cooling.events === 0) parts.push('No cooling runs were found to compare.');
+  if (cooling.checked && !cooling.found) {
+    parts.push('No cooling action was confirmed with a compatible thermostat mode in the available history for the past year. '
+      + 'Gaps or conflicting records do not rule out cooling.');
+  } else if (cooling.found && cooling.events === 0) {
+    parts.push('No mode-compatible cooling runs were found to compare in the selected window. '
+      + 'Gaps or conflicting records do not rule out cooling.');
+  }
   if (missing.length > 0) parts.push(`Not enough data for ${missing.join(', ')}.`);
   if (incompleteHeating) parts.push('Heating placement was not assessed for all observed settings or periods.');
   if (insufficientScope) parts.push('Some settings or periods lacked enough comparable data for a placement assessment.');

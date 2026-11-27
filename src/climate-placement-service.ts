@@ -344,7 +344,7 @@ union(tables: [prior, changes])
 }
 
 // Most recent positively compatible cooling; undefined when a newer action's
-// mode cannot be established, null when no possible cooling was reported.
+// mode cannot be established, null when no mode-compatible cooling was confirmed.
 function lastCompatibleCooling(rows: Record<string, string>[], start: number, end: number): number | null | undefined {
   const changes = new Map<number, { modes: Set<string>; cooling: boolean }>();
   const prior = start - PRIOR_STATE_DAYS * DAY_MS;

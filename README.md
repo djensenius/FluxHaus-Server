@@ -692,14 +692,16 @@ about 10 days:
   `days` days of data ending 2 hours after it, or the requested window when it
   falls inside it, so cooling tips also show in winter
   (`coverage.coolingFrom`/`coolingTo`, `coolingEvents`; `null`/`0` when no
-  cooling was found in the available history or the lookup could not be made).
+  mode-compatible cooling action was confirmed or the lookup could not be made).
   The lookup also reads 30 days of prior climate modes to establish the mode at
   the boundary. An action incompatible with its known mode is ignored; when a
   newer action's mode is missing, unavailable or conflicting, the window is
   unknown and no no-cooling claim is made. A later positively compatible action
-  can establish the window. A successful empty lookup does not prove complete
-  coverage for the year; a failed lookup makes no no-cooling claim. Cooling runs
-  merge across reported `idle` spells under 30 minutes (heating runs: 20 minutes), never across a
+  can establish the window. A successful lookup with no compatible action is
+  described as unconfirmed, not proof that cooling did not occur: records may
+  be incomplete or contain incompatible actions. A failed lookup makes no
+  no-cooling claim. Cooling runs merge across reported `idle` spells under
+  30 minutes (heating runs: 20 minutes), never across a
   gap, an unknown action or any other action. Cooling event offsets and daily
   room comparisons use complete source buckets within actual active cooling,
   not the merged idle spells; every room in a comparison must belong to the
@@ -741,8 +743,11 @@ about 10 days:
   the room peaked over an applicable Home heating set point in the 2 hours after
   waking (against the target in force within the first 15 minutes, excluding
   overlapping buckets before that target, and ending early at a set point,
-  mode or preset change, an incompatible or unknown action, or a gap),
-  averaged across measurable wakes whether or not they heated;
+  mode or preset change, an incompatible or unknown action, or a gap). A gap,
+  unknown action or mode, or missing applicable target during those first
+  15 minutes makes the wake peak unknown; it is not restarted after recovery.
+  A known mode or target change can still move the start past its overlapping
+  bucket. The peak is averaged across measurable wakes whether or not they heated;
   `coolingUndershoot` is the greatest dip below the cool set
   point in whole source buckets of actual active cooling, with a stable target.
   Merged idle spells and buckets spanning target changes cannot contribute.
@@ -772,8 +777,13 @@ about 10 days:
     room readings. The quoted cold offset and modeled Follow Me share use those
     cold wake-ups; the consistency denominator also includes comparable warmer
     wake-ups. Idle wakes, warmer wakes and heated wakes without that sensor's
-    qualifying reference offsets do not contribute to the tip's overshoot. It
-    targets the setting the temperature evidence came from: Home
+    qualifying reference offsets do not contribute to the tip's overshoot.
+    Pairing also requires continuous known thermostat modes, compatible
+    actions and applicable heating targets from the warm-up through the
+    first 15 minutes of Home and throughout the selected heating run. Known
+    non-heating intervals between observed runs remain usable. Independent
+    wake peaks can still be reported when earlier warm-up evidence is
+    incomplete. It targets the setting the temperature evidence came from: Home
     when measured there, else the setting the preheat ran in (e.g. Sleep,
     "while heating in Sleep before Home"). A sensor configured or estimated
     outside that setting isn't treated as a participant. It can mention a Sleep
@@ -876,7 +886,7 @@ about 10 days:
     "recommendationIds": ["wake-bedroom"]}],
   "recommendations": [{"id": "wake-bedroom", "severity": "medium", "sensorId": "bedroom_temperature",
     "action": "move", "title": "Bedroom may be holding the morning warm-up on",
-    "detail": "In 13 of 14 wake-ups (Sleep → Home), Bedroom read 1.5 °C below the reported or approximated comfort reading. Because it's in your Home comfort setting, a low reading could contribute to a longer warm-up. Living, Kitchen and Office peaked 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after waking. Move it to an interior wall at about chest height, away from windows, doors and vents, or remove it from Home. …",
+    "detail": "In 13 of 14 wake-ups (Sleep → Home), Bedroom read 1.5 °C below the reported or approximated comfort reading. Because it's in your Home comfort setting, a low reading could contribute to a longer warm-up. Living, Kitchen and Office peaked 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after those cold, heated wake-ups with continuous thermostat history and sufficient room readings. Move it to an interior wall at about chest height, away from windows, doors and vents, or remove it from Home. …",
     "mode": "heating", "period": "wake", "comfortSetting": "home",
     "affectedSensorIds": ["living_temperature", "kitchen_temperature", "office_temperature"],
     "likelyCauses": ["near a window or exterior wall"]}]
