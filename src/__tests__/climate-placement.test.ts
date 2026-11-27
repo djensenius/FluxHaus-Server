@@ -794,6 +794,28 @@ describe('analyzePlacement', () => {
     expect(result.coverage).toMatchObject({ morningEvents: 3, inferredMorningEvents: 0 });
   });
 
+  it('respects the first recorded off state without inventing heat-ups after it', () => {
+    const points = [{ t: at(0, 6), v: 20 }, { t: at(0, 6.25), v: 21 }];
+    const sensors = ['living_temperature', 'bedroom_temperature'].map((id) => ({
+      id, name: id, isThermostat: false, points,
+    }));
+    const off = state(at(0, 5), 'off', { presetMode: null, hvacMode: 'off', setpoint: null });
+    const priorHeat = state(START - HOUR, 'idle', { presetMode: null });
+    expect(inferMorningEvents(sensors, 'UTC', [off])).toEqual([]);
+    expect(inferMorningEvents(sensors, 'UTC', [priorHeat, off])).toEqual([]);
+    expect(inferMorningEvents(sensors, 'UTC', [state(START - HOUR, 'off', { hvacMode: 'off' })])).toEqual([]);
+    // Before the first observation, or with no history, the rise can still be inferred.
+    expect(inferMorningEvents(sensors, 'UTC', [state(at(0, 8), 'off', { hvacMode: 'off' })]))
+      .toEqual([{ type: 'morning', t: at(0, 6), inferred: true }]);
+    expect(inferMorningEvents(sensors, 'UTC')).toEqual([{ type: 'morning', t: at(0, 6), inferred: true }]);
+
+    const result = analyzePlacement(input({
+      sensors: series(BIASES, 3), hvac: [off], end: new Date(START + 3 * DAY), windowDays: 3,
+    }));
+    expect(result.coverage).toMatchObject({ morningEvents: 0, inferredMorningEvents: 0 });
+    expect(result.recommendations.some((rec) => rec.mode === 'heating')).toBe(false);
+  });
+
   it.each([
     ['off', (t: number) => state(t, 'off', { presetMode: null, setpoint: null, hvacMode: 'off' })],
     ['cool', (t: number) => state(t, 'idle', { presetMode: null, setpoint: 24, hvacMode: 'cool' })],
@@ -1099,7 +1121,7 @@ describe('analyzePlacement', () => {
     const result = analyzePlacement(input({
       sensors,
       hvac: cycles,
-      comfort: undefined,
+      comfort: [{ t: START - HOUR, setting: 'home' }],
     }));
     expect(result.recommendations.some((r) => r.id === 'passive-warmth-heating')).toBe(false);
     // The overshoot still suggests adding rooms to Home.
@@ -1108,7 +1130,7 @@ describe('analyzePlacement', () => {
     const inHome = analyzePlacement(input({
       sensors,
       hvac: cycles,
-      comfort: undefined,
+      comfort: [{ t: START - HOUR, setting: 'home' }],
       participation: {
         ...FOLLOW_ME_OFF, home: ['office_temperature', 'kitchen_temperature', 'living_temperature', 'bedroom_temperature'],
       },
@@ -1302,6 +1324,36 @@ describe('separately sourced climate reference', () => {
     expect(result(START + quarter, history, boundary)).toBeNull();
     expect(result(START + 2 * quarter, history, boundary)).toBeNull();
     expect(result(START + 3 * quarter, history, boundary)).toBe(-2);
+  });
+
+  it('does not use a recovery anchor that overlaps a climate outage', () => {
+    const history = [
+      state(START - HOUR, 'idle'),
+      gap(START + quarter + 2_000),
+      state(START + 2 * quarter, 'idle'),
+    ];
+    const reference = {
+      invalidations: [START + 60_000],
+      points: [
+        { t: START + quarter, v: 20 }, { t: START + 2 * quarter, v: 20 }, { t: START + 3 * quarter, v: 20 },
+      ],
+    };
+    // The 00:15 numeric value may arrive before the outage; the 00:30 one may
+    // not arrive until 00:44. Only the next full bucket has a safe anchor.
+    expect(result(START + 2 * quarter, history, reference)).toBeNull();
+    expect(result(START + 3 * quarter, history, reference)).toBe(-2);
+  });
+
+  it('requires a new complete anchor after climate gaps and invalid unit windows', () => {
+    const points = [{ t: START + quarter, v: 20 }, { t: START + 2 * quarter, v: 20 }];
+    const gapHistory = [state(START - HOUR, 'idle'), gap(START + 2_000), state(START + quarter, 'idle')];
+    expect(result(START + quarter, gapHistory, { points })).toBeNull();
+    expect(result(START + 2 * quarter, gapHistory, { points })).toBe(-2);
+
+    const history = [state(START - HOUR, 'idle')];
+    const invalid = { points, invalidWindows: [START] };
+    expect(result(START + quarter, history, invalid)).toBeNull();
+    expect(result(START + 2 * quarter, history, invalid)).toBe(-2);
   });
 
   it('reports an assumed reference unit even with one room and no recommendations', () => {
@@ -3213,6 +3265,174 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     const flat = { bedroom_temperature: -2, living_temperature: 0, kitchen_temperature: 0 };
     const home = [{ t: START, setting: 'home' }];
     const excludedBedroom = config(['living_temperature', 'kitchen_temperature']);
+
+    const activeHistory = (mode: 'heating' | 'cooling', days: number) => Array.from({ length: days }, (_, d) => {
+      const options = { presetMode: null, hvacMode: mode === 'heating' ? 'heat' : 'cool', setpoint: 21 };
+      const from = mode === 'heating' ? 6 : 12;
+      return [
+        state(at(d, 0), 'idle', options),
+        state(at(d, from), mode, options),
+        state(at(d, from + 3), 'idle', options),
+      ];
+    }).flat();
+
+    it.each(['heating', 'cooling'] as const)(
+      'keeps %s advice setting-neutral when comfort and preset history are unknown',
+      (mode) => {
+        const sensors = rooms({ kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 }, () => 22, { days: 3 });
+        const end = new Date(START + 3 * DAY);
+        const participation = {
+          home: ['living_temperature', 'bedroom_temperature'],
+          sleep: ['kitchen_temperature', 'living_temperature', 'bedroom_temperature'],
+          away: null,
+          followMe: false,
+          thermostat: THERMOSTAT_EXCLUDED,
+        };
+        const run = (comfort: ComfortSample[] | null) => analyzePlacement(input({
+          sensors,
+          primaryThermostatId: null,
+          hvac: activeHistory(mode, 3),
+          comfort,
+          participation,
+          end,
+          windowDays: 3,
+          cooling: mode === 'cooling' ? { start: new Date(START), end } : undefined,
+        }));
+        const result = run(null);
+        const kitchen = result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!;
+        expect(kitchen.participation).toMatchObject({ home: false, sleep: true });
+        const tip = result.recommendations.find((rec) => rec.mode === mode && rec.sensorId === kitchen.id)!;
+        expect(tip).toMatchObject({
+          id: mode === 'heating' ? 'move-kitchen' : 'cooling-kitchen', action: 'move', severity: 'low', comfortSetting: null,
+        });
+        expect(tip.detail).toContain('If it participates in the comfort setting active at that time');
+        expect(tip.detail).not.toMatch(/\bHome\b|\bSleep\b/);
+        expect(kitchen.verdictSummary).toContain('if');
+        expect(result.recommendations.some((rec) => rec.action === 'include_in_comfort')).toBe(false);
+
+        // Known Home still supports the configured exclusion, and known Sleep
+        // still supports cooling guidance for its participating sensor.
+        expect(run(home).recommendations.some((rec) => rec.id === (mode === 'heating' ? 'add-kitchen' : 'add-cooling-kitchen')))
+          .toBe(true);
+        if (mode === 'cooling') {
+          expect(run([{ t: START, setting: 'sleep' }]).recommendations.find((rec) => rec.id === 'cooling-kitchen'))
+            .toMatchObject({ comfortSetting: 'sleep', action: 'move' });
+        }
+      },
+    );
+
+    it.each([true, null])('keeps unknown-setting Follow Me advice conditional when followMe is %s', (followMe) => {
+      (['heating', 'cooling'] as const).forEach((mode) => {
+        const sensors = rooms({ kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 }, () => 22, { days: 3 });
+        const end = new Date(START + 3 * DAY);
+        const result = analyzePlacement(input({
+          sensors,
+          hvac: activeHistory(mode, 3),
+          comfort: null,
+          participation: { ...config(['living_temperature', 'bedroom_temperature'], followMe), sleep: sensors.map((s) => s.id) },
+          end,
+          windowDays: 3,
+          cooling: mode === 'cooling' ? { start: new Date(START), end } : undefined,
+        }));
+        const tip = result.recommendations.find((rec) => rec.mode === mode && rec.sensorId === 'kitchen_temperature')!;
+        expect(tip).toMatchObject({ comfortSetting: null, severity: 'low', action: 'move' });
+        expect(tip.detail).toContain('If it participates in the comfort setting active at that time and counted toward the average');
+        expect(tip.detail).toContain(followMe === true ? 'with Follow Me on' : 'Follow Me wasn\'t specified');
+        expect(tip.detail).not.toMatch(/\bHome\b|\bSleep\b|% of comparable samples/);
+        expect(result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.verdictSummary)
+          .toContain('and counted toward the average');
+      });
+    });
+
+    it('does not turn a setting-unknown overshoot into Home inclusion advice', () => {
+      const sensors = rooms({ kitchen_temperature: 0, living_temperature: 0, bedroom_temperature: 0 }, () => 25, { days: 3 });
+      const run = (comfort: ComfortSample[] | null) => analyzePlacement(input({
+        sensors,
+        hvac: activeHistory('heating', 3),
+        comfort,
+        participation: config(['living_temperature', 'bedroom_temperature']),
+        end: new Date(START + 3 * DAY),
+        windowDays: 3,
+      }));
+      expect(run(null).recommendations.some((rec) => rec.action === 'include_in_comfort')).toBe(false);
+      expect(run(home).recommendations.find((rec) => rec.id === 'add-kitchen'))
+        .toMatchObject({ action: 'include_in_comfort', comfortSetting: 'home' });
+    });
+
+    it('keeps unknown cooling runs separate from known-setting runs', () => {
+      const sensors = rooms({ kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 }, () => 22, { days: 6 });
+      const end = new Date(START + 6 * DAY);
+      const result = analyzePlacement(input({
+        sensors,
+        hvac: activeHistory('cooling', 6),
+        comfort: [{ t: START, setting: 'home' }, { t: at(3, 0), setting: null }],
+        participation: config(sensors.map((sensor) => sensor.id)),
+        end,
+        windowDays: 6,
+        cooling: { start: new Date(START), end },
+      }));
+      const tips = result.recommendations.filter((rec) => rec.sensorId === 'kitchen_temperature' && rec.mode === 'cooling');
+      expect(tips.map((tip) => [tip.id, tip.comfortSetting])).toEqual([
+        ['cooling-kitchen-home', 'home'], ['cooling-kitchen-unknown', null],
+      ]);
+      expect(tips[1].detail).toContain('comfort setting unknown');
+      expect(tips[1].detail).toContain('If it participates in the comfort setting active at that time');
+    });
+
+    it('labels partial and sparse heating dates as sampled calendar dates', () => {
+      const start = START + 12 * HOUR;
+      const end = start + 14 * DAY;
+      const sensors = rooms({ kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 }, () => 22, { days: 15 });
+      const result = analyzePlacement(input({
+        start: new Date(start),
+        end: new Date(end),
+        windowDays: 14,
+        sensors,
+        hvac: [state(START - HOUR, 'idle')],
+        comfort: home,
+        participation: config(sensors.map((sensor) => sensor.id)),
+      }));
+      const kitchen = result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!;
+      expect(kitchen.consistency).toMatchObject({ days: 15, warmDays: 15 });
+      const tip = result.recommendations.find((rec) => rec.sensorId === kitchen.id && rec.mode === 'heating')!;
+      expect(tip.detail).toContain('15 of 15 sampled calendar dates (available samples, not full days or continuous coverage)');
+      expect(kitchen.verdictSummary).toContain('15 of 15 sampled calendar dates (available samples, not full days or continuous coverage)');
+    });
+
+    it('does not imply continuous heating evidence from scattered samples', () => {
+      const sensors = rooms({ kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 }, () => 22)
+        .map((sensor) => ({
+          ...sensor, points: sensor.points.filter((point) => (point.t - START) % (3 * HOUR) === 0),
+        }));
+      const result = analyzePlacement(input({
+        sensors, hvac: [state(START - HOUR, 'idle')], comfort: home,
+        participation: config(sensors.map((sensor) => sensor.id)),
+      }));
+      const kitchen = result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!;
+      expect(kitchen.consistency).toMatchObject({ days: 5, warmDays: 5 });
+      expect(result.recommendations.find((rec) => rec.sensorId === kitchen.id && rec.mode === 'heating')!.detail)
+        .toContain('5 of 5 sampled calendar dates (available samples, not full days or continuous coverage)');
+      expect(kitchen.verdictSummary).toContain('not full days or continuous coverage');
+    });
+
+    it('labels sparse cooling dates as sampled calendar dates', () => {
+      const sensors = rooms({ kitchen_temperature: 3, living_temperature: 0, bedroom_temperature: 0 }, () => 22);
+      const history = activeHistory('cooling', 5).map((sample) => (
+        sample.hvacAction === 'idle' && sample.t % DAY === at(0, 15) % DAY
+          ? { ...sample, t: sample.t - 2.5 * HOUR } : sample
+      ));
+      const end = new Date(START + 5 * DAY);
+      const result = analyzePlacement(input({
+        sensors, hvac: history, comfort: home, participation: config(sensors.map((sensor) => sensor.id)),
+        end, cooling: { start: new Date(START), end },
+      }));
+      const kitchen = result.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!;
+      expect(kitchen.consistency).toMatchObject({ coolingDays: 5, coolingWarmDays: 5 });
+      const tip = result.recommendations.find((rec) => rec.sensorId === kitchen.id && rec.mode === 'cooling')!;
+      expect(tip.detail).toContain('5 of 5 sampled calendar dates with cooling (available samples, not full days or continuous coverage)');
+      expect(kitchen.verdictSummary)
+        .toContain('5 of 5 sampled calendar dates with cooling (available samples, not full days or continuous coverage)');
+    });
 
     it.each([
       ['a late first observation', [state(at(4, 23), 'idle')]],

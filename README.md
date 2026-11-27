@@ -484,9 +484,11 @@ about 10 days:
   `coverage.unknownUnitWindows` counts room/sensor windows, not this separate
   reference. Known climate outages, unavailable attribute values and invalid
   unit windows cannot be crossed by the combined source intervals of a
-  reference and the rooms it is compared with. After an unavailable attribute,
-  the first subsequent numeric source bucket is discarded when the aggregate
-  cannot establish when recovery occurred; later complete buckets can be used.
+  reference and the rooms it is compared with. After any such interruption,
+  the first wholly subsequent, gap-free numeric source bucket is only a
+  recovery anchor, not a comparison: the aggregate cannot establish when
+  within it the numeric value returned. A bucket overlapping an outage or
+  invalid window cannot be that anchor; later complete buckets can be used.
 - **Alignment:** readings are placed on a 15-minute grid. A 15-minute average
   is used only once its window has ended, and for at most 30 minutes after the
   window started, so stale readings are never compared. A sensor joins an
@@ -636,9 +638,10 @@ about 10 days:
     ecobee through `homekit_controller`) report idle for hours after a morning
     set point increase while the rooms warm. The earliest
     recorded (non-gap) state Home Assistant returned is reported, with its
-    timestamp as returned, as `coverage.hvacEarliestStateAt`; it may just be a
-    snapshot of the state in force at the start of the window, so it is never
-    used on its own to rule heating out. `inferredMorningEvents` counts inferred events, and
+    timestamp as returned, as `coverage.hvacEarliestStateAt`. A prior snapshot
+    or first in-window state is respected from its recorded timestamp onward,
+    not retroactively; before the first observation heating remains unobserved.
+    `inferredMorningEvents` counts inferred events, and
     every recommendation's text says how many of a sensor's heat-ups were inferred.
 - **Heating stopped:** the thermostat is *satisfied* only when it goes from
   heating to reported `idle` in a mode that can heat (an unknown
@@ -696,8 +699,9 @@ about 10 days:
   `representative`, `insufficient`; `null` for the comfort average) with a
   one-sentence `verdictSummary`. A sensor is an outlier when it is consistently
   off the other rooms (cold/warm heat-ups as above, or at least 0.5 °C off on
-  60% of at least 3 days) and also stands out from the median room, so one
-  outlier pulling the house average doesn't make every other room look skewed.
+  60% of at least 3 sampled calendar dates) and also stands out from the median
+  room, so one outlier pulling the house average doesn't make every other room
+  look skewed.
   `periodOffsets` (`sleep`, `wake`, `home`, `heatingRuns`, `cooling`) are mean
   offsets from the thermostat-reported comfort reading, or from the complete
   room-only approximation where safe (otherwise `null`). `wakeOffset` and
@@ -709,16 +713,18 @@ about 10 days:
   change or a gap); `coolingUndershoot` is the greatest dip below the cool set
   point in whole source buckets of actual active cooling, with a stable target.
   Merged idle spells and buckets spanning target changes cannot contribute.
-  Heating offsets and
-  days skip source buckets containing a known `off`/`cool` mode or cooling
-  action; without thermostat history all times count. Heating verdicts,
-  `consistency` heating days and heating tips use only Home source windows
-  (all times when no comfort setting is known), including for every room
-  in a house reference, so a carried Sleep reading isn't blamed on Home.
-  `consistency` counts days
+  Heating offsets and daily comparisons skip source buckets containing a known `off`/`cool` mode or cooling
+  action; without thermostat history all times count. When any comfort setting
+  is known, heating verdicts, `consistency` heating dates and heating tips use
+  only Home source windows, including for every room in a house reference, so a
+  carried Sleep reading isn't blamed on Home. Without any known setting,
+  comparisons are not attributed to Home and advice remains setting-neutral.
+  `consistency` counts local calendar dates with sufficient samples
   (`days`, `coldDays`, `warmDays`, `coolingDays`, `coolingColdDays`,
-  `coolingWarmDays`); `participation` and `occupiedShare` (`wake`, `home`) follow
-  the request and occupancy; `recommendationIds` lists the tips about it.
+  `coolingWarmDays`), not full days or continuous coverage; partial dates at
+  the ends of the window can count. `participation` and `occupiedShare` (`wake`,
+  `home`) follow the request and occupancy; `recommendationIds` lists the tips
+  about it.
 - **Recommendations** (`high`, `medium`, `low`; sorted by severity, wake-up and
   passive warmth first) name the sensor, the affected rooms
   (`affectedSensorIds`) and observed temperature differences, give possible
@@ -760,14 +766,19 @@ about 10 days:
     and to cooling using its own history.
   - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a
     warm Kitchen known to participate) for other heat-ups;
-    `cooling-<sensor>` (always `move`) for cooling. Heating tips are about Home.
+    `cooling-<sensor>` (always `move`) for cooling. Heating tips are about Home
+    when that setting is known. When no setting is known, useful room
+    comparisons may still yield `low`, conditional move advice with
+    `comfortSetting: null`; they do not infer Home membership or suggest
+    changing a specific setting.
     Cooling runs are split where the comfort setting changes, and cooling is
     judged separately in each setting from that setting's parts only (parts in
-    an unknown setting are left out, or treated as Home when no setting is
-    known), so evidence and advice are never blended across settings; the text
+    an unknown setting form their own conditional, setting-neutral group),
+    so evidence and advice are never blended across settings; the text
     names the setting ("while cooling ran in Sleep") when cooling ran in more
     than one. A room with the same kind of tip in two settings gets the
-    setting appended (`cooling-<sensor>-sleep`). Without a heating verdict,
+    setting appended (`cooling-<sensor>-sleep`, or `-unknown` for the
+    unknown-setting group). Without a heating verdict,
     `verdict` uses the first skewed setting by cooling time; `coolingOffset`, `coolingUndershoot` and the
     cooling `consistency` counts cover all cooling; the rooms a tip says the AC
     overcooled come from that setting's cooling only.

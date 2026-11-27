@@ -642,6 +642,41 @@ describe('ClimatePlacementService', () => {
     expect(fixture.calls('reported')).toHaveLength(2);
   });
 
+  it('requires a gap-free recovery anchor before using and caching the reference', async () => {
+    const fixture = makeDeps();
+    useClimateReference(fixture);
+    fixture.rows.states = [
+      climateRow('2026-01-19T00:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T00:01:00Z', 'current_temperature_str', 'unknown'),
+      climateRow('2026-01-19T00:15:02Z', 'state', 'unavailable'),
+      climateRow('2026-01-19T00:30:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T00:30:00Z', 'hvac_action_str', 'idle'),
+      { _time: '2026-01-19T00:30:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+    ];
+    fixture.rows.reported = [reportedRow('2026-01-19T00:15:00Z'), reportedRow('2026-01-19T00:30:00Z')];
+    fixture.rows.temperatures = [
+      { _time: '2026-01-19T00:30:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T00:30:00Z', _value: '20', _measurement: '°C', entity_id: 'kitchen_temperature' },
+    ];
+    const ambiguous = await fixture.service.getInsights('7');
+    expect(ambiguous.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home).toBeNull();
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    (fixture.rows.reported as Rows).push(reportedRow('2026-01-19T00:45:00Z'));
+    (fixture.rows.temperatures as Rows).push({
+      _time: '2026-01-19T00:45:00Z', _value: '23', _measurement: '°C', entity_id: 'office_temperature',
+    });
+    const recovered = await fixture.service.getInsights('7');
+    expect(recovered.sensors.find((sensor) => sensor.id === 'office_temperature')!.periodOffsets.home).toBe(3);
+    expect(recovered.coverage.unitAssumptions).toEqual({
+      reportedTemperature: true, setpoints: false, coolingReportedTemperature: false, coolingSetpoints: false,
+    });
+    expect(fixture.calls('reported')).toHaveLength(2);
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('reported')).toHaveLength(2);
+  });
+
   it('does not convert cooling targets with today’s unit when reported history contradicts it', async () => {
     const fixture = makeDeps();
     useClimateReference(fixture);
