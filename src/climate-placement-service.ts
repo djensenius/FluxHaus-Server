@@ -413,7 +413,13 @@ export function parseStates(
   let setpoints = new Map<string, number | null>();
   const hvac = [...climate.keys()].sort((a, b) => a - b).map((t): HvacSample => {
     const fields = climate.get(t)!;
-    if (fields.has('state')) mode = fields.get('state')!;
+    if (fields.has('state')) {
+      const nextMode = fields.get('state')!;
+      // A single-temperature target observed in one mode is not evidence of
+      // the target in another mode until that target is reported again.
+      if (nextMode !== mode) setpoints = new Map();
+      mode = nextMode;
+    }
     // An unknown/unavailable action isn't a reported action: no heating start
     // or satisfaction is read from (or into) it.
     if (fields.has('hvac_action')) action = unknownState(fields.get('hvac_action')!) ? null : fields.get('hvac_action')!;
@@ -443,7 +449,9 @@ export function parseStates(
       hvacMode: mode,
       hvacAction: action,
       presetMode: preset,
-      setpoint: temperature ?? setpoints.get('target_temp_low') ?? null,
+      setpoint: /^(heat_cool|auto)$/i.test(mode)
+        ? setpoints.get('target_temp_low') ?? null
+        : temperature ?? setpoints.get('target_temp_low') ?? null,
       coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
     };
   });

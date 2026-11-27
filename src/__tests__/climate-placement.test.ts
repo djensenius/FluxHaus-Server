@@ -2302,6 +2302,12 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
   it('splits a heating run interrupted by cooling, as cooling runs are', () => {
     // Heating from Home (06:00) to 08:00 with a 10-minute spell at 07:00.
     const ramp = (between: string, mode: string) => analyzePlacement(wakeInput({
+      // Other rooms exceed the heating target before the interruption, so
+      // wake advice doesn't depend on temperatures recorded while cooling.
+      sensors: rooms({ ...WAKE_BIASES, home_current_temperature: 0 }, (t) => {
+        const hour = ((t - START) % DAY) / HOUR;
+        return hour >= 6 && hour < 7 ? 22 : wakeBase(t);
+      }),
       hvac: Array.from({ length: 5 }, (_, d) => [
         state(at(d, 0), 'idle', { presetMode: null, setpoint: 17 }),
         state(at(d, 6), 'heating', { presetMode: null, setpoint: 21, hvacMode: mode }),
@@ -3428,6 +3434,353 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       expect(tip.detail).toContain('1.3 °C above on average while cooling ran in Home');
     });
 
+    const preheatThen = (mode: string, action: string, anomaly = false) => {
+      const sensors = rooms({
+        bedroom_temperature: (t) => {
+          const hour = ((t - START) % DAY) / HOUR;
+          return anomaly ? (hour === 6 ? -9 : 0) : (hour >= 6 && hour < 22 ? -3 : 0);
+        },
+        living_temperature: 0,
+        kitchen_temperature: 0,
+      }, () => 27, { days: 3 });
+      const all = sensors.map((sensor) => sensor.id);
+      const history = Array.from({ length: 3 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, setpoint: 17 }),
+        state(at(d, 4.5), 'heating', { presetMode: null, setpoint: 21 }),
+        state(at(d, 5.75), 'idle', { presetMode: null, setpoint: 21 }),
+        state(at(d, 6), action, { presetMode: null, hvacMode: mode, setpoint: mode === 'cool' ? 24 : 21 }),
+        state(at(d, 22), 'idle', { presetMode: null, setpoint: 17 }),
+      ]).flat();
+      return analyzePlacement(input({
+        sensors, primaryThermostatId: null, hvac: history, comfort: comfortSchedule(3),
+        participation: { ...config(all), sleep: all },
+        end: new Date(START + 3 * DAY), windowDays: 3,
+      }));
+    };
+
+    it.each([
+      ['cool', 'cooling'],
+      ['heat_cool', 'cooling'],
+    ])('review 22241a2: excludes Home %s/%s after a Sleep preheat from heating evidence', (mode, action) => {
+      const result = preheatThen(mode, action);
+      const bedroom = result.sensors.find((sensor) => sensor.id === 'bedroom_temperature')!;
+      expect(result.coverage.wakeEvents).toBe(3);
+      expect(bedroom.classification).toBe('representative');
+      expect(result.recommendations.filter((rec) => rec.mode === 'heating' && rec.sensorId === bedroom.id)).toEqual([]);
+
+      // A reported idle action in heat mode can still support the warm-up
+      // comparison; some integrations continue to report idle during a rise.
+      const heat = preheatThen('heat', 'idle');
+      expect(heat.recommendations.some((rec) => rec.mode === 'heating' && rec.sensorId === bedroom.id)).toBe(true);
+    });
+
+    it.each(['cooling', 'gap'] as const)(
+      'review 22241a2: excludes a heating source bucket spanning a brief %s interruption',
+      (interruption) => {
+        const history = Array.from({ length: 3 }, (_, d) => [
+          state(at(d, 0), 'idle', { presetMode: null, setpoint: 17 }),
+          state(at(d, 4.5), 'heating', { presetMode: null, setpoint: 21 }),
+          state(at(d, 5.75), 'idle', { presetMode: null, setpoint: 21 }),
+          interruption === 'gap'
+            ? gap(at(d, 6) + 7 * 60_000)
+            : state(at(d, 6) + 7 * 60_000, 'cooling', { presetMode: null, hvacMode: 'heat_cool' }),
+          state(at(d, 6) + 10 * 60_000, 'idle', { presetMode: null, setpoint: 21 }),
+          state(at(d, 22), 'idle', { presetMode: null, setpoint: 17 }),
+        ]).flat();
+        const result = (anomaly: boolean) => {
+          const sensors = rooms({
+            bedroom_temperature: (t) => (anomaly && ((t - START) % DAY) / HOUR === 6 ? -9 : 0),
+            living_temperature: 0, kitchen_temperature: 0,
+          }, () => 24, { days: 3 });
+          const all = sensors.map((sensor) => sensor.id);
+          return analyzePlacement(input({
+            sensors, primaryThermostatId: null, hvac: history, comfort: comfortSchedule(3),
+            participation: { ...config(all), sleep: all },
+            end: new Date(START + 3 * DAY), windowDays: 3,
+          })).sensors.find((sensor) => sensor.id === 'bedroom_temperature')!;
+        };
+        expect(result(true).morningOffset).toBe(result(false).morningOffset);
+        expect(result(true).periodOffsets.home).toBe(result(false).periodOffsets.home);
+      },
+    );
+
+    it('review 22241a2: does not compare staggered heating sources across an action boundary', () => {
+      const history = Array.from({ length: 3 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, setpoint: 17 }),
+        state(at(d, 4.5), 'heating', { presetMode: null }),
+        state(at(d, 6.25), 'idle', { presetMode: null }),
+        state(at(d, 22), 'idle', { presetMode: null, setpoint: 17 }),
+      ]).flat();
+      const bedroom = (anomaly: boolean, staggered: boolean, reported: boolean) => {
+        const sensors = rooms({
+          bedroom_temperature: (t) => (anomaly && ((t - START) % DAY) / HOUR === 6 ? -12 : 0),
+          living_temperature: 0, kitchen_temperature: 0,
+        }, () => 24, { days: 3 }).map((sensor) => ({
+          ...sensor,
+          points: staggered ? sensor.points.filter((point) => {
+            const hour = ((point.t - START) % DAY) / HOUR;
+            return sensor.id === 'bedroom_temperature' ? hour !== 6.25 : hour !== 6;
+          }) : sensor.points,
+        }));
+        const all = sensors.map((sensor) => sensor.id);
+        const reference = rooms({ reference_temperature: 0 }, () => 24, { days: 3 })[0].points
+          .filter((point) => !staggered || ((point.t - START) % DAY) / HOUR !== 6);
+        return analyzePlacement(input({
+          sensors, primaryThermostatId: null, hvac: history, comfort: comfortSchedule(3),
+          reportedTemperature: reported ? { points: reference } : undefined,
+          participation: { ...config(all), sleep: all },
+          end: new Date(START + 3 * DAY), windowDays: 3,
+        })).sensors.find((sensor) => sensor.id === 'bedroom_temperature')!;
+      };
+      [false, true].forEach((reported) => {
+        expect(bedroom(true, true, reported).morningOffset).toBe(bedroom(false, true, reported).morningOffset);
+        expect(bedroom(true, true, reported).periodOffsets.home).toBe(bedroom(false, true, reported).periodOffsets.home);
+        expect(bedroom(true, false, reported).morningOffset).toBeLessThan(0);
+      });
+    });
+
+    it('review 22241a2: does not treat the Home cooling target as a heating wake target', () => {
+      const cool = preheatThen('cool', 'cooling');
+      expect(cool.sensors.filter((sensor) => !sensor.isThermostat).map((sensor) => sensor.wakeOvershoot))
+        .toEqual([null, null, null]);
+      expect(cool.recommendations.some((rec) => /Sleep set point|Sleep setback/.test(rec.detail))).toBe(false);
+
+      const heat = preheatThen('heat', 'idle');
+      expect(heat.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(6);
+    });
+
+    it('review 22241a2: does not quote a cool-mode Sleep target as a heating setback', () => {
+      const inCool = wakeHvac(5).map((sample) => (
+        ((sample.t - START) % DAY) / HOUR === 0 ? { ...sample, hvacMode: 'cool' } : sample
+      ));
+      const tip = analyzePlacement(wakeInput({ hvac: inCool })).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      expect(tip).toBeDefined();
+      expect(tip.detail).not.toMatch(/Sleep set point|Sleep setback/);
+      const heat = analyzePlacement(wakeInput()).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      expect(heat.detail).toContain('The Sleep set point averaged 4.0 °C below Home');
+    });
+
+    it('review 22241a2: requires the earlier heating target to belong to Sleep and not cross a gap', () => {
+      const awayFirst = Array.from({ length: 5 }, (_, d) => [
+        { t: at(d, 0), setting: 'away' }, { t: at(d, 5), setting: 'sleep' },
+        { t: at(d, 6), setting: 'home' }, { t: at(d, 22), setting: 'sleep' },
+      ]).flat();
+      const interrupted = wakeHvac(5).flatMap((sample) => (
+        ((sample.t - START) % DAY) / HOUR === 4.5
+          ? [sample, gap(sample.t + 0.5 * HOUR), state(sample.t + (2 / 3) * HOUR, 'heating', { presetMode: null })]
+          : [sample]
+      ));
+      [wakeInput({ comfort: awayFirst }), wakeInput({ hvac: interrupted })].forEach((fixture) => {
+        const tip = analyzePlacement(fixture).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+        expect(tip).toBeDefined();
+        expect(tip.detail).not.toMatch(/Sleep set point|Sleep setback/);
+      });
+    });
+
+    it('review 22241a2: excludes the first bucket if a valid heating target only returns after wake', () => {
+      const history = Array.from({ length: 5 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 24 }),
+        state(at(d, 6) + 10 * 60_000, 'idle', { presetMode: null, setpoint: 21 }),
+        state(at(d, 22), 'idle', { presetMode: null, setpoint: 18 }),
+      ]).flat();
+      const sensors = rooms({ bedroom_temperature: 0 }, (t) => (
+        ((t - START) % DAY) / HOUR === 6 ? 27 : 21
+      ));
+      const result = analyzePlacement(wakeInput({ sensors, hvac: history }));
+      expect(result.sensors.find((sensor) => sensor.id === 'bedroom_temperature')!.wakeOvershoot).toBe(0);
+    });
+
+    const fragmentedCooling = (short: boolean, missing: boolean, outsideHome = false) => {
+      const starts = [1, 8, 15];
+      const length = short ? 2 : 4.5;
+      const isHome = (hour: number) => starts.some((start) => (
+        short ? hour >= start && hour < start + length && Math.floor((hour - start) * 4) % 2 === 0
+          : (hour >= start && hour < start + 1.5) || (hour >= start + 3 && hour < start + 4.5)
+      ));
+      const sensors = rooms({
+        kitchen_temperature: (t) => (outsideHome ? (isHome(((t - START) % DAY) / HOUR) ? 0 : 6) : 3),
+        living_temperature: 0, bedroom_temperature: 0,
+      }, () => 24, { days: 1 }).map((sensor) => (missing && sensor.id === 'kitchen_temperature'
+        ? { ...sensor, points: sensor.points.filter((point) => starts.some((start) => (
+          point.t >= at(0, start) && point.t < at(0, start + 1.5)
+        ))) }
+        : sensor));
+      const history = [
+        state(START, 'idle', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+        ...starts.flatMap((start) => [
+          state(at(0, start), 'cooling', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+          state(at(0, start + length), 'idle', { hvacMode: 'cool', setpoint: 24, presetMode: null }),
+        ]),
+      ];
+      const schedule: ComfortSample[] = [{ t: START, setting: 'sleep' }];
+      starts.forEach((start) => {
+        if (short) {
+          for (let quarter = 0; quarter < 8; quarter += 1) {
+            schedule.push({ t: at(0, start + quarter / 4), setting: isHome(start + quarter / 4) ? 'home' : 'sleep' });
+          }
+        } else {
+          schedule.push(
+            { t: at(0, start), setting: 'home' }, { t: at(0, start + 1.5), setting: 'sleep' },
+            { t: at(0, start + 3), setting: 'home' }, { t: at(0, start + 4.5), setting: 'sleep' },
+          );
+        }
+      });
+      const all = sensors.map((sensor) => sensor.id);
+      const end = new Date(START + DAY);
+      return analyzePlacement(input({
+        sensors, primaryThermostatId: null, hvac: history, comfort: schedule,
+        participation: { ...config(all), sleep: all }, end, windowDays: 1, cooling: { start: new Date(START), end },
+      }));
+    };
+
+    it('review 22241a2: selects each cooling cohort over all parts of one run and setting', () => {
+      const sparse = fragmentedCooling(false, true);
+      expect(sparse.coverage.coolingEvents).toBe(3);
+      expect(sparse.recommendations.filter((rec) => rec.mode === 'cooling' && rec.sensorId === 'kitchen_temperature'))
+        .toEqual([]);
+      expect(sparse.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.verdict).toBe('insufficient');
+
+      const complete = fragmentedCooling(false, false);
+      const tip = complete.recommendations.find((rec) => rec.sensorId === 'kitchen_temperature' && rec.comfortSetting === 'home')!;
+      expect(tip.detail).toContain('3 of 3 cooling runs in Home');
+    });
+
+    it('review 22241a2: combines individually short cooling parts before the per-run sample minimum', () => {
+      const result = fragmentedCooling(true, false);
+      expect(result.coverage.coolingEvents).toBe(3);
+      const tip = result.recommendations.find((rec) => rec.sensorId === 'kitchen_temperature' && rec.comfortSetting === 'home')!;
+      expect(tip.detail).toContain('3 of 3 cooling runs in Home');
+    });
+
+    it('review 22241a2: keeps other-setting readings out when combining short cooling parts', () => {
+      const result = fragmentedCooling(true, false, true);
+      expect(result.recommendations.some((rec) => (
+        rec.mode === 'cooling' && rec.sensorId === 'kitchen_temperature' && rec.comfortSetting === 'home'
+      ))).toBe(false);
+      expect(result.recommendations.some((rec) => (
+        rec.mode === 'cooling' && rec.sensorId === 'kitchen_temperature' && rec.comfortSetting === 'sleep'
+      ))).toBe(true);
+    });
+
+    it.each(['idle', 'gap'] as const)(
+      'review 22241a2: keeps %s buckets out of grouped cooling fragments',
+      (interruption) => {
+        const starts = [1, 8, 15];
+        const history = [
+          state(START, 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 24 }),
+          ...starts.flatMap((start) => [
+            state(at(0, start), 'cooling', { presetMode: null, hvacMode: 'cool', setpoint: 24 }),
+            interruption === 'gap'
+              ? gap(at(0, start + 0.5))
+              : state(at(0, start + 0.5), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 24 }),
+            state(at(0, start + 0.75), 'cooling', { presetMode: null, hvacMode: 'cool', setpoint: 24 }),
+            state(at(0, start + 3), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 24 }),
+          ]),
+        ];
+        const schedule: ComfortSample[] = [{ t: START, setting: 'sleep' }];
+        starts.forEach((start) => {
+          for (let quarter = 0; quarter < 12; quarter += 1) {
+            schedule.push({ t: at(0, start + quarter / 4), setting: quarter % 2 === 0 ? 'home' : 'sleep' });
+          }
+        });
+        const run = (spikeAtStart: boolean) => {
+          const sensors = rooms({
+            kitchen_temperature: (t) => {
+              const hour = ((t - START) % DAY) / HOUR;
+              return starts.some((start) => hour === start + (spikeAtStart ? 0 : 0.5)) ? 9 : 0;
+            },
+            living_temperature: 0, bedroom_temperature: 0,
+          }, () => 24, { days: 1 });
+          const all = sensors.map((sensor) => sensor.id);
+          const end = new Date(START + DAY);
+          return analyzePlacement(input({
+            sensors, primaryThermostatId: null, hvac: history, comfort: schedule,
+            participation: { ...config(all), sleep: all }, end, windowDays: 1, cooling: { start: new Date(START), end },
+          }));
+        };
+        expect(run(false).recommendations.some((rec) => (
+          rec.mode === 'cooling' && rec.sensorId === 'kitchen_temperature'
+        ))).toBe(false);
+        if (interruption === 'idle') {
+          const tip = run(true).recommendations.find((rec) => (
+            rec.mode === 'cooling' && rec.sensorId === 'kitchen_temperature' && rec.comfortSetting === 'home'
+          ))!;
+          expect(tip.detail).toContain('3 of 3 cooling runs in Home');
+        }
+      },
+    );
+
+    it('review 22241a2: discloses Sleep-only heating when Home cooling is representative', () => {
+      const sensors = rooms({ bedroom_temperature: 0, living_temperature: 0, kitchen_temperature: 0 }, () => 22, { days: 3 });
+      const history = Array.from({ length: 3 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null }),
+        state(at(d, 3), 'heating', { presetMode: null }),
+        state(at(d, 5.75), 'idle', { presetMode: null }),
+        state(at(d, 6), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 22 }),
+        state(at(d, 12), 'cooling', { presetMode: null, hvacMode: 'cool', setpoint: 22 }),
+        state(at(d, 15), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 22 }),
+      ]).flat();
+      const end = new Date(START + 3 * DAY);
+      const run = (hvac: HvacSample[], comfort: ComfortSample[] | null = comfortSchedule(3)) => analyzePlacement(input({
+        sensors, primaryThermostatId: null, hvac, comfort,
+        participation: { ...config(sensors.map((sensor) => sensor.id)), sleep: sensors.map((sensor) => sensor.id) },
+        end, windowDays: 3, cooling: { start: new Date(START), end },
+      }));
+      const result = run(history);
+      expect(result.coverage).toMatchObject({ wakeEvents: 3, coolingEvents: 3 });
+      expect(result.sensors.every((sensor) => sensor.verdict === 'representative')).toBe(true);
+      const summary = result.recommendations.find((rec) => rec.id === 'no-changes')!;
+      expect(summary).toBeDefined();
+      expect(summary.detail).toMatch(/heating placement.*not assessed/i);
+
+      const both = history.flatMap((sample) => (
+        ((sample.t - START) % DAY) / HOUR === 6
+          ? [
+            state(sample.t, 'heating', { presetMode: null, setpoint: 22 }),
+            state(sample.t + 2 * HOUR, 'idle', { presetMode: null, setpoint: 22 }),
+          ] : [sample]
+      ));
+      const assessedHome = run(both);
+      expect(assessedHome.sensors.every((sensor) => sensor.verdict === 'representative')).toBe(true);
+      const scoped = assessedHome.recommendations.find((rec) => rec.id === 'no-changes')!;
+      expect(scoped.detail).toMatch(/heating placement.*not assessed/i);
+      expect(scoped.detail).not.toContain('lacked enough comparable data');
+
+      // When the Sleep heat-up is far enough before Home, its post-stop
+      // overshoot is measurable; this previously produced the unqualified
+      // "No placement issues found" title despite never assessing Sleep heat.
+      const lateHome = Array.from({ length: 3 }, (_, d) => [
+        { t: at(d, 0), setting: 'sleep' }, { t: at(d, 9), setting: 'home' },
+        { t: at(d, 22), setting: 'sleep' },
+      ]).flat();
+      const earlyHeat = Array.from({ length: 3 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, setpoint: 22 }),
+        state(at(d, 4), 'heating', { presetMode: null, setpoint: 22 }),
+        state(at(d, 5), 'idle', { presetMode: null, setpoint: 22 }),
+        state(at(d, 9), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 22 }),
+        state(at(d, 12), 'cooling', { presetMode: null, hvacMode: 'cool', setpoint: 22 }),
+        state(at(d, 15), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 22 }),
+      ]).flat();
+      const observed = run(earlyHeat, lateHome);
+      expect(observed.sensors.map((sensor) => sensor.overshoot)).toEqual([0, 0, 0]);
+      expect(observed.recommendations.find((rec) => rec.id === 'no-changes')).toMatchObject({
+        title: 'No placement issues found in the available data',
+        detail: expect.stringMatching(/heating placement.*not assessed/i),
+      });
+
+      // With no heat observed, representative cooling doesn't imply missing
+      // heating evidence. Unknown-setting heating remains a valid neutral scope.
+      const coolOnly = run(history.map((sample) => (
+        sample.hvacMode === 'heat' ? { ...sample, hvacMode: 'cool', hvacAction: 'idle', setpoint: 24 } : sample
+      )));
+      expect(coolOnly.recommendations.find((rec) => rec.id === 'no-changes')!.detail)
+        .not.toMatch(/heating placement.*not assessed/i);
+      const unknown = run(activeHistory('heating', 3), null);
+      expect(unknown.sensors.every((sensor) => sensor.verdict === 'representative')).toBe(true);
+      expect(unknown.recommendations.find((rec) => rec.id === 'no-changes')!.detail)
+        .not.toMatch(/heating placement.*not assessed/i);
+    });
+
     const wakePairing = (heatedDays: number[], peakDays: number[], referenceDays: number[], peak = 2) => {
       const days = 5;
       const value = (t: number) => {
@@ -3714,9 +4067,9 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
 
     it.each([
       ['a late first observation', [state(at(4, 23), 'idle')]],
-      ['a history gap', [state(START, 'idle'), gap(at(1, 0)), state(at(4, 23), 'idle')]],
-      ['an unknown action', [state(START, 'idle'), state(at(1, 0), null), state(at(4, 23), 'idle')]],
-      ['an unsupported action', [state(START, 'vendor_wait')]],
+      ['a history gap', [state(START, 'idle'), gap(at(1, 0)), state(at(1, 1), 'idle')]],
+      ['an unknown action', [state(START, 'idle'), state(at(1, 0), null), state(at(1, 1), 'idle')]],
+      ['an unsupported action', [state(START, 'idle'), state(at(1, 0), 'vendor_wait'), state(at(1, 1), 'idle')]],
     ])('does not infer rare heating or suppress useful advice from %s', (_description, history) => {
       const result = analyzePlacement(input({
         sensors: rooms(flat, () => 20),
@@ -3730,6 +4083,20 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       expect(details).not.toMatch(/heating.{0,30}rare/i);
       expect(result.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary).not.toMatch(/heating.{0,30}rare/i);
     });
+
+    it.each([gap(START), state(START, null), state(START, 'vendor_wait')])(
+      'review 22241a2: does not use unknown HVAC states as heating placement evidence',
+      (unknown) => {
+        const result = analyzePlacement(input({
+          sensors: rooms(flat, () => 20),
+          hvac: [unknown],
+          comfort: home,
+          participation: excludedBedroom,
+        }));
+        expect(result.recommendations.some((rec) => rec.mode === 'heating')).toBe(false);
+        expect(result.sensors.find((sensor) => sensor.id === 'bedroom_temperature')!.consistency!.days).toBe(0);
+      },
+    );
 
     it('can still describe rare heating when the whole window has observed actions', () => {
       const result = analyzePlacement(input({
@@ -4062,7 +4429,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     it('describes configured and estimated exclusions without claiming a room did not steer a wake', () => {
       const configured = analyzePlacement(input({
         sensors: rooms(flat, () => 20),
-        hvac: [state(START, 'idle'), gap(at(1, 0))],
+        hvac: [state(START, 'idle'), gap(at(1, 0)), state(at(1, 1), 'idle')],
         comfort: home,
         participation: excludedBedroom,
       })).sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary!;

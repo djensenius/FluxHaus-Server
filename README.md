@@ -498,9 +498,10 @@ about 10 days:
   lies inside the event window count, so readings from just before an event
   (e.g. while the thermostat was still off) never do.
 - **Thermostat history** is the climate entity's InfluxDB fields (`domain`
-  `climate`): `state` (mode), `hvac_action_str`, `preset_mode_str`, and set points `temperature`
-  (else `target_temp_low` for heating, `target_temp_high` for cooling; `_str`
-  variants too) in its `temperatureUnit`, converted to °C and dropped if the
+  `climate`): `state` (mode), `hvac_action_str`, `preset_mode_str`, and set points
+  (`temperature` in single-target modes, `target_temp_low` for heating and
+  `target_temp_high` for cooling in range modes; `_str` variants too) in its
+  `temperatureUnit`, converted to °C and dropped if the
   unit is unknown or the result is outside 5–35 °C. Set-point conversion assumes
   HA's last known climate unit applied historically, independently of whether
   the reported temperature has an explicit unit. If recorded climate-unit
@@ -508,7 +509,9 @@ about 10 days:
   fetched window are discarded rather than guessed. Plausible values and
   absent conflict evidence cannot prove the unit never changed.
   Mode, action and preset carry forward between changes; set points come from
-  each change. The last value
+  each change and are cleared on a mode change until reported again. A
+  single `temperature` in `heat_cool`/`auto` is not identified as a heating
+  target without `target_temp_low`. The last value
   before the window (within 30 days) gives the state at its start.
   Only `off`, `heating`, `cooling`, `drying`, `fan` and `idle` are treated as
   known actions. An `unavailable`/`unknown` or unsupported action is unknown
@@ -609,6 +612,9 @@ about 10 days:
     the wake-up heat-up and replaces the morning warm-up around it. Its room
     offsets are measured from the start of that heating through the first 2
     hours of Home, each reading against the comfort setting in force then.
+    Source windows and every room in a comparison must have a compatible,
+    unchanged heat-capable mode and `heating` or `idle` action; cooling,
+    gaps and windows spanning HVAC state changes don't count.
     When the whole lead/tail search interval is inside the requested window,
     its actions are known throughout, and run boundaries are observed, its
     warm-up time is the sum of those heating runs (not the span from the
@@ -658,7 +664,8 @@ about 10 days:
   the average in 60% of its events, `insufficient` with fewer than 3 events or
   12 samples, and `representative` otherwise. `averageOffset`, `morningOffset`
   and `returnOffset` use this room-only house average, not the thermostat's
-  effective comfort average.
+  effective comfort average. Before the first thermostat observation or with
+  no history, temperature-only inference remains available.
 - **`overshoot`** is how far a room's highest 15-minute average was above the set
   point after the thermostat was satisfied, for up to 2 hours,
   ending early when the action is no longer reported idle, at the next set
@@ -681,8 +688,10 @@ about 10 days:
   gap, an unknown action or any other action. Cooling event offsets and daily
   room comparisons use complete source buckets within actual active cooling,
   not the merged idle spells; every room in a comparison must belong to the
-  same active run. Repeated parts of one run in the same comfort setting
-  contribute a sample-weighted offset to one occurrence, not multiple runs.
+  same active run. Repeated parts of one run in the same comfort setting are
+  combined before choosing its room cohort and checking the per-event sample
+  minimum; they contribute a sample-weighted offset to one occurrence, not
+  multiple runs. Other settings, idle spells and gaps aren't interpolated.
 - **Passive warmth:** when the reported or approximated comfort reading sits at
   least 1.0 °C over the heating set point for at least half of 96 or more
   observed idle samples (excluding the 2 hours after a reported heating run),
@@ -707,21 +716,26 @@ about 10 days:
   actually assessed; events from different settings cannot by themselves make
   a separately judged setting sufficient. A scope without enough evidence is
   not described as representative, and a no-changes summary discloses other
-  settings or periods with insufficient evidence.
+  settings or periods with insufficient evidence and observed heating scopes
+  that weren't assessed.
   `periodOffsets` (`sleep`, `wake`, `home`, `heatingRuns`, `cooling`) are mean
   offsets from the thermostat-reported comfort reading, or from the complete
   room-only approximation where safe (otherwise `null`). `wakeOffset` and
   `coolingOffset` repeat the corresponding wake
   and cooling values. `wakeOvershoot` is how far
-  the room peaked over the Home set point in the 2 hours after waking (against
-  the set point reported within the first 15 minutes, excluding overlapping
-  buckets before that target, and ending early at a set point, mode or preset
-  change or a gap), averaged across measurable wakes whether or not they heated;
+  the room peaked over an applicable Home heating set point in the 2 hours after
+  waking (against the target in force within the first 15 minutes, excluding
+  overlapping buckets before that target, and ending early at a set point,
+  mode or preset change, an incompatible or unknown action, or a gap),
+  averaged across measurable wakes whether or not they heated;
   `coolingUndershoot` is the greatest dip below the cool set
   point in whole source buckets of actual active cooling, with a stable target.
   Merged idle spells and buckets spanning target changes cannot contribute.
-  Heating offsets and daily comparisons skip source buckets containing a known `off`/`cool` mode or cooling
-  action; without thermostat history all times count. When any comfort setting
+  Heating offsets and daily comparisons skip source windows with incompatible
+  or unknown recorded modes/actions, gaps, or HVAC state changes; the combined
+  room and reference source intervals must also be compatible. Before the
+  first recorded state, and without thermostat history, temperature-only
+  inference remains available. When any comfort setting
   is known, heating verdicts, `consistency` heating dates and heating tips use
   only Home source windows, including for every room in a house reference, so a
   carried Sleep reading isn't blamed on Home. Without any known setting,
@@ -746,8 +760,11 @@ about 10 days:
     when measured there, else the setting the preheat ran in (e.g. Sleep,
     "while heating in Sleep before Home"). A sensor configured or estimated
     outside that setting isn't treated as a participant. It can mention a Sleep
-    setback of 2 °C or more, a warm-up of an hour or more, and Smart Recovery;
-    changing the setback or reviewing recovery timing does not promise a
+    setback of 2 °C or more, a warm-up of an hour or more, and Smart Recovery.
+    Setback advice requires applicable heating targets from Sleep and Home
+    without intervening incompatible states or gaps; if only the warm-up
+    duration is known it can suggest reviewing recovery timing instead.
+    Changing the setback or reviewing recovery timing does not promise a
     reduction in total heating runtime.
 
     The Follow Me model assumes occupied participants count, or all participants

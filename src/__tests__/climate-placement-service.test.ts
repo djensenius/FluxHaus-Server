@@ -230,6 +230,31 @@ describe('thermostat, comfort and occupancy history', () => {
     });
   });
 
+  it.each(['heat_cool', 'auto'])(
+    'review 22241a2: does not carry a cooling target into heat or treat a %s single target as heating',
+    (mode) => {
+      const parsed = parseStates([
+        climateRow('2026-01-19T05:00:00Z', 'state', 'cool'),
+        climateRow('2026-01-19T05:00:00Z', 'temperature', '24'),
+        climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+        climateRow('2026-01-19T06:30:00Z', 'temperature', '21'),
+        climateRow('2026-01-19T07:00:00Z', 'state', mode),
+        climateRow('2026-01-19T07:00:00Z', 'temperature', '25'),
+        climateRow('2026-01-19T07:30:00Z', 'target_temp_low', '20'),
+        climateRow('2026-01-19T07:30:00Z', 'target_temp_high', '24'),
+        climateRow('2026-01-19T08:00:00Z', 'state', 'cool'),
+      ], entities, '°C');
+      expect(parsed.hvac!.map((sample) => [sample.hvacMode, sample.setpoint, sample.coolSetpoint])).toEqual([
+        ['cool', 24, 24],
+        ['heat', null, null],
+        ['heat', 21, null],
+        [mode, null, null],
+        [mode, 20, 24],
+        ['cool', null, null],
+      ]);
+    },
+  );
+
   it('carries the preset forward as a fallback comfort setting', () => {
     const parsed = parseStates([
       climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
