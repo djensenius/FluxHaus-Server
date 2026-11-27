@@ -9,6 +9,7 @@ import {
   parsePlacementConfig,
   parsePlacementDays,
   parseStates,
+  PLACEMENT_CACHE_MAX_ENTRIES,
   PLACEMENT_CACHE_TTL_MS,
   PLACEMENT_DEGRADED_TTL_MS,
   resolveTimeZone,
@@ -514,6 +515,30 @@ describe('ClimatePlacementService', () => {
     advance(PLACEMENT_CACHE_TTL_MS + 1);
     await service.getInsights('14');
     expect(calls('temperatures')).toHaveLength(3);
+  });
+
+  it('evicts expired results and bounds the cache across configurations', async () => {
+    const { service, calls, advance } = makeDeps();
+    await service.getInsights('14');
+    await service.getInsights('7');
+    expect(service.cacheSize).toBe(2);
+    advance(PLACEMENT_CACHE_TTL_MS + 1);
+    // Expired entries are dropped when another result is cached.
+    await service.getInsights('10');
+    expect(service.cacheSize).toBe(1);
+    // Many configurations stay bounded; the least recently used is evicted.
+    const variant = (i: number) => ({ home: 'office_temperature', followMe: String(i === 1) });
+    for (let d = 3; d <= 30; d += 1) {
+      await service.getInsights(String(d), variant(0));
+      await service.getInsights(String(d), variant(1));
+    }
+    expect(service.cacheSize).toBe(PLACEMENT_CACHE_MAX_ENTRIES);
+    const before = calls('temperatures').length;
+    await service.getInsights('30', variant(1));
+    expect(calls('temperatures')).toHaveLength(before);
+    await service.getInsights('3', variant(0));
+    expect(calls('temperatures')).toHaveLength(before + 1);
+    expect(service.cacheSize).toBe(PLACEMENT_CACHE_MAX_ENTRIES);
   });
 
   it('degrades when thermostat history fails and retries sooner', async () => {

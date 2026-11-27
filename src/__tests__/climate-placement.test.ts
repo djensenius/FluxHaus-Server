@@ -1224,7 +1224,9 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
 
     const full = withOccupancy(true);
     expect(full.recommendations[0].id).toBe('wake-bedroom');
-    expect(full.recommendations[0].detail).toContain('With Follow Me on, it only counted while occupied (100% of the time after waking).');
+    expect(full.recommendations[0].detail).toContain(
+      'With Follow Me on, it counted 100% of the time after waking (while occupied, or when no participating room was).',
+    );
   });
 
   it('falls back to all participating sensors when none is occupied', () => {
@@ -1549,6 +1551,103 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(bedroom.verdictSummary).not.toContain('isn\'t in');
     const wake = result.recommendations.find((r) => r.id === 'wake-bedroom')!;
     expect(wake.detail).toContain('If it\'s in your Home comfort setting');
+  });
+
+  it('leaves the average unknown when a configured member has no fresh reading', () => {
+    // No thermostat reading; Home is the Bedroom (18 °C) and Living Room
+    // (22 °C), and the Bedroom only reported before the window.
+    const sensors = rooms({
+      bedroom_temperature: -2, living_temperature: 2, kitchen_temperature: 0, office_temperature: 0,
+    }, wakeBase).map((r) => (r.id === 'bedroom_temperature' ? { ...r, points: [{ t: START - DAY, v: 15 }] } : r));
+    const result = analyzePlacement(wakeInput({ sensors, participation: config(['bedroom_temperature', 'living_temperature']) }));
+    result.sensors.forEach((sensor) => {
+      expect(sensor.wakeOffset).toBeNull();
+      expect(sensor.periodOffsets.home).toBeNull();
+    });
+    expect(result.recommendations.some((r) => r.period === 'wake')).toBe(false);
+  });
+
+  it('gives no heating verdict from a window the thermostat spent cooling', () => {
+    const cooling = Array.from({ length: 5 }, (_, d) => [
+      state(at(d, 0), 'cooling', { presetMode: null, setpoint: 24, hvacMode: 'cool' }),
+      state(at(d, 12), 'idle', { presetMode: null, setpoint: 24, hvacMode: 'cool' }),
+    ]).flat();
+    const result = analyzePlacement(input({
+      sensors: series({ kitchen_temperature: 1.5, living_temperature: 0, bedroom_temperature: 0 }, 5),
+      hvac: cooling,
+    }));
+    const kitchen = result.sensors.find((s) => s.id === 'kitchen_temperature')!;
+    expect(kitchen.consistency).toMatchObject({ days: 0, warmDays: 0 });
+    expect(kitchen.verdict).not.toBe('warm_outlier');
+    expect(result.recommendations.some((r) => r.mode === 'heating' && r.sensorId === 'kitchen_temperature')).toBe(false);
+  });
+
+  it('judges cooling by who counted during the cooling runs, not current occupancy', () => {
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const all = ['kitchen_temperature', 'living_temperature', 'bedroom_temperature'];
+    const run = (kitchenNow: boolean, kitchenThen: boolean, setting: 'home' | 'sleep') => {
+      const summer = coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 });
+      return analyzePlacement(wakeInput({
+        sensors: rooms(flat, wakeBase).map((r) => ({
+          ...r, occupancy: occupied(r.id !== 'kitchen_temperature' || kitchenNow),
+        })),
+        participation: {
+          home: all, sleep: all, away: null, followMe: true,
+        },
+        cooling: {
+          ...summer,
+          comfort: [{ t: SUMMER, setting }],
+          sensors: summer.sensors!.map((r) => ({
+            ...r, occupancy: [{ t: SUMMER - DAY, occupied: r.id !== 'kitchen_temperature' || kitchenThen }],
+          })),
+        },
+      })).recommendations.find((r) => r.mode === 'cooling' && r.sensorId === 'kitchen_temperature');
+    };
+    // Occupied now but empty while cooling ran: it didn't steer the AC.
+    expect(run(true, false, 'home')).toBeUndefined();
+    expect(run(true, false, 'sleep')).toBeUndefined();
+    // Empty now but occupied while cooling ran: it did.
+    expect(run(false, true, 'home')).toMatchObject({ id: 'cooling-kitchen', comfortSetting: 'home' });
+    expect(run(false, true, 'sleep')).toMatchObject({ id: 'cooling-kitchen', comfortSetting: 'sleep' });
+  });
+
+  it('blames rooms that counted through the all-unoccupied fallback, not rooms Follow Me left out', () => {
+    const withBedroom = (bedroomOccupied: boolean, othersOccupied: boolean) => analyzePlacement(wakeInput({
+      sensors: rooms(WAKE_BIASES, wakeBase).map((r) => ({
+        ...r, occupancy: occupied(r.id === 'bedroom_temperature' ? bedroomOccupied : othersOccupied),
+      })),
+      participation: config(['bedroom_temperature', 'living_temperature'], true),
+    }));
+    // Nobody occupied: Ecobee averages both, so the cold Bedroom counts.
+    const fallback = withBedroom(false, false);
+    const wake = fallback.recommendations.find((r) => r.id === 'wake-bedroom')!;
+    expect(wake.detail).toContain('it counted 100% of the time after waking');
+    expect(fallback.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary).toContain('— likely');
+    // Living Room occupied: the empty Bedroom is left out, so it isn't blamed.
+    const excluded = withBedroom(false, true);
+    expect(excluded.recommendations.some((r) => r.sensorId === 'bedroom_temperature')).toBe(false);
+    const summary = excluded.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary!;
+    expect(summary).toContain('rarely counted');
+    expect(summary).not.toContain('likely');
+  });
+
+  it('estimates cooling membership from the cooling data', () => {
+    // Winter: the thermostat averages the Bedroom and Living Room, not the
+    // Kitchen. Summer: it averages all three, and the Kitchen reads warm.
+    const summer = {
+      kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5,
+    };
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(EST_BIASES, wakeBase),
+      cooling: {
+        ...coolingInput(summer),
+        sensors: rooms({ ...summer, home_current_temperature: 0.5 / 3 }, coolBase, { from: SUMMER }),
+      },
+    }));
+    const rec = result.recommendations.find((r) => r.mode === 'cooling')!;
+    expect(rec).toMatchObject({ id: 'cooling-kitchen', action: 'move', comfortSetting: 'home' });
+    expect(rec.detail).toContain('The thermostat\'s readings suggest it\'s in your Home comfort setting.');
+    expect(result.recommendations.some((r) => r.action === 'include_in_comfort' && r.mode === 'cooling')).toBe(false);
   });
 
   it('doesn\'t report an occupied share from mostly unknown occupancy', () => {

@@ -394,7 +394,8 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
   conditional ("If it's in your Home comfort setting…"), or uses what the
   thermostat reading suggests (see below).
 - Results are computed on request and cached per `days` and participation
-  for 15 minutes; results with missing data (a failed read, no discovered
+  for 15 minutes (at most 32 at once: expired results are evicted first, then
+  the least recently used); results with missing data (a failed read, no discovered
   sensors, no thermostat, no temperature data or no thermostat history) are
   cached for 1 minute so they are retried soon. Where the evidence is missing,
   values are `null` or events are marked inferred rather than guessed.
@@ -460,14 +461,16 @@ about 10 days:
 - **The thermostat's current temperature** (`isThermostat`, named
   "Thermostat (Ecobee average)") is Ecobee's averaged comfort reading, not a
   room. It is the effective average when it has readings (else the configured
-  setting's sensors, else all rooms), it is never judged as an outlier, and
+  setting's sensors — unknown if one it needs has no fresh reading, never a
+  partial average — else all fresh rooms), it is never judged as an outlier, and
   rooms are compared with each other without it. Which rooms each setting
   averages is estimated from it: every subset of rooms is scored over the times
   all its members have readings (so a sparse or missing room doesn't block the
   others), and rooms in every subset within 0.1 °C of the best fit (itself
   within 0.2 °C) count as in. The estimate shapes the wording ("The
   thermostat's readings suggest it's in your Home comfort setting") when
-  participation isn't configured, and when it contradicts the configured
+  participation isn't configured (estimated separately from the cooling data
+  for cooling tips), and when it contradicts the configured
   participation a `participation-mismatch-<setting>` recommendation says so.
   - A *morning warm-up* is a reported heating start (`hvac_action` changing
     from a reported non-heating action to heating, in a mode that can heat)
@@ -555,7 +558,9 @@ about 10 days:
   offsets from the house average; `wakeOffset` and `coolingOffset` are from the
   effective comfort average; `wakeOvershoot` is how far the room peaked over
   the Home set point in the 2 hours after waking; `coolingUndershoot` is how far
-  it ended below the cool set point while cooling ran; `consistency` counts days
+  it ended below the cool set point while cooling ran. Heating offsets and
+  days skip times the thermostat couldn't heat (`off`/`cool` mode or cooling);
+  without thermostat history all times count. `consistency` counts days
   (`days`, `coldDays`, `warmDays`, `coolingDays`, `coolingColdDays`,
   `coolingWarmDays`); `participation` and `occupiedShare` (`wake`, `home`) follow
   the request and occupancy; `recommendationIds` lists the tips about it.
@@ -566,8 +571,11 @@ about 10 days:
   - `wake-<sensor>` (`move`): a sensor at least 0.5 °C below the comfort average
     in 60% of wake-ups while other rooms end up at least 0.5 °C over the Home
     set point. It mentions a Sleep setback of 2 °C or more, or a warm-up of an
-    hour or more, and Smart Recovery. With Follow Me, a sensor occupied less
-    than 20% of the time isn't blamed.
+    hour or more, and Smart Recovery. With Follow Me, a sensor that counted
+    toward the average less than 20% of the time isn't blamed (it counts while
+    occupied, or while no participating room is). The same applies to other
+    heat-ups (over Home) and cooling (over the cooling runs, from the cooling
+    data and the setting in force), and to `verdictSummary`.
   - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a
     warm Kitchen known to participate) for other heat-ups;
     `cooling-<sensor>` (always `move`) for cooling. Heating tips are about Home;

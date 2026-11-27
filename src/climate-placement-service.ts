@@ -28,6 +28,9 @@ export const MAX_PLACEMENT_DAYS = 30;
 export const PLACEMENT_CACHE_TTL_MS = 15 * 60 * 1000;
 // Degraded results (an upstream failed) are retried sooner.
 export const PLACEMENT_DEGRADED_TTL_MS = 60 * 1000;
+// Results cached at once (windows × participation configurations); expired
+// entries are evicted first, then the least recently used.
+export const PLACEMENT_CACHE_MAX_ENTRIES = 32;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Cooling tips use the most recent cooling within the past year.
 export const COOLING_LOOKBACK_DAYS = 365;
@@ -427,6 +430,10 @@ export class ClimatePlacementService {
     return this.deps.influxdb?.configured === true;
   }
 
+  get cacheSize(): number {
+    return this.cache.size;
+  }
+
   public async getInsights(daysInput: unknown, query: Record<string, unknown> = {}): Promise<PlacementInsights> {
     const days = parsePlacementDays(daysInput);
     const config = parsePlacementConfig(query);
@@ -434,7 +441,16 @@ export class ClimatePlacementService {
     const key = configKey(days, config);
     const now = this.now().getTime();
     const cached = this.cache.get(key);
-    if (cached && cached.expires > now) return cached.result;
+    if (cached && cached.expires > now) {
+      this.cache.delete(key);
+      this.cache.set(key, cached);
+      return cached.result;
+    }
+    this.cache.delete(key);
+    this.cache.forEach((e, k) => {
+      if (e.expires <= now) this.cache.delete(k);
+    });
+    while (this.cache.size >= PLACEMENT_CACHE_MAX_ENTRIES) this.cache.delete(this.cache.keys().next().value!);
     const entry = { expires: now + PLACEMENT_CACHE_TTL_MS, result: null as Promise<PlacementInsights> | null };
     const result = this.compute(days, config).then(({ insights, degraded }) => {
       if (degraded) entry.expires = Math.min(entry.expires, this.now().getTime() + PLACEMENT_DEGRADED_TTL_MS);
