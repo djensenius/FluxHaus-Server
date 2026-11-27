@@ -186,6 +186,18 @@ describe('thermostat, comfort and occupancy history', () => {
     ]);
   });
 
+  it('carries prior climate fields across distinct timestamps', () => {
+    const parsed = parseStates([
+      climateRow('2026-01-19T05:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T05:20:00Z', 'preset_mode_str', 'home'),
+      climateRow('2026-01-19T05:30:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T05:45:00Z', 'temperature', '21'),
+    ], entities, '°C');
+    expect(parsed.hvac!.at(-1)).toMatchObject({
+      gap: false, hvacMode: 'heat', hvacAction: 'heating', presetMode: 'home', setpoint: 21,
+    });
+  });
+
   it('carries the preset forward as a fallback comfort setting', () => {
     const parsed = parseStates([
       climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
@@ -307,12 +319,14 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(flux).toContain('from(bucket: "home_assistant")');
     expect(flux).toContain('range(start: time(v: "1970-01-01T00:00:00.000Z"), stop: time(v: "1970-01-31T00:00:00.000Z"))\n  |> filter');
     expect(flux).toContain('|> last()');
-    expect(flux).toContain('|> last()\n  |> map(fn: (r) => ({r with _time: time(v: "1970-01-31T00:00:00.000Z")}))\nchanges =');
+    expect(flux).toContain('priorStateHistory = from(bucket: "home_assistant")');
+    expect(flux).toContain('r.domain == "climate" and r.entity_id == "home" and r._field == "state"');
     expect(flux).toContain('r.domain == "climate" and r.entity_id == "home"');
     expect(flux).toContain('r.domain == "select" and r.entity_id == "home_current_mode" and r._field == "state"');
     expect(flux).toContain('contains(value: r.entity_id, set: ["bedroom_occupancy"])');
     expect(flux).not.toContain('bad');
-    expect(flux).toContain('union(tables: [prior, changes])');
+    expect(flux).toContain('union(tables: [prior, priorStateHistory, changes])');
+    expect(flux).toContain('keep(columns: ["_time", "_value", "_field", "domain", "entity_id"])');
     expect(() => buildStatesQuery('home_assistant', { ...entities, climate: 'x") or true or ("' }, new Date(0), new Date(1))).toThrow('Unsafe entity id');
   });
 

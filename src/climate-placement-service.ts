@@ -34,9 +34,6 @@ export const PLACEMENT_CACHE_MAX_ENTRIES = 32;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Cooling tips use the most recent cooling within the past year.
 export const COOLING_LOOKBACK_DAYS = 365;
-// How far before the window the last known state (comfort setting, occupancy,
-// thermostat) is looked up.
-const PRIOR_STATE_DAYS = 30;
 const COOLING_TAIL_MS = 2 * 60 * 60 * 1000;
 // Temperature sensors that aren't indoor rooms.
 const OUTDOOR_PATTERN = /outdoor|outside|patio|exterior|environment_canada/i;
@@ -242,23 +239,25 @@ function statePredicate(entities: StateEntities): string {
 }
 
 // Thermostat, comfort setting and occupancy changes over [start, end), plus
-// the last value of each before start (within PRIOR_STATE_DAYS) so the state
-// in force at the start is known. Values keep their types (union of streams).
+// their last values before start. Prior climate mode history is included so
+// outages can clear stale action, preset and set-point values.
 export function buildStatesQuery(bucket: string, entities: StateEntities, start: Date, end: Date): string {
   if (!SAFE_OBJECT_ID.test(entities.climate) || !SAFE_OBJECT_ID.test(entities.comfort)) {
     throw new Error('Unsafe entity id');
   }
   const predicate = statePredicate(entities);
-  const prior = new Date(start.getTime() - PRIOR_STATE_DAYS * DAY_MS);
+  const epoch = new Date(0).toISOString();
   return `prior = from(bucket: ${fluxBucketLiteral(bucket)})
-  |> range(start: time(v: "${prior.toISOString()}"), stop: time(v: "${start.toISOString()}"))
+  |> range(start: time(v: "${epoch}"), stop: time(v: "${start.toISOString()}"))
   |> filter(fn: (r) => ${predicate})
   |> last()
-  |> map(fn: (r) => ({r with _time: time(v: "${start.toISOString()}")}))
+priorStateHistory = from(bucket: ${fluxBucketLiteral(bucket)})
+  |> range(start: time(v: "${epoch}"), stop: time(v: "${start.toISOString()}"))
+  |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${entities.climate}" and r._field == "state")
 changes = from(bucket: ${fluxBucketLiteral(bucket)})
   |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
   |> filter(fn: (r) => ${predicate})
-union(tables: [prior, changes])
+union(tables: [prior, priorStateHistory, changes])
   |> keep(columns: ["_time", "_value", "_field", "domain", "entity_id"])`;
 }
 
