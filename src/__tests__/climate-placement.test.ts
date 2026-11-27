@@ -662,6 +662,47 @@ describe('analyzePlacement', () => {
     expect(result.recommendations.some((r) => r.sensorId === 'office_temperature')).toBe(false);
   });
 
+  it('infers a warm-up from staggered sparse sensors using each one\'s own readings', () => {
+    // Two sensors reporting every 30 minutes, 15 minutes apart, both warming
+    // 0.5 °C from 06:15. No grid instant has fresh readings from both at the
+    // start and end of an hour, but each sensor's own rise is clear.
+    const sparse = (id: string, offsetMinutes: number): SensorSeriesInput => {
+      const points = [];
+      for (let t = START + offsetMinutes * 60_000; t < START + 5 * DAY; t += 30 * 60_000) {
+        const h = ((t - START) % DAY) / HOUR;
+        points.push({ t, v: h >= 6.25 && h < 12 ? 17.5 : 17 });
+      }
+      return {
+        id, name: id, isThermostat: false, points,
+      };
+    };
+    const events = inferMorningEvents([sparse('living_temperature', 0), sparse('bedroom_temperature', 15)], 'UTC');
+    expect(events).toHaveLength(5);
+    events.forEach((e, d) => expect(e).toEqual({ type: 'morning', t: at(d, 5.75), inferred: true }));
+  });
+
+  it('analyzes 30 days of 30 sensors quickly', () => {
+    // Each inference candidate must only touch its own window; rescanning the
+    // whole history per candidate took seconds at this size.
+    const days = 30;
+    const biases = Object.fromEntries(Array.from({ length: 30 }, (_unused, i) => [`room${i}_temperature`, (i % 5) - 2]));
+    const sensors = series(biases, days);
+    const samples = Array.from({ length: days * 96 }, (_unused, i) => state(START + i * 15 * 60_000, 'idle', {
+      presetMode: null, setpoint: 20,
+    }));
+    // Fastest of three runs, so a busy test runner doesn't make this flaky;
+    // full-history rescans took about 1.5 s per run here.
+    const runs = Array.from({ length: 3 }, () => {
+      const started = performance.now();
+      const result = analyzePlacement(input({
+        sensors, hvac: samples, end: new Date(START + days * DAY), windowDays: days,
+      }));
+      expect(result.coverage.inferredMorningEvents).toBe(days);
+      return performance.now() - started;
+    });
+    expect(Math.min(...runs)).toBeLessThan(250);
+  });
+
   it('infers mornings when the thermostat reports idle through a set point increase', () => {
     // As with an ecobee through homekit_controller: the 06:00 set point rise
     // is reported with hvac_action idle throughout, yet the rooms warm. Reported

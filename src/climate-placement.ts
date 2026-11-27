@@ -297,27 +297,49 @@ export function alignSensors(sensors: SensorSeriesInput[]): Grid {
   return { times, values, sources };
 }
 
+// Index of the first element of the ascending `sorted` whose key is > t
+// (`strict`) or >= t; sorted.length if none.
+function firstIndexAfter<T>(sorted: T[], t: number, key: (item: T) => number, strict: boolean): number {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    const k = key(sorted[mid]);
+    if (strict ? k <= t : k < t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+const timeOf = (item: { t: number }) => item.t;
+const itself = (n: number) => n;
+
 // The grid restricted to readings taken within [from, to): a value is kept
 // only when its whole window lies inside, so readings from before the start
-// (e.g. while the thermostat was off) or after the end never count.
+// (e.g. while the thermostat was off) or after the end never count. Only the
+// grid times in (from, to] are visited.
 function windowGrid(grid: Grid, from: number, to: number): Grid {
+  const times = grid.times.slice(
+    firstIndexAfter(grid.times, from, itself, true),
+    firstIndexAfter(grid.times, to, itself, true),
+  );
   const values = new Map<string, Map<number, number>>();
   const sources = new Map<string, Map<number, number>>();
   grid.values.forEach((filled, id) => {
     const origin = grid.sources.get(id)!;
     const keptValues = new Map<number, number>();
     const keptSources = new Map<number, number>();
-    filled.forEach((v, t) => {
-      const source = origin.get(t)!;
-      if (source >= from && source + BUCKET_MS <= to) {
-        keptValues.set(t, v);
+    times.forEach((t) => {
+      const source = origin.get(t);
+      if (source !== undefined && source >= from && source + BUCKET_MS <= to) {
+        keptValues.set(t, filled.get(t)!);
         keptSources.set(t, source);
       }
     });
     values.set(id, keptValues);
     sources.set(id, keptSources);
   });
-  return { times: grid.times.filter((t) => t > from && t <= to), values, sources };
+  return { times, values, sources };
 }
 
 
@@ -335,10 +357,9 @@ function cohortMean(grid: Grid, cohort: string[], t: number): number {
   return mean(cohort.map((id) => grid.values.get(id)!.get(t)!))!;
 }
 
+// Index of the last state at or before t in the time-sorted samples; -1 if none.
 function stateIndexAt(samples: HvacSample[], t: number): number {
-  let found = -1;
-  for (let i = 0; i < samples.length && samples[i].t <= t; i += 1) found = i;
-  return found;
+  return firstIndexAfter(samples, t, timeOf, true) - 1;
 }
 
 // Only a recorded mode that can't heat (off, cool, …) rules heating out. A
@@ -348,19 +369,27 @@ function rulesOutHeating(sample: HvacSample): boolean {
   return !sample.gap && !!sample.hvacMode && !canHeat(sample);
 }
 
-// First recorded state after `t` in which heating is impossible (off/cool) or
-// unknown (a gap), if any.
-function nextNoHeat(samples: HvacSample[], t: number): number | undefined {
-  return samples.find((s) => s.t > t && (s.gap || rulesOutHeating(s)))?.t;
+// For each index i of the time-sorted samples, the time of the first state at
+// or after i in which heating is impossible (off/cool) or unknown (a gap).
+function noHeatFrom(samples: HvacSample[]): number[] {
+  const next = new Array<number>(samples.length + 1).fill(Number.POSITIVE_INFINITY);
+  for (let i = samples.length - 1; i >= 0; i -= 1) {
+    next[i] = samples[i].gap || rulesOutHeating(samples[i]) ? samples[i].t : next[i + 1];
+  }
+  return next;
 }
 
 // Whether recorded thermostat modes show it couldn't heat throughout
 // [from, to]. The earliest returned state may be a snapshot from before the
-// recorder's retention, so it is never evidence on its own.
+// recorder's retention, so it is never evidence on its own. Only the states
+// in force during [from, to] are visited.
 function heatingRuledOut(samples: HvacSample[], from: number, to: number): boolean {
   const index = stateIndexAt(samples, from);
   if (index <= 0 || !rulesOutHeating(samples[index])) return false;
-  return samples.every((s) => s.t <= from || s.t > to || rulesOutHeating(s));
+  for (let i = index + 1; i < samples.length && samples[i].t <= to; i += 1) {
+    if (!rulesOutHeating(samples[i])) return false;
+  }
+  return true;
 }
 
 // Whether the recorded state in force at `t` (the last at or before it) is a
@@ -373,41 +402,51 @@ function cannotStartAt(samples: HvacSample[], t: number): boolean {
   return index > 0 && (samples[index].gap || rulesOutHeating(samples[index]));
 }
 
-// Morning warm-ups inferred from the house mean rising in the morning window,
-// one per local day, on days without an observed morning warm-up and not near
+// Rise of one sensor from its first to its last reading taken within
+// [from, to) (whole 15-minute windows inside), or null with fewer than two.
+function riseWithin(points: SensorSeriesInput['points'], from: number, to: number): number | null {
+  const first = firstIndexAfter(points, from, timeOf, false);
+  const last = firstIndexAfter(points, to - BUCKET_MS, timeOf, true) - 1;
+  return last > first ? points[last].v - points[first].v : null;
+}
+
+// Morning warm-ups inferred from the house warming in the morning window, one
+// per local day, on days without an observed morning warm-up and not near
 // another observed event, unless a recorded mode that can't heat rules it out.
+// Each sensor's rise is taken from its own first and last readings in the
+// window, so sparse or staggered sensors still count, and the house rise is
+// their mean (sensors without two readings are left out, so membership can't
+// fake a rise). Per-sensor arrays and thermostat states are searched by
+// binary search, so each candidate only touches its own window.
 export function inferMorningEvents(
   sensors: SensorSeriesInput[],
   timeZone: string,
-  samples: HvacSample[] = [],
+  hvac: HvacSample[] = [],
   observed: PlacementEvent[] = [],
 ): PlacementEvent[] {
   const clock = localClock(timeZone);
-  const grid = alignSensors(sensors);
+  const samples = [...hvac].sort((a, b) => a.t - b.t);
+  const noHeat = noHeatFrom(samples);
+  const series = sensors.map((sensor) => cleanPoints(sensor.points)).filter((points) => points.length >= 2);
   const events: PlacementEvent[] = [];
+  if (series.length < MIN_SENSORS_FOR_MEAN) return events;
+  const first = Math.min(...series.map((points) => points[0].t));
+  const last = Math.max(...series.map((points) => points[points.length - 1].t));
   const seenDays = new Set(observed.filter((e) => e.type === 'morning').map((e) => clock(e.t).day));
-  grid.times.forEach((t) => {
+  for (let t = Math.ceil(first / BUCKET_MS) * BUCKET_MS; t <= last; t += BUCKET_MS) {
     const { day, hour } = clock(t);
-    if (seenDays.has(day) || hour < MORNING_START_HOUR || hour >= MORNING_END_HOUR) return;
-    if (observed.some((e) => Math.abs(e.t - t) < EVENT_WINDOW_MS)) return;
-    if (cannotStartAt(samples, t)) return;
+    if (seenDays.has(day) || hour < MORNING_START_HOUR || hour >= MORNING_END_HOUR) continue;
+    if (observed.some((e) => Math.abs(e.t - t) < EVENT_WINDOW_MS)) continue;
+    if (cannotStartAt(samples, t)) continue;
     // The rise must happen while heating is possible: only readings taken
     // from t until the first off/cool state or gap (at most an hour) count.
-    const riseEnd = Math.min(t + INFERRED_RISE_WINDOW_MS, nextNoHeat(samples, t) ?? Number.POSITIVE_INFINITY);
-    const window = windowGrid(grid, t, riseEnd);
-    if (window.times.length < 2) return;
-    const first = window.times[0];
-    const last = window.times[window.times.length - 1];
-    // Same sensors at both instants, so membership can't fake a rise.
-    const cohort = [...window.values.entries()]
-      .filter(([, filled]) => filled.has(first) && filled.has(last))
-      .map(([id]) => id);
-    if (cohort.length < MIN_SENSORS_FOR_MEAN) return;
-    if (cohortMean(window, cohort, last) - cohortMean(window, cohort, first) < INFERRED_RISE) return;
-    if (heatingRuledOut(samples, t, riseEnd)) return;
+    const riseEnd = Math.min(t + INFERRED_RISE_WINDOW_MS, noHeat[firstIndexAfter(samples, t, timeOf, true)]);
+    const rises = series.map((points) => riseWithin(points, t, riseEnd)).filter((r): r is number => r !== null);
+    if (rises.length < MIN_SENSORS_FOR_MEAN || mean(rises)! < INFERRED_RISE) continue;
+    if (heatingRuledOut(samples, t, riseEnd)) continue;
     seenDays.add(day);
     events.push({ type: 'morning', t, inferred: true });
-  });
+  }
   return events;
 }
 

@@ -434,10 +434,12 @@ alone ("the thermostat may keep heating to satisfy it").
     is `false` and no returns are reported.
   - On days without an observed morning warm-up (e.g. the recorder keeps fewer
     days than requested, or there's no thermostat history at all), a morning
-    warm-up is *inferred* when the house average rises 0.5 °C within an hour,
-    measured only from readings taken from the candidate start until the first
-    off/cool state or gap (so the rise happens while heating is possible),
-    unless the recorded thermostat mode couldn't heat then (off, cool). It
+    warm-up is *inferred* when the sensors warm by 0.5 °C on average within an
+    hour: each sensor's rise is from its own first to last reading in the window
+    (so sparse or staggered sensors count; at least two sensors with two
+    readings each are needed), using only readings taken from the candidate
+    start until the first off/cool state or gap (so the rise happens while
+    heating is possible), unless the recorded thermostat mode couldn't heat then (off, cool). It
     never starts while an off/cool state or a gap is in force (the last
     recorded state at or before its start); it can start later, once a
     heat-capable state is. A
