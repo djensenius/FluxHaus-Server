@@ -423,6 +423,9 @@ export interface ParsedStates {
   comfort: ComfortSample[] | null;
   // Occupancy per occupancy entity id.
   occupancy: Map<string, OccupancySample[]>;
+  // Milliseconds with a directly observed action, not merely a carried one.
+  // Optional for existing callers; parseStates always populates it.
+  actionObservations?: Set<number>;
   reportedInvalidations: number[];
   unitConflict: boolean;
   targetUnitAssumed: boolean;
@@ -443,6 +446,7 @@ export function parseStates(
   const climate = new Map<number, Map<string, { value: string | null; first: string; last: string }>>();
   const comfort = new Map<number, { setting: string | null; ambiguous: boolean; first: string }>();
   const occupancy = new Map<string, Map<number, { occupied: boolean | null; afterMillisecond: boolean }>>();
+  const actionObservations = new Set<number>();
   const reportedInvalidations: number[] = [];
   const assumedUnit = knownUnit(unit ?? undefined);
   let unitConflict = false;
@@ -472,6 +476,7 @@ export function parseStates(
       if (!climate.has(t)) climate.set(t, new Map());
       const fields = climate.get(t)!;
       const key = field.replace(/_str$/, '');
+      if (key === 'hvac_action') actionObservations.add(t);
       const previous = fields.get(key);
       if (!previous) fields.set(key, { value, first: fraction, last: fraction });
       else {
@@ -605,6 +610,7 @@ export function parseStates(
     hvac: hvac.length > 0 ? hvac : null,
     comfort: comfortHistory.length > 0 ? comfortHistory : null,
     occupancy: occupancyHistory,
+    actionObservations,
     reportedInvalidations: reportedInvalidations.sort((a, b) => a - b),
     unitConflict,
     targetUnitAssumed: hvac.some((sample) => sample.setpoint !== null || (sample.coolSetpoint ?? null) !== null),
@@ -708,11 +714,11 @@ interface WindowData {
   degraded: boolean;
 }
 
-// The lookback query filters for cooling actions, so only the selected
-// window's unfiltered state history can reveal a conflicting action at the
-// same rounded millisecond.
+// The lookback query filters for cooling actions. The selected window must
+// independently contain the action, with a compatible unconflicted state.
 function uncertainCoolingAnchor(states: ParsedStates | null, t: number): boolean {
-  return states?.hvac?.some((sample) => sample.t === t && (sample.gap || sample.hvacAction === null)) ?? false;
+  const anchor = states?.hvac?.find((sample) => sample.t === t);
+  return !states?.actionObservations?.has(t) || !anchor || anchor.gap || !/^cooling$/i.test(anchor.hvacAction ?? '');
 }
 
 export class ClimatePlacementService {

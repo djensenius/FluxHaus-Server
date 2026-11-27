@@ -909,6 +909,8 @@ interface SettingChange {
   t: number;
   setting: ComfortSetting | null;
   subMillisecond?: string;
+  // An intermediate effective setting was observed within this millisecond.
+  interruption?: boolean;
 }
 
 interface Run {
@@ -953,45 +955,45 @@ function settingTimeline(comfort: ComfortSample[] | null | undefined, samples: H
       t: c.t, comfort: true, setting: normalizeSetting(c.setting), ambiguous: c.ambiguous === true,
       subMillisecond: c.subMillisecond ?? '',
     })), ...presets]
-      .sort((a, b) => a.t - b.t)
     : presets;
+  events.sort((a, b) => a.t - b.t || compareSubMillisecond(a.subMillisecond, b.subMillisecond));
   let select: ComfortSetting | null = null;
   let selectAmbiguous = false;
   let preset: ComfortSetting | null = null;
-  let beforeSelect: ComfortSetting | null = null;
-  let beforeAmbiguous = false;
-  let beforePreset: ComfortSetting | null = null;
-  let selectFraction = '';
-  let presetFraction = '';
   const changes: SettingChange[] = [];
-  events.forEach((e, i) => {
-    if (i === 0 || events[i - 1].t !== e.t) {
-      beforeSelect = select;
-      beforeAmbiguous = selectAmbiguous;
-      beforePreset = preset;
-      selectFraction = '';
-      presetFraction = '';
+  let i = 0;
+  while (i < events.length) {
+    const t = events[i].t;
+    let setting = selectAmbiguous ? null : select ?? preset;
+    const transitions: SettingChange[] = [];
+    while (i < events.length && events[i].t === t) {
+      const fraction = events[i].subMillisecond;
+      // Truly simultaneous field updates are atomic; otherwise retain their
+      // recorded order without assigning invented millisecond timestamps.
+      while (i < events.length && events[i].t === t && compareSubMillisecond(events[i].subMillisecond, fraction) === 0) {
+        const event = events[i];
+        if (event.comfort) {
+          select = event.setting;
+          selectAmbiguous = event.ambiguous;
+        } else preset = event.setting;
+        i += 1;
+      }
+      const next = selectAmbiguous ? null : select ?? preset;
+      if (next !== setting) transitions.push({ t, setting: next, ...(fraction ? { subMillisecond: fraction } : {}) });
+      setting = next;
     }
-    if (e.comfort) {
-      select = e.setting;
-      selectAmbiguous = e.ambiguous;
-      selectFraction = e.subMillisecond;
-    } else {
-      preset = e.setting;
-      presetFraction = e.subMillisecond;
+    if (transitions.length > 1) {
+      // The intermediate setting cannot safely be assigned a millisecond
+      // interval. Keep a barrier followed by the last observed setting.
+      changes.push({ ...transitions[0], setting: null, interruption: true });
+      if (setting !== null) changes.push(transitions[transitions.length - 1]);
+    } else if (transitions.length === 1) {
+      changes.push(transitions[0]);
+    } else if (changes.length === 0) {
+      changes.push({ t, setting });
     }
-    // Settle all events at one time before recording the setting in force.
-    if (events[i + 1]?.t === e.t) return;
-    const setting = selectAmbiguous ? null : select ?? preset;
-    const withoutSelect = beforeAmbiguous ? null : beforeSelect ?? preset;
-    const withoutPreset = selectAmbiguous ? null : select ?? beforePreset;
-    let subMillisecond = withoutSelect !== setting ? selectFraction : '';
-    if (withoutPreset !== setting && compareSubMillisecond(presetFraction, subMillisecond) > 0) subMillisecond = presetFraction;
-    if (changes.length === 0 || changes[changes.length - 1].setting !== setting) {
-      changes.push({ t: e.t, setting, ...(subMillisecond ? { subMillisecond } : {}) });
-    }
-  });
-  return changes.some((c) => c.setting !== null) ? changes : [];
+  }
+  return changes;
 }
 
 function settingAt(timeline: SettingChange[], t: number): ComfortSetting | null {
@@ -1026,11 +1028,11 @@ function mergeComfort(samples: HvacSample[], timeline: SettingChange[], comfort:
   let ci = 0;
   while (si < samples.length || ci < timeline.length) {
     if (ci < timeline.length && (si >= samples.length || timeline[ci].t <= samples[si].t)) {
-      const { t } = timeline[ci];
-      preset = timeline[ci].setting;
+      const { t, setting, interruption } = timeline[ci];
+      preset = setting;
       ci += 1;
       const prev = merged[merged.length - 1];
-      if (prev && !(si < samples.length && samples[si].t === t)) {
+      if (prev && (interruption || !(si < samples.length && samples[si].t === t))) {
         merged.push({ ...prev, t, presetMode: prev.gap ? null : preset });
       }
     } else {
@@ -3070,7 +3072,10 @@ function dataset(
   // The Ecobee comfort setting takes precedence over the thermostat's preset,
   // which fills in for an unknown setting except after a select conflict.
   const known = hasComfortEvidence(comfort);
-  const timeline = settingTimeline(comfort, raw);
+  const settingHistory = settingTimeline(comfort, raw);
+  // An interruption can exist even when no lasting setting is known. Keep
+  // it for source safety without inventing a usable comfort schedule.
+  const timeline = settingHistory.some((change) => change.setting !== null) ? settingHistory : [];
   const rooms = sensors.filter((s) => !s.isThermostat).map((s) => s.id);
   const occupancy = new Map(sensors
     .filter((s) => s.occupancy && s.occupancy.length > 0)
@@ -3080,7 +3085,14 @@ function dataset(
   const reported = reportedTemperature?.points.length ? reportedTemperature : null;
   const reference = reported ? referenceEvidence(reported, raw) : null;
   const boundaries = fractionalBoundarySources(raw, timeline);
-  const safePoints = (points: SensorSeriesInput['points']) => points.filter((point) => !boundaries.has(point.t));
+  const interruptions = settingHistory.filter((change) => change.interruption);
+  // Protect setting-neutral comparisons too, including staggered sources.
+  // Later non-overlapping source windows remain usable.
+  const safePoints = (points: SensorSeriesInput['points']) => points.filter((point) => {
+    if (boundaries.has(point.t)) return false;
+    const next = interruptions[firstIndexAfter(interruptions, point.t, timeOf, false)];
+    return !next || next.t >= point.t + BUCKET_MS;
+  });
   const safeSensors = sensors.map((sensor) => ({ ...sensor, points: safePoints(sensor.points) }));
   let referenceId = '__climate_reported_temperature__';
   while (sensors.some((s) => s.id === referenceId)) referenceId += '_';

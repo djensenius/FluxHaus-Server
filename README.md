@@ -558,7 +558,12 @@ about 10 days:
   …) is used instead, so wake-ups and returns from Away still work. A
   `none`/`unknown`/`unavailable` preset (or a gap) is unknown, not the previous
   preset. Conflicting select values in the same millisecond remain unknown
-  instead of falling back to the preset until a later select observation.
+  instead of falling back to the preset until a later select observation. If
+  separately recorded select and preset updates reveal an intermediate effective
+  setting within one millisecond, no duration is guessed: overlapping source
+  buckets are excluded and wake evidence cannot be paired across the
+  interruption. The final setting and later complete buckets remain usable;
+  unchanged duplicates and truly simultaneous updates create no such barrier.
 - **Occupancy** comes from each discovered `occupancy` binary sensor (`value`
   0/1, change-driven, so each value holds until the next), matched to a
   temperature entity by their shared Home Assistant device ID, not their names.
@@ -716,7 +721,8 @@ about 10 days:
   `days` days of data ending 2 hours after it, or the requested window when it
   falls inside it, so cooling tips also show in winter
   (`coverage.coolingFrom`/`coolingTo`, `coolingEvents`; `null`/`0` when no
-  mode-compatible cooling action was confirmed or the lookup could not be made).
+  mode-compatible cooling action was confirmed or the lookup or anchor could
+  not be verified).
   The lookup also reads 30 days of prior climate modes to establish the mode at
   the boundary. An action incompatible with its known mode is ignored; when a
   newer action's mode is missing, unavailable or conflicting, the window is
@@ -726,12 +732,14 @@ about 10 days:
   the window. A successful lookup with no compatible action is
   described as unconfirmed, not proof that cooling did not occur: records may
   be incomplete or contain incompatible actions. Because the lookup filters for
-  cooling actions, the selected window is also checked for conflicting actions
-  in the anchor's millisecond. An action followed by an incompatible mode in
-  that same millisecond is also an uncertain anchor. In either case the cooling
-  window is unknown, including when an older season exists; a no-change summary
-  says cooling couldn't be assessed reliably, and the result is retried sooner. A failed
-  lookup also makes no no-cooling claim. Cooling runs merge across reported
+  cooling actions, the selected window's unfiltered state history must also
+  directly confirm a compatible cooling action at the anchor. Failed, empty,
+  missing-anchor or conflicting state history, an action merely carried from an
+  earlier observation, or an action followed by an incompatible mode in the
+  same millisecond leaves the cooling window unknown, including for an older
+  season. A no-change summary says cooling couldn't be assessed reliably, and
+  the result is retried sooner. A failed lookup also makes no no-cooling claim.
+  Cooling runs merge across reported
   `idle` spells under 30 minutes (heating runs: 20 minutes), never across a
   gap, an unknown action or any other action. Cooling event offsets and daily
   room comparisons use complete source buckets within actual active cooling,
