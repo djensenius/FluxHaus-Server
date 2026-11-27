@@ -231,12 +231,18 @@ const CLIMATE_FIELDS = [
 ];
 
 function statePredicate(entities: StateEntities): string {
-  const occupancy = entities.occupancy.filter((id) => SAFE_OBJECT_ID.test(id)).map((id) => `"${id}"`).join(', ');
-  return `(r.domain == "climate" and r.entity_id == "${entities.climate}" and contains(value: r._field, set: [${
-    CLIMATE_FIELDS.map((f) => `"${f}"`).join(', ')}]))
-    or (r.domain == "select" and r.entity_id == "${entities.comfort}" and r._field == "state")
-    or (r.domain == "binary_sensor" and contains(value: r.entity_id, set: [${occupancy}])
-      and (r._field == "value" or r._field == "state"))`;
+  // Static comparisons allow InfluxDB to push these filters into storage.
+  const fields = CLIMATE_FIELDS.map((field) => `r._field == "${field}"`).join(' or ');
+  const occupancy = entities.occupancy
+    .filter((id) => SAFE_OBJECT_ID.test(id))
+    .map((id) => `r.entity_id == "${id}"`)
+    .join(' or ');
+  const occupancyPredicate = occupancy
+    ? `\n    or (r.domain == "binary_sensor" and (${occupancy})
+      and (r._field == "value" or r._field == "state"))`
+    : '';
+  return `(r.domain == "climate" and r.entity_id == "${entities.climate}" and (${fields}))
+    or (r.domain == "select" and r.entity_id == "${entities.comfort}" and r._field == "state")${occupancyPredicate}`;
 }
 
 // Thermostat, comfort setting and occupancy changes over [start, end), plus
