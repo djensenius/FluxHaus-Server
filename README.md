@@ -473,6 +473,8 @@ about 10 days:
   participation isn't configured (estimated separately from the cooling data
   for cooling tips), and when it contradicts the configured
   participation a `participation-mismatch-<setting>` recommendation says so.
+  Membership isn't estimated when Follow Me is on or omitted and there's no
+  occupancy history.
   - A *morning warm-up* is a reported heating start (`hvac_action` changing
     from a reported non-heating action to heating, in a mode that can heat)
     between 04:00 and 10:00 server time, once per day. Set point or preset
@@ -592,7 +594,8 @@ about 10 days:
     an omitted or `true` `followMe` leaves who counted unknown: contribution
     stays unknown (conditional `low` tips), an average of more than one
     sensor isn't computed (only the thermostat's own reading is used), and
-    membership estimates consider single sensors only. Send `followMe=false`
+    membership isn't estimated (different sets of rooms can share the same
+    mean, so the fit can't tell them apart). Send `followMe=false`
     to have every member of a setting count. The
     same applies to other heat-ups (over Home) and cooling (over that
     setting's cooling runs, from the cooling data).

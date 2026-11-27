@@ -1278,6 +1278,41 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(mismatch.detail).toMatch(/Kitchen/);
   });
 
+  it('doesn\'t estimate membership when Follow Me may be on without occupancy history', () => {
+    // 18/20/22 °C with the thermostat at 20 °C: Living alone and all three
+    // rooms both match it exactly, so the fit can't tell them apart.
+    const ambiguous = rooms({
+      home_current_temperature: 0, bedroom_temperature: -2, living_temperature: 0, kitchen_temperature: 2,
+    }, wakeBase);
+    const all = ['bedroom_temperature', 'living_temperature', 'kitchen_temperature'];
+    [null, true].forEach((followMe) => {
+      const result = analyzePlacement(wakeInput({ sensors: ambiguous, participation: config(all, followMe) }));
+      const caveat = followMe === null
+        ? 'Follow Me wasn\'t specified; if it\'s on it may have left it out of the average while unoccupied'
+        : 'with Follow Me on, the occupancy and comfort-setting history couldn\'t show whether it counted';
+      // No false contradiction of the configured setting from a singleton fit.
+      expect(result.recommendations.some((r) => r.id.startsWith('participation-mismatch'))).toBe(false);
+      expect(result.recommendations.map((r) => [r.id, r.severity, r.title])).toEqual([
+        ['wake-bedroom', 'low', 'Bedroom may be holding the morning warm-up on'],
+        ['remove-kitchen', 'low', 'Kitchen may be stopping the heat early'],
+      ]);
+      result.recommendations.forEach((r) => {
+        expect(r.detail).toContain(caveat);
+        expect(r.detail).toContain('If it counted, Ecobee');
+        expect(r.detail).not.toContain('readings suggest');
+      });
+      ['bedroom_temperature', 'kitchen_temperature'].forEach((id) => {
+        expect(result.sensors.find((x) => x.id === id)!.verdictSummary).toContain('so it may or may not be');
+      });
+    });
+    // Explicitly off: every member counts, so the same rooms are categorical.
+    const off = analyzePlacement(wakeInput({ sensors: ambiguous, participation: config(all, false) }));
+    expect(off.recommendations.some((r) => r.id.startsWith('participation-mismatch'))).toBe(false);
+    expect(off.recommendations.map((r) => [r.id, r.severity])).toEqual([
+      ['wake-bedroom', 'high'], ['remove-kitchen', 'medium'],
+    ]);
+  });
+
   it('merges cooling runs only across known idle time, not a data gap', () => {
     const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
     // Cooling 13:00–14:00 and 14:10–16:00; between them idle or a gap.

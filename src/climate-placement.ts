@@ -1182,6 +1182,11 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
   const result = new Map(model.rooms.map((id) => [id, unknownParticipation()]));
   const n = model.rooms.length;
   if (model.thermostatId === null || n === 0 || n > MAX_FIT_ROOMS) return result;
+  // Follow Me on or not given, with no occupancy history: any subset could
+  // have been averaged at any time, and different subsets can share a mean
+  // (18/20/22 averages 20 like the 20 room alone), so membership is unknown.
+  const followMe = model.config?.followMe ?? null;
+  if (followMe !== false && model.occupancy.size === 0) return result;
   const own = grid.values.get(model.thermostatId);
   if (!own) return result;
   const size = 1 << n;
@@ -1193,11 +1198,7 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
   const sums = new Float64Array(size);
   // Follow Me not given (null): times where it would change a subset's average
   // aren't scored for that subset.
-  const followMe = model.config?.followMe ?? null;
-  const tracked = followMe !== false && model.occupancy.size > 0;
-  // Follow Me on or not given, with no occupancy history: only single rooms
-  // are scored, as Follow Me can't change a one-room average.
-  const singlesOnly = followMe !== false && model.occupancy.size === 0;
+  const tracked = followMe !== false;
   const times = grid.times.slice(
     firstIndexAfter(grid.times, from, itself, true),
     firstIndexAfter(grid.times, to, itself, true),
@@ -1227,8 +1228,7 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     const fit = fits[setting];
     for (let mask = 1; mask < size; mask += 1) {
       const used = (mask & occupiedMask) || mask;
-      if ((mask & ~available) === 0 && (mask & unknownMask) === 0 && (followMe !== null || used === mask)
-        && (!singlesOnly || sizes[mask] === 1)) {
+      if ((mask & ~available) === 0 && (mask & unknownMask) === 0 && (followMe !== null || used === mask)) {
         fit.errors[mask] += Math.abs(sums[used] / sizes[used] - target);
         fit.counts[mask] += 1;
       }
