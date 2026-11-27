@@ -966,6 +966,9 @@ function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSettin
     ? configured.filter((id) => model.roomSet.has(id))
     : model.rooms.filter(fresh);
   const followMe = model.config?.followMe ?? null;
+  // Follow Me on or not given, with no occupancy history: which members
+  // Ecobee averaged can't be told (unless there is only one).
+  if (followMe !== false && model.occupancy.size === 0 && members.length > 1) return null;
   if (followMe !== false && model.occupancy.size > 0) {
     if (members.some((id) => occupancyUnknown(model, id, t))) return null;
     const occupied = members.filter((id) => occupiedAt(model.occupancy.get(id), t) === true);
@@ -1011,9 +1014,9 @@ function contributesAt(model: Model, id: string, t: number, setting: ComfortSett
   if (memberIn(model, id, setting) === false) return false;
   const followMe = model.config?.followMe ?? null;
   if (followMe === false) return true;
-  // Without occupancy history Follow Me can't be told apart from off: as
-  // before, a room isn't assumed left out unless Follow Me is known to be on.
-  if (model.occupancy.size === 0) return followMe === null ? true : null;
+  // Follow Me on or not given, with no occupancy history: unknown (the
+  // absence of occupancy data says nothing about who was detected).
+  if (model.occupancy.size === 0) return null;
   const counts = followMeCounts(model, id, t, setting);
   return followMe === true || counts === true ? counts : null;
 }
@@ -1192,6 +1195,9 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
   // aren't scored for that subset.
   const followMe = model.config?.followMe ?? null;
   const tracked = followMe !== false && model.occupancy.size > 0;
+  // Follow Me on or not given, with no occupancy history: only single rooms
+  // are scored, as Follow Me can't change a one-room average.
+  const singlesOnly = followMe !== false && model.occupancy.size === 0;
   const times = grid.times.slice(
     firstIndexAfter(grid.times, from, itself, true),
     firstIndexAfter(grid.times, to, itself, true),
@@ -1221,7 +1227,8 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     const fit = fits[setting];
     for (let mask = 1; mask < size; mask += 1) {
       const used = (mask & occupiedMask) || mask;
-      if ((mask & ~available) === 0 && (mask & unknownMask) === 0 && (followMe !== null || used === mask)) {
+      if ((mask & ~available) === 0 && (mask & unknownMask) === 0 && (followMe !== null || used === mask)
+        && (!singlesOnly || sizes[mask] === 1)) {
         fit.errors[mask] += Math.abs(sums[used] / sizes[used] - target);
         fit.counts[mask] += 1;
       }
@@ -1720,7 +1727,7 @@ function neverCounted(c: Contribution | null): boolean {
 // whether it steered the thermostat can't be told, so tips are conditional and
 // say so.
 function countUnknown(env: Env, c: Contribution | null): boolean {
-  return c === null && (env.followMe === true || (env.followMe === null && env.occupancy));
+  return c === null && env.followMe !== false;
 }
 
 const COUNT_UNKNOWN = 'the occupancy and comfort-setting history couldn\'t show whether it counted toward the '
@@ -1730,7 +1737,7 @@ const COUNT_UNKNOWN = 'the occupancy and comfort-setting history couldn\'t show 
 function countCaveat(env: Env): string {
   return env.followMe === true
     ? `with Follow Me on, ${COUNT_UNKNOWN}`
-    : 'Follow Me wasn\'t specified, and if it\'s on it may have left it out of the average while unoccupied, so '
+    : 'Follow Me wasn\'t specified; if it\'s on it may have left it out of the average while unoccupied, and '
       + 'whether it counted isn\'t known';
 }
 

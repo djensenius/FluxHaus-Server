@@ -588,8 +588,12 @@ about 10 days:
     where it would either way (occupied, or no participating room occupied),
     other times are unknown (so the same conditional wording applies), the
     effective average is unknown where Follow Me would change it, and those
-    times aren't used to estimate membership. Without any occupancy history an
-    omitted `followMe` can't change who counts, so it's treated as before. The
+    times aren't used to estimate membership. Without any occupancy history,
+    an omitted or `true` `followMe` leaves who counted unknown: contribution
+    stays unknown (conditional `low` tips), an average of more than one
+    sensor isn't computed (only the thermostat's own reading is used), and
+    membership estimates consider single sensors only. Send `followMe=false`
+    to have every member of a setting count. The
     same applies to other heat-ups (over Home) and cooling (over that
     setting's cooling runs, from the cooling data).
   - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a

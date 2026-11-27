@@ -133,8 +133,15 @@ const BIASES = {
   bedroom_temperature: 0.3,
 };
 
+// Follow Me explicitly off with participation unknown: on or omitted, with no
+// occupancy history, who Ecobee averaged can't be told (tested separately).
+const FOLLOW_ME_OFF = {
+  home: null, sleep: null, away: null, followMe: false,
+};
+
 function input(overrides: Partial<Parameters<typeof analyzePlacement>[0]> = {}) {
   return {
+    participation: FOLLOW_ME_OFF,
     start: new Date(START),
     end: new Date(START + 5 * DAY),
     windowDays: 5,
@@ -241,7 +248,7 @@ describe('detectHvacEvents', () => {
 
 describe('analyzePlacement', () => {
   it('reports coverage and the response contract', () => {
-    const result = analyzePlacement(input());
+    const result = analyzePlacement(input({ participation: undefined }));
     expect(result).toMatchObject({
       generatedAt: '2026-01-10T00:00:00.000Z',
       windowDays: 5,
@@ -1672,8 +1679,8 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       })),
       participation: { home: both, sleep: both, away: null, followMe },
     }));
-    const caveat = 'Follow Me wasn\'t specified, and if it\'s on it may have left it out of the average while '
-      + 'unoccupied, so whether it counted isn\'t known';
+    const caveat = 'Follow Me wasn\'t specified; if it\'s on it may have left it out of the average while '
+      + 'unoccupied, and whether it counted isn\'t known';
     // The Bedroom is empty while the Living Room is occupied: with Follow Me
     // on it would be left out, so it isn't blamed outright.
     const mixed = run(null, true);
@@ -1768,6 +1775,53 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       + 'the share is of that part.');
     expect(some.summary).toContain('(with Follow Me it counted 2% of the time while the AC ran in Home, of the 75% of '
       + 'that time it could be told)');
+  });
+
+  it('doesn\'t assume who counted when Follow Me is on or omitted and there\'s no occupancy history', () => {
+    const both = ['bedroom_temperature', 'living_temperature'];
+    const omittedCaveat = 'Follow Me wasn\'t specified; if it\'s on it may have left it out of the average while '
+      + 'unoccupied, and whether it counted isn\'t known';
+    // Omitted, nothing configured, no thermostat reading: the average Ecobee
+    // used isn't assumed, so there are no wake offsets or wake-up tip.
+    const omitted = analyzePlacement(wakeInput({ participation: undefined }));
+    expect(omitted.coverage).toMatchObject({ followMe: null, occupancyAvailable: false });
+    expect(omitted.sensors.every((s) => s.wakeOffset === null)).toBe(true);
+    expect(omitted.recommendations.map((r) => [r.id, r.severity, r.title])).toEqual([
+      ['move-bedroom', 'low', 'Bedroom may be keeping the heat on'],
+    ]);
+    expect(omitted.recommendations[0].detail).toContain(
+      `If it's in your Home comfort setting and counted toward the average (${omittedCaveat}), Ecobee keeps heating`,
+    );
+    const summary = omitted.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary!;
+    expect(summary).toContain(`— ${omittedCaveat}, so it may or may not be pulling the average down`);
+    expect(summary).not.toContain('likely');
+    // Omitted, with the thermostat's reading: membership isn't estimated from
+    // an all-members assumption, and tips stay conditional.
+    const estimated = analyzePlacement(wakeInput({ participation: undefined, sensors: rooms(EST_BIASES, wakeBase) }));
+    const wake = estimated.recommendations.find((r) => r.id === 'wake-bedroom')!;
+    expect(wake).toMatchObject({ severity: 'low', title: 'Bedroom may be holding the morning warm-up on' });
+    expect(wake.detail).toContain(`(${omittedCaveat})`);
+    expect(estimated.recommendations.every((r) => !r.detail.includes('readings suggest'))).toBe(true);
+    // Explicitly on: the same, worded for Follow Me on.
+    const on = analyzePlacement(wakeInput({ participation: { home: both, sleep: both, away: null, followMe: true } }));
+    const bedroom = on.sensors.find((s) => s.id === 'bedroom_temperature')!;
+    expect(bedroom.wakeOffset).toBeNull();
+    expect(on.recommendations.map((r) => [r.id, r.severity, r.title])).toEqual([
+      ['move-bedroom', 'low', 'Bedroom may be keeping the heat on'],
+    ]);
+    expect(on.recommendations[0].detail).toContain('It\'s in your Home comfort setting, but with Follow Me on, the '
+      + 'occupancy and comfort-setting history couldn\'t show whether it counted toward the average for enough of the '
+      + 'time. If it counted, Ecobee keeps heating');
+    expect(bedroom.verdictSummary).toContain('so it may or may not be pulling the average down');
+    // Explicitly off: all members count, as before.
+    const off = analyzePlacement(wakeInput({ participation: { home: both, sleep: both, away: null, followMe: false } }));
+    expect(off.recommendations[0]).toMatchObject({
+      id: 'wake-bedroom', severity: 'medium', title: 'Bedroom is holding the morning warm-up on',
+    });
+    expect(off.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary).toContain('— likely');
+    // With the thermostat's reading and Follow Me off, membership is estimated.
+    const offEstimated = analyzePlacement(wakeInput({ sensors: rooms(EST_BIASES, wakeBase) }));
+    expect(offEstimated.recommendations.find((r) => r.id === 'wake-bedroom')!.detail).toContain('readings suggest');
   });
 
   it('qualifies cooling advice when Follow Me contribution is unknown', () => {
