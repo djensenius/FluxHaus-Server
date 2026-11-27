@@ -1503,17 +1503,21 @@ function wakeOvershootOf(points: SensorSeriesInput['points'], wakes: Wake[], sam
   return mean(peaks);
 }
 
-// Mean of how far the lowest reading in each cooling run fell below the cool set point.
+// Mean of each cooling run's greatest dip below the cool set point in force at
+// that reading.
 function coolingUndershootOf(points: SensorSeriesInput['points'], runs: Run[], samples: HvacSample[]): number | null {
   const dips = runs.map((run) => {
-    const state = samples[stateIndexAt(samples, run.from)];
-    const point = state && !state.gap ? coolPointOf(state) : null;
     const inside = points.slice(
       firstIndexAfter(points, run.from, timeOf, false),
       firstIndexAfter(points, run.to - BUCKET_MS, timeOf, true),
     );
-    if (point === null || inside.length === 0) return null;
-    return Math.max(0, point - Math.min(...inside.map((p) => p.v)));
+    if (inside.length === 0) return null;
+    const undershoots = inside.map((reading) => {
+      const state = samples[stateIndexAt(samples, reading.t)];
+      const point = state && !state.gap ? coolPointOf(state) : null;
+      return point === null ? null : point - reading.v;
+    }).filter((undershoot): undershoot is number => undershoot !== null);
+    return undershoots.length > 0 ? Math.max(0, ...undershoots) : null;
   }).filter((d): d is number => d !== null);
   return mean(dips);
 }

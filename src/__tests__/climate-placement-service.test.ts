@@ -54,6 +54,7 @@ const queryKind = (flux: string) => {
 function makeDeps(overrides: Record<string, unknown> = {}) {
   const rows: Record<'temperatures' | 'states' | 'cooling', Rows | Error> = {
     temperatures: [
+      { _time: '2026-01-19T06:00:00Z', _value: '20', _measurement: '°C', entity_id: 'home_current_temperature' },
       { _time: '2026-01-19T06:00:00Z', _value: '18.5', _measurement: '°C', entity_id: 'office_temperature' },
       { _time: '2026-01-19T06:00:00Z', _value: '20.5', _measurement: '°C', entity_id: 'kitchen_temperature' },
     ],
@@ -582,6 +583,28 @@ describe('ClimatePlacementService', () => {
     advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await service.getInsights(undefined);
     expect(calls('states')).toHaveLength(2);
+  });
+
+  it('retries soon when a room has no temperature history', async () => {
+    const { service, rows, calls, advance } = makeDeps();
+    rows.temperatures = rows.temperatures.filter((row) => row.entity_id !== 'office_temperature');
+    const result = await service.getInsights('7');
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.sampleCount).toBe(0);
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('7');
+    expect(calls('temperatures')).toHaveLength(2);
+  });
+
+  it('retries soon when temperature windows are dropped for unknown units', async () => {
+    const { service, rows, calls, advance } = makeDeps();
+    rows.temperatures.push({
+      _time: '2026-01-19T06:15:00Z', _value: '20', _measurement: 'climate', unit_field: 'K', entity_id: 'office_temperature',
+    });
+    const result = await service.getInsights('7');
+    expect(result.coverage.unknownUnitWindows).toBe(1);
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('7');
+    expect(calls('temperatures')).toHaveLength(2);
   });
 
   it('retries discovery and treats a missing thermostat as degraded', async () => {

@@ -1558,6 +1558,37 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     );
   });
 
+  it('uses the cooling target in force when each reading was taken', () => {
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0, office_temperature: 0 };
+    const coolState = (t: number, hvacAction: string, coolSetpoint: number): HvacSample => ({
+      ...state(t, hvacAction, { presetMode: null, setpoint: coolSetpoint, hvacMode: 'cool' }),
+      coolSetpoint,
+    });
+    const temperature = (t: number) => {
+      const hour = ((t - SUMMER) % DAY) / HOUR;
+      if (hour >= 13 && hour < 14.5) return 24.5;
+      if (hour >= 14.5 && hour < 16) return 23;
+      return 25;
+    };
+    const result = analyzePlacement(wakeInput({
+      cooling: {
+        start: new Date(SUMMER),
+        end: new Date(SUMMER + DAY),
+        sensors: rooms(flat, temperature, { from: SUMMER, days: 1 }),
+        hvac: [
+          coolState(SUMMER, 'idle', 24),
+          coolState(SUMMER + 13 * HOUR, 'cooling', 24),
+          coolState(SUMMER + 14.5 * HOUR, 'cooling', 22),
+          coolState(SUMMER + 16 * HOUR, 'idle', 22),
+        ],
+        comfort: [{ t: SUMMER, setting: 'home' }],
+      },
+    }));
+    expect(result.sensors
+      .filter((sensor) => sensor.id !== 'home_current_temperature')
+      .map((sensor) => sensor.coolingUndershoot)).toEqual([0, 0, 0, 0]);
+  });
+
   it('discloses when no cooling was recorded in the past year', () => {
     const result = analyzePlacement(wakeInput({ cooling: null }));
     expect(result.coverage).toMatchObject({

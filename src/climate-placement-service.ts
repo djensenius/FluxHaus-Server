@@ -585,6 +585,7 @@ export class ClimatePlacementService {
       const occupancy = states?.occupancy.get(occupancyId(s.id));
       return occupancy ? { ...s, occupancy } : s;
     });
+    if (unknownUnitWindows > 0 || series.some((s) => s.points.length === 0)) degraded = true;
     return {
       series: withOccupancy, unknownUnitWindows, states, degraded,
     };
