@@ -1,10 +1,14 @@
 import express from 'express';
 import request from 'supertest';
 import {
+  buildLastCoolingQuery,
   buildPlacementQuery,
+  buildStatesQuery,
   ClimatePlacementService,
-  parseClimateHistory,
+  occupancyId,
+  parsePlacementConfig,
   parsePlacementDays,
+  parseStates,
   PLACEMENT_CACHE_TTL_MS,
   PLACEMENT_DEGRADED_TTL_MS,
   resolveTimeZone,
@@ -34,24 +38,41 @@ function sensor(entityId: string, name: string, isThermostat = false) {
   };
 }
 
+type Rows = Record<string, string>[];
+
+const climateRow = (time: string, field: string, value: string) => ({
+  _time: time, _field: field, _value: value, domain: 'climate', entity_id: 'home',
+});
+
+const queryKind = (flux: string) => {
+  if (flux.includes('union(')) return 'states';
+  if (flux.includes('r._value == "cooling"')) return 'cooling';
+  return 'temperatures';
+};
+
 function makeDeps(overrides: Record<string, unknown> = {}) {
-  const influxdb = {
-    configured: true,
-    query: vi.fn().mockResolvedValue([
+  const rows: Record<'temperatures' | 'states' | 'cooling', Rows | Error> = {
+    temperatures: [
       { _time: '2026-01-19T06:00:00Z', _value: '18.5', _measurement: '°C', entity_id: 'office_temperature' },
       { _time: '2026-01-19T06:00:00Z', _value: '20.5', _measurement: '°C', entity_id: 'kitchen_temperature' },
-    ]),
-  };
-  const homeAssistant = {
-    getHistory: vi.fn().mockResolvedValue([[
+    ],
+    states: [
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T06:00:00Z', 'temperature', '21'),
       {
-        state: 'heat',
-        attributes: {
-          hvac_action: 'heating', preset_mode: 'home', temperature: 21, current_temperature: 20,
-        },
-        last_updated: '2026-01-19T06:00:00Z',
+        _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode',
       },
-    ]]),
+    ],
+    cooling: [],
+  };
+  const influxdb = {
+    configured: true,
+    query: vi.fn(async (flux: string) => {
+      const result = rows[queryKind(flux)];
+      if (result instanceof Error) throw result;
+      return result;
+    }),
   };
   const indoorClimate = {
     cachedStatus: {
@@ -69,12 +90,14 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   };
   let now = NOW.getTime();
   const deps = {
-    influxdb, homeAssistant, indoorClimate, bucket: 'fluxhaus', timeZone: 'UTC', now: () => new Date(now), ...overrides,
+    influxdb, indoorClimate, bucket: 'home_assistant', timeZone: 'UTC', now: () => new Date(now), ...overrides,
   };
+  const calls = (kind: string) => influxdb.query.mock.calls.filter(([flux]) => queryKind(flux) === kind).map(([flux]) => flux);
   return {
     deps,
     influxdb,
-    homeAssistant,
+    rows,
+    calls,
     advance: (ms: number) => { now += ms; },
     service: new ClimatePlacementService(deps as never),
   };
@@ -92,58 +115,143 @@ describe('parsePlacementDays', () => {
   });
 });
 
-describe('parseClimateHistory', () => {
-  it('reads mode, set points, preset and action, converting °F, and keeps gaps', () => {
-    expect(parseClimateHistory([[
+describe('parsePlacementConfig', () => {
+  it('is null without participation parameters', () => {
+    expect(parsePlacementConfig({})).toBeNull();
+    expect(parsePlacementConfig({ days: '7' })).toBeNull();
+  });
+
+  it('reads sorted, de-duplicated ids, an empty list as none, and followMe', () => {
+    expect(parsePlacementConfig({
+      home: 'living_temperature,bedroom_temperature,living_temperature', sleep: '', followMe: 'true',
+    })).toEqual({
+      home: ['bedroom_temperature', 'living_temperature'], sleep: [], away: null, followMe: true,
+    });
+    expect(parsePlacementConfig({ followMe: 'false' })).toEqual({
+      home: null, sleep: null, away: null, followMe: false,
+    });
+  });
+
+  it.each([
+    [{ home: 'bad"id' }, 'home must be a comma-separated list of sensor ids'],
+    [{ sleep: 'a,,b' }, 'sleep must be a comma-separated list of sensor ids'],
+    [{ away: ['a', 'b'] }, 'away must be a comma-separated list of sensor ids'],
+    [{ followMe: 'yes' }, 'followMe must be true or false'],
+    [{ followMe: ['true'] }, 'followMe must be true or false'],
+  ])('rejects %j', (query, message) => {
+    expect(() => parsePlacementConfig(query)).toThrow(message);
+  });
+});
+
+describe('thermostat, comfort and occupancy history', () => {
+  const entities = {
+    climate: 'home', comfort: 'home_current_mode', occupancy: ['home_occupancy', 'bedroom_occupancy'],
+  };
+
+  it('maps temperature sensors to their occupancy entities', () => {
+    expect(occupancyId('home_current_temperature')).toBe('home_occupancy');
+    expect(occupancyId('living_room_temperature')).toBe('living_room_occupancy');
+  });
+
+  it('reads set points per change, carries mode and action forward, converts °F and keeps gaps', () => {
+    const parsed = parseStates([
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T06:00:00Z', 'temperature', '68'),
+      climateRow('2026-01-19T07:00:00Z', 'state', 'heat_cool'),
+      climateRow('2026-01-19T07:00:00Z', 'target_temp_low_str', '59'),
+      climateRow('2026-01-19T07:00:00Z', 'target_temp_high_str', '77'),
+      climateRow('2026-01-19T08:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T09:00:00Z', 'state', 'cool'),
+      climateRow('2026-01-19T09:00:00Z', 'temperature', '77'),
+      climateRow('2026-01-19T10:00:00Z', 'state', 'unavailable'),
+    ], entities, '°F');
+    expect(parsed.hvac).toEqual([
       {
-        state: 'heat', attributes: { temperature: 68, preset_mode: 'Home', hvac_action: 'heating' }, last_updated: '2026-01-19T06:00:00Z',
+        t: Date.parse('2026-01-19T06:00:00Z'), gap: false, hvacMode: 'heat', hvacAction: 'heating', presetMode: null, setpoint: 20, coolSetpoint: null,
       },
       {
-        state: 'heat_cool', attributes: { target_temp_low: 59, target_temp_high: 77 }, last_changed: '2026-01-19T07:00:00Z',
-      },
-      { state: 'unavailable', attributes: {}, last_updated: '2026-01-19T08:00:00Z' },
-      { state: 'unknown', attributes: {}, last_updated: '2026-01-19T09:00:00Z' },
-    ]], '°F')).toEqual([
-      {
-        t: Date.parse('2026-01-19T06:00:00Z'), gap: false, hvacMode: 'heat', setpoint: 20, presetMode: 'Home', hvacAction: 'heating',
+        t: Date.parse('2026-01-19T07:00:00Z'), gap: false, hvacMode: 'heat_cool', hvacAction: 'heating', presetMode: null, setpoint: 15, coolSetpoint: 25,
       },
       {
-        t: Date.parse('2026-01-19T07:00:00Z'), gap: false, hvacMode: 'heat_cool', setpoint: 15, presetMode: null, hvacAction: null,
+        t: Date.parse('2026-01-19T08:00:00Z'), gap: false, hvacMode: 'heat_cool', hvacAction: 'idle', presetMode: null, setpoint: 15, coolSetpoint: 25,
       },
       {
-        t: Date.parse('2026-01-19T08:00:00Z'), gap: true, hvacMode: null, setpoint: null, presetMode: null, hvacAction: null,
+        t: Date.parse('2026-01-19T09:00:00Z'), gap: false, hvacMode: 'cool', hvacAction: 'idle', presetMode: null, setpoint: 25, coolSetpoint: 25,
       },
       {
-        t: Date.parse('2026-01-19T09:00:00Z'), gap: true, hvacMode: null, setpoint: null, presetMode: null, hvacAction: null,
+        t: Date.parse('2026-01-19T10:00:00Z'), gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
       },
     ]);
   });
 
-  it('does not read a return or heating start across unavailable history', () => {
-    const samples = parseClimateHistory([[
-      { state: 'heat', attributes: { preset_mode: 'away', hvac_action: 'idle', temperature: 17 }, last_updated: '2026-01-19T04:30:00Z' },
-      { state: 'unavailable', attributes: {}, last_updated: '2026-01-19T05:00:00Z' },
-      { state: 'heat', attributes: { preset_mode: 'home', hvac_action: 'heating', temperature: 21 }, last_updated: '2026-01-19T06:00:00Z' },
-    ]], '°C');
+  it('does not read a heating start across unavailable history', () => {
+    const samples = parseStates([
+      climateRow('2026-01-19T04:30:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T04:30:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T04:30:00Z', 'temperature', '17'),
+      climateRow('2026-01-19T05:00:00Z', 'state', 'unavailable'),
+      climateRow('2026-01-19T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T06:00:00Z', 'temperature', '21'),
+    ], entities, '°C').hvac!;
     expect(detectHvacEvents(samples, 'UTC')).toEqual([]);
   });
 
-  it('treats implausible converted set points as unknown', () => {
-    // A history recorded in °F read as °C (or vice versa) can't be trusted.
-    expect(parseClimateHistory([[
-      { state: 'heat', attributes: { temperature: 70, hvac_action: 'idle' }, last_updated: '2026-01-19T06:00:00Z' },
-    ]], '°C')[0].setpoint).toBeNull();
+  it('treats implausible or unknown-unit set points as unknown', () => {
+    const rows = [climateRow('2026-01-19T06:00:00Z', 'state', 'heat'), climateRow('2026-01-19T06:00:00Z', 'temperature', '70')];
+    expect(parseStates(rows, entities, '°C').hvac![0].setpoint).toBeNull();
+    expect(parseStates(rows, entities, null).hvac![0].setpoint).toBeNull();
   });
 
-  it('drops set points whose unit is unknown', () => {
-    expect(parseClimateHistory([[
-      { state: 'heat', attributes: { temperature: 21, hvac_action: 'idle' }, last_updated: '2026-01-19T06:00:00Z' },
-    ]], null)[0].setpoint).toBeNull();
+  it('reads comfort settings and change-driven occupancy, ignoring other entities', () => {
+    const parsed = parseStates([
+      {
+        _time: '2026-01-19T11:30:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode',
+      },
+      {
+        _time: '2026-01-19T03:30:00Z', _field: 'state', _value: 'sleep', domain: 'select', entity_id: 'home_current_mode',
+      },
+      {
+        _time: '2026-01-19T12:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'bedroom_occupancy',
+      },
+      {
+        _time: '2026-01-19T11:00:00Z', _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'bedroom_occupancy',
+      },
+      {
+        _time: '2026-01-19T11:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'patio_door_occupancy',
+      },
+    ], entities, '°C');
+    expect(parsed.hvac).toBeNull();
+    expect(parsed.comfort).toEqual([
+      { t: Date.parse('2026-01-19T03:30:00Z'), setting: 'sleep' },
+      { t: Date.parse('2026-01-19T11:30:00Z'), setting: 'home' },
+    ]);
+    expect([...parsed.occupancy.entries()]).toEqual([['bedroom_occupancy', [
+      { t: Date.parse('2026-01-19T11:00:00Z'), occupied: false },
+      { t: Date.parse('2026-01-19T12:00:00Z'), occupied: true },
+    ]]]);
   });
 
-  it('treats unexpected payloads as empty', () => {
-    expect(parseClimateHistory({}, '°C')).toEqual([]);
-    expect(parseClimateHistory([], '°C')).toEqual([]);
+  it('builds a safe Flux query with the state in force at the start', () => {
+    const flux = buildStatesQuery('home_assistant', { ...entities, occupancy: ['bedroom_occupancy', 'bad"id'] }, new Date(30 * 86_400_000), new Date(31 * 86_400_000));
+    expect(flux).toContain('from(bucket: "home_assistant")');
+    expect(flux).toContain('range(start: time(v: "1970-01-01T00:00:00.000Z"), stop: time(v: "1970-01-31T00:00:00.000Z"))\n  |> filter');
+    expect(flux).toContain('|> last()');
+    expect(flux).toContain('r.domain == "climate" and r.entity_id == "home"');
+    expect(flux).toContain('r.domain == "select" and r.entity_id == "home_current_mode" and r._field == "state"');
+    expect(flux).toContain('contains(value: r.entity_id, set: ["bedroom_occupancy"])');
+    expect(flux).not.toContain('bad');
+    expect(flux).toContain('union(tables: [prior, changes])');
+    expect(() => buildStatesQuery('home_assistant', { ...entities, climate: 'x") or true or ("' }, new Date(0), new Date(1))).toThrow('Unsafe entity id');
+  });
+
+  it('builds a query for the last cooling', () => {
+    const flux = buildLastCoolingQuery('home_assistant', 'home', new Date(0), new Date(1000));
+    expect(flux).toContain('r._field == "hvac_action_str"');
+    expect(flux).toContain('r._value == "cooling"');
+    expect(flux).toContain('|> group()\n  |> last()');
+    expect(() => buildLastCoolingQuery('home_assistant', 'bad"', new Date(0), new Date(1))).toThrow('Unsafe entity id');
   });
 });
 
@@ -275,44 +383,94 @@ describe('resolveTimeZone', () => {
 
 describe('ClimatePlacementService', () => {
   it('queries indoor sensors only, over the requested window', async () => {
-    const { service, influxdb, homeAssistant } = makeDeps();
+    const { service, calls } = makeDeps();
     const result = await service.getInsights('7');
     expect(result.windowDays).toBe(7);
     expect(result.coverage.start).toBe('2026-01-13T00:00:00.000Z');
     expect(result.sensors.map((s) => s.id)).toEqual(['home_current_temperature', 'office_temperature', 'kitchen_temperature']);
-    const flux = influxdb.query.mock.calls[0][0] as string;
+    const [flux] = calls('temperatures');
+    expect(flux).toContain('from(bucket: "home_assistant")');
     expect(flux).toContain('"home_current_temperature", "office_temperature", "kitchen_temperature"');
     expect(flux).not.toContain('patio');
     expect(flux).toContain('range(start: time(v: "2026-01-13T00:00:00.000Z"), stop: time(v: "2026-01-20T00:00:00.000Z"))');
-    expect(homeAssistant.getHistory).toHaveBeenCalledWith(
-      'climate.home',
-      '2026-01-13T00:00:00.000Z',
-      '2026-01-20T00:00:00.000Z',
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-    expect(result.coverage.hvacHistoryAvailable).toBe(true);
+    const [states] = calls('states');
+    expect(states).toContain('r.entity_id == "home_current_mode"');
+    expect(states).toContain('set: ["home_occupancy", "office_occupancy", "kitchen_occupancy"]');
+    expect(states).toContain('range(start: time(v: "2026-01-13T00:00:00.000Z"), stop: time(v: "2026-01-20T00:00:00.000Z"))');
+    expect(calls('cooling')[0]).toContain('range(start: time(v: "2025-01-20T00:00:00.000Z"), stop: time(v: "2026-01-20T00:00:00.000Z"))');
+    expect(result.coverage).toMatchObject({
+      hvacHistoryAvailable: true, comfortScheduleAvailable: true, participationConfigured: false, coolingFrom: null,
+    });
+  });
+
+  it('passes occupancy to its temperature sensor', async () => {
+    const { service, rows } = makeDeps();
+    (rows.states as Rows).push({
+      _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'office_occupancy',
+    });
+    const result = await service.getInsights('7');
+    expect(result.coverage.occupancyAvailable).toBe(true);
+  });
+
+  it('reuses the window for cooling within it, else fetches the last cooling season', async () => {
+    const recent = makeDeps();
+    recent.rows.cooling = [{ _time: '2026-01-18T12:00:00Z' }];
+    const shared = await recent.service.getInsights('7');
+    expect(shared.coverage).toMatchObject({ coolingFrom: '2026-01-13T00:00:00.000Z', coolingTo: '2026-01-20T00:00:00.000Z' });
+    expect(recent.calls('temperatures')).toHaveLength(1);
+
+    const old = makeDeps();
+    old.rows.cooling = [{ _time: '2025-10-15T12:00:00Z' }];
+    const result = await old.service.getInsights('7');
+    expect(result.coverage).toMatchObject({ coolingFrom: '2025-10-08T14:00:00.000Z', coolingTo: '2025-10-15T14:00:00.000Z' });
+    expect(old.calls('temperatures')).toHaveLength(2);
+    expect(old.calls('temperatures')[1]).toContain('range(start: time(v: "2025-10-08T14:00:00.000Z"), stop: time(v: "2025-10-15T14:00:00.000Z"))');
+    expect(old.calls('states')[1]).toContain('stop: time(v: "2025-10-15T14:00:00.000Z")');
+  });
+
+  it('degrades when the cooling lookup fails and retries sooner', async () => {
+    const { service, rows, calls, advance } = makeDeps();
+    rows.cooling = new Error('influx down');
+    const result = await service.getInsights('7');
+    expect(result.coverage.coolingFrom).toBeNull();
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('7');
+    expect(calls('cooling')).toHaveLength(2);
+  });
+
+  it('caches per participation configuration and rejects unknown sensor ids', async () => {
+    const { service, calls } = makeDeps();
+    const configured = await service.getInsights('14', { home: 'office_temperature', followMe: 'false' });
+    expect(configured.coverage).toMatchObject({ participationConfigured: true, followMe: false });
+    expect(configured.sensors.find((s) => s.id === 'office_temperature')!.participation.home).toBe(true);
+    await service.getInsights('14', { followMe: 'false', home: 'office_temperature' });
+    expect(calls('temperatures')).toHaveLength(1);
+    await service.getInsights('14');
+    expect(calls('temperatures')).toHaveLength(2);
+    await expect(service.getInsights('14', { home: 'den_temperature' })).rejects.toThrow('Unknown sensor ids: den_temperature');
+    await expect(service.getInsights('14', { home: 'den_temperature' })).rejects.toThrow('Unknown sensor ids');
   });
 
   it('caches results per window for 15 minutes', async () => {
-    const { service, influxdb, advance } = makeDeps();
+    const { service, calls, advance } = makeDeps();
     await service.getInsights('14');
     await service.getInsights('14');
-    expect(influxdb.query).toHaveBeenCalledTimes(1);
+    expect(calls('temperatures')).toHaveLength(1);
     await service.getInsights('7');
-    expect(influxdb.query).toHaveBeenCalledTimes(2);
+    expect(calls('temperatures')).toHaveLength(2);
     advance(PLACEMENT_CACHE_TTL_MS + 1);
     await service.getInsights('14');
-    expect(influxdb.query).toHaveBeenCalledTimes(3);
+    expect(calls('temperatures')).toHaveLength(3);
   });
 
-  it('degrades when Home Assistant history fails and retries sooner', async () => {
-    const { service, homeAssistant, advance } = makeDeps();
-    homeAssistant.getHistory.mockRejectedValue(new Error('recorder down'));
+  it('degrades when thermostat history fails and retries sooner', async () => {
+    const { service, rows, calls, advance } = makeDeps();
+    rows.states = new Error('influx down');
     const result = await service.getInsights(undefined);
-    expect(result.coverage.hvacHistoryAvailable).toBe(false);
+    expect(result.coverage).toMatchObject({ hvacHistoryAvailable: false, comfortScheduleAvailable: false });
     advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await service.getInsights(undefined);
-    expect(homeAssistant.getHistory).toHaveBeenCalledTimes(2);
+    expect(calls('states')).toHaveLength(2);
   });
 
   it('retries discovery and treats a missing thermostat as degraded', async () => {
@@ -321,18 +479,20 @@ describe('ClimatePlacementService', () => {
     const result = await service.getInsights('14');
     expect(deps.indoorClimate.refresh).toHaveBeenCalledTimes(1);
     expect(result.coverage.hvacHistoryAvailable).toBe(false);
+    // Only temperatures are read without a thermostat.
+    expect(influxdb.query).toHaveBeenCalledTimes(1);
     advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await service.getInsights('14');
     expect(influxdb.query).toHaveBeenCalledTimes(2);
   });
 
   it('retries soon when discovery found no sensors', async () => {
-    const { service, deps, influxdb, advance } = makeDeps();
+    const { service, deps, calls, advance } = makeDeps();
     deps.indoorClimate.cachedStatus = { ...deps.indoorClimate.cachedStatus, sensors: [] } as never;
     const result = await service.getInsights('14');
     expect(deps.indoorClimate.refresh).toHaveBeenCalled();
     expect(result.sensors).toEqual([]);
-    expect(influxdb.query).not.toHaveBeenCalled();
+    expect(calls('temperatures')).toHaveLength(0);
     deps.indoorClimate.cachedStatus = { ...deps.indoorClimate.cachedStatus, sensors: [sensor('sensor.office_temperature', 'Office')] } as never;
     advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     const retried = await service.getInsights('14');
@@ -340,12 +500,12 @@ describe('ClimatePlacementService', () => {
   });
 
   it('reports readings dropped for an unknown unit in coverage', async () => {
-    const { service, influxdb } = makeDeps();
-    influxdb.query.mockResolvedValue([
+    const { service, rows } = makeDeps();
+    rows.temperatures = [
       {
         _time: '2026-01-19T06:00:00Z', _value: '18.5', _measurement: 'climate', unit_field: '', entity_id: 'office_temperature',
       },
-    ]);
+    ];
     const result = await service.getInsights('14');
     expect(result.coverage.unknownUnitWindows).toBe(1);
     expect(result.sensors.every((s) => s.sampleCount === 0)).toBe(true);
@@ -355,35 +515,35 @@ describe('ClimatePlacementService', () => {
     ['tag', { unit_tag: '°F', unit_field: '' }],
     ['field', { unit_tag: '', unit_field: '°F' }],
   ])('reads the unit from a unit_of_measurement %s in query results', async (_schema, unit) => {
-    const { service, influxdb } = makeDeps();
-    influxdb.query.mockResolvedValue([
+    const { service, rows } = makeDeps();
+    rows.temperatures = [
       {
         _time: '2026-01-19T06:00:00Z', _value: '68', _measurement: 'climate', entity_id: 'office_temperature', ...unit,
       },
       {
         _time: '2026-01-19T06:00:00Z', _value: '70', _measurement: 'climate', entity_id: 'kitchen_temperature',
       },
-    ]);
+    ];
     const result = await service.getInsights('14');
     // Only the kitchen row, which has no unit at all, is dropped.
     expect(result.coverage.unknownUnitWindows).toBe(1);
   });
 
   it('treats thermostat history with only unavailable states as degraded', async () => {
-    const { service, homeAssistant, advance } = makeDeps();
-    homeAssistant.getHistory.mockResolvedValue([[
-      { state: 'unavailable', attributes: {}, last_updated: '2026-01-19T06:00:00Z' },
-    ]]);
+    const { service, rows, calls, advance } = makeDeps();
+    rows.states = [climateRow('2026-01-19T06:00:00Z', 'state', 'unavailable')];
     const result = await service.getInsights('14');
     expect(result.coverage).toMatchObject({ hvacHistoryAvailable: false, hvacEarliestStateAt: null });
     advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await service.getInsights('14');
-    expect(homeAssistant.getHistory).toHaveBeenCalledTimes(2);
+    expect(calls('states')).toHaveLength(2);
   });
 
   it('degrades to empty analysis when InfluxDB fails', async () => {
-    const { service, influxdb } = makeDeps();
-    influxdb.query.mockRejectedValue(new Error('influx down'));
+    const { service, rows } = makeDeps();
+    rows.temperatures = new Error('influx down');
+    rows.states = new Error('influx down');
+    rows.cooling = new Error('influx down');
     const result = await service.getInsights('14');
     expect(result.sensors.every((s) => s.sampleCount === 0 && s.classification === 'insufficient')).toBe(true);
     expect(result.recommendations).toEqual([]);
@@ -426,6 +586,26 @@ describe('GET /climate/placement-insights', () => {
     const { service } = makeDeps();
     const response = await request(buildApp(service)).get(`/climate/placement-insights?days=${days}`).expect(400);
     expect(response.body.error).toBe('days must be an integer from 3 to 30');
+  });
+
+  it.each([
+    ['home=bad%22id', 'home must be a comma-separated list of sensor ids'],
+    ['followMe=maybe', 'followMe must be true or false'],
+    ['home=den_temperature', 'Unknown sensor ids: den_temperature'],
+  ])('returns 400 for %s', async (query, message) => {
+    const { service } = makeDeps();
+    const response = await request(buildApp(service)).get(`/climate/placement-insights?${query}`).expect(400);
+    expect(response.body.error).toBe(message);
+  });
+
+  it('passes participation parameters through', async () => {
+    const { service } = makeDeps();
+    const response = await request(buildApp(service))
+      .get('/climate/placement-insights?days=7&home=office_temperature,kitchen_temperature&sleep=&followMe=true')
+      .expect(200);
+    expect(response.body.coverage).toMatchObject({ participationConfigured: true, followMe: true });
+    expect(response.body.sensors.find((s: { id: string }) => s.id === 'office_temperature').participation)
+      .toEqual({ home: true, sleep: false, away: null });
   });
 
   it('returns 503 when InfluxDB is not configured', async () => {

@@ -1,13 +1,22 @@
 // Data fetching and caching for GET /climate/placement-insights. Reads room
-// temperatures from InfluxDB and thermostat history from Home Assistant, then
-// hands both to the pure analysis in climate-placement.ts. Upstream failures
-// degrade to an empty analysis rather than an error.
+// temperatures, thermostat history, the Ecobee comfort setting and room
+// occupancy from Home Assistant's InfluxDB bucket (the recorder keeps only
+// days of history), then hands them to the pure analysis in
+// climate-placement.ts. Upstream failures degrade to an empty analysis rather
+// than an error.
 import type { InfluxDBClient } from './clients/influxdb';
 import { fluxBucketLiteral } from './clients/safe-params';
-import type { HomeAssistantClient } from './homeassistant-client';
 import type { IndoorClimateStatus } from './indoor-climate';
 import {
-  analyzePlacement, BUCKET_MS, type HvacSample, type PlacementInsights, type SensorSeriesInput,
+  analyzePlacement,
+  BUCKET_MS,
+  type ComfortSample,
+  type CoolingInput,
+  type HvacSample,
+  type OccupancySample,
+  type ParticipationConfig,
+  type PlacementInsights,
+  type SensorSeriesInput,
 } from './climate-placement';
 import logger from './logger';
 
@@ -19,8 +28,15 @@ export const MAX_PLACEMENT_DAYS = 30;
 export const PLACEMENT_CACHE_TTL_MS = 15 * 60 * 1000;
 // Degraded results (an upstream failed) are retried sooner.
 export const PLACEMENT_DEGRADED_TTL_MS = 60 * 1000;
-const HISTORY_TIMEOUT_MS = 30_000;
+// Home Assistant writes every entity state change to this bucket.
+export const HA_BUCKET = 'home_assistant';
 const DAY_MS = 24 * 60 * 60 * 1000;
+// Cooling tips use the most recent cooling within the past year.
+export const COOLING_LOOKBACK_DAYS = 365;
+// How far before the window the last known state (comfort setting, occupancy,
+// thermostat) is looked up.
+const PRIOR_STATE_DAYS = 30;
+const COOLING_TAIL_MS = 2 * 60 * 60 * 1000;
 // Temperature sensors that aren't indoor rooms.
 const OUTDOOR_PATTERN = /outdoor|outside|patio|exterior|environment_canada/i;
 const SAFE_OBJECT_ID = /^[a-z0-9_]+$/;
@@ -55,6 +71,45 @@ export function parsePlacementDays(value: unknown): number {
   return days;
 }
 
+function inputError(message: string): Error {
+  return namedError('PlacementInputError', message);
+}
+
+function parseIdList(value: unknown, name: string): string[] | null {
+  if (value === undefined) return null;
+  if (typeof value !== 'string') throw inputError(`${name} must be a comma-separated list of sensor ids`);
+  if (value === '') return [];
+  const ids = value.split(',').map((id) => id.trim());
+  if (ids.some((id) => !SAFE_OBJECT_ID.test(id))) {
+    throw inputError(`${name} must be a comma-separated list of sensor ids`);
+  }
+  return [...new Set(ids)].sort();
+}
+
+// Optional comfort setting participation (`home`, `sleep`, `away`: sensor ids
+// in that comfort setting, '' for none) and `followMe` (true/false). Returns
+// null when none is given. Ids are checked against the sensors later.
+export function parsePlacementConfig(query: Record<string, unknown> = {}): ParticipationConfig | null {
+  const home = parseIdList(query.home, 'home');
+  const sleep = parseIdList(query.sleep, 'sleep');
+  const away = parseIdList(query.away, 'away');
+  let followMe: boolean | null = null;
+  if (query.followMe !== undefined) {
+    if (query.followMe !== 'true' && query.followMe !== 'false') throw inputError('followMe must be true or false');
+    followMe = query.followMe === 'true';
+  }
+  if (home === null && sleep === null && away === null && followMe === null) return null;
+  return {
+    home, sleep, away, followMe,
+  };
+}
+
+function configKey(days: number, config: ParticipationConfig | null): string {
+  if (!config) return String(days);
+  const list = (ids: string[] | null) => (ids === null ? '-' : ids.join(','));
+  return `${days}|${list(config.home)}|${list(config.sleep)}|${list(config.away)}|${String(config.followMe)}`;
+}
+
 export interface PlacementIndoorClimate {
   cachedStatus: IndoorClimateStatus;
   refresh(): Promise<void>;
@@ -62,8 +117,8 @@ export interface PlacementIndoorClimate {
 
 export interface ClimatePlacementDeps {
   influxdb: InfluxDBClient;
+  // The Home Assistant bucket (HA_BUCKET in production).
   bucket: string;
-  homeAssistant: HomeAssistantClient;
   indoorClimate: PlacementIndoorClimate;
   timeZone?: string;
   now?: () => Date;
@@ -156,32 +211,139 @@ function plausibleSetpoint(value: number | null): number | null {
   return value !== null && value >= MIN_PLAUSIBLE_SETPOINT_C && value <= MAX_PLAUSIBLE_SETPOINT_C ? value : null;
 }
 
-// Home Assistant history rows for a climate entity → mode / set point / action
-// samples. Unavailable/unknown states are kept as gaps so no transition is
-// read across them.
-export function parseClimateHistory(history: unknown, unit: string | null | undefined): HvacSample[] {
-  const rows = Array.isArray(history) && Array.isArray(history[0]) ? history[0] : [];
-  return rows.flatMap((row: unknown): HvacSample[] => {
-    if (!row || typeof row !== 'object') return [];
-    const { state, attributes, last_updated: lastUpdated, last_changed: lastChanged } = row as Record<string, unknown>;
-    const t = Date.parse(String(lastUpdated ?? lastChanged ?? ''));
-    if (!Number.isFinite(t)) return [];
-    if (typeof state !== 'string' || state === 'unavailable' || state === 'unknown') {
-      return [{
-        t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
-      }];
+// The occupancy entity for a temperature sensor: Ecobee names both after the
+// room (`bedroom_temperature` / `bedroom_occupancy`; the thermostat's
+// `home_current_temperature` / `home_occupancy`).
+export function occupancyId(sensorId: string): string {
+  return `${sensorId.replace(/(_current)?_temperature$/, '')}_occupancy`;
+}
+
+export interface StateEntities {
+  // The climate entity's object id (`home`), its comfort setting select
+  // (`home_current_mode`) and the occupancy binary sensors.
+  climate: string;
+  comfort: string;
+  occupancy: string[];
+}
+
+const CLIMATE_FIELDS = [
+  'state', 'hvac_action_str', 'temperature', 'temperature_str',
+  'target_temp_low', 'target_temp_low_str', 'target_temp_high', 'target_temp_high_str',
+];
+
+function statePredicate(entities: StateEntities): string {
+  const occupancy = entities.occupancy.filter((id) => SAFE_OBJECT_ID.test(id)).map((id) => `"${id}"`).join(', ');
+  return `(r.domain == "climate" and r.entity_id == "${entities.climate}" and contains(value: r._field, set: [${
+    CLIMATE_FIELDS.map((f) => `"${f}"`).join(', ')}]))
+    or (r.domain == "select" and r.entity_id == "${entities.comfort}" and r._field == "state")
+    or (r.domain == "binary_sensor" and contains(value: r.entity_id, set: [${occupancy}]) and r._field == "value")`;
+}
+
+// Thermostat, comfort setting and occupancy changes over [start, end), plus
+// the last value of each before start (within PRIOR_STATE_DAYS) so the state
+// in force at the start is known. Values keep their types (union of streams).
+export function buildStatesQuery(bucket: string, entities: StateEntities, start: Date, end: Date): string {
+  if (!SAFE_OBJECT_ID.test(entities.climate) || !SAFE_OBJECT_ID.test(entities.comfort)) {
+    throw new Error('Unsafe entity id');
+  }
+  const predicate = statePredicate(entities);
+  const prior = new Date(start.getTime() - PRIOR_STATE_DAYS * DAY_MS);
+  return `prior = from(bucket: ${fluxBucketLiteral(bucket)})
+  |> range(start: time(v: "${prior.toISOString()}"), stop: time(v: "${start.toISOString()}"))
+  |> filter(fn: (r) => ${predicate})
+  |> last()
+changes = from(bucket: ${fluxBucketLiteral(bucket)})
+  |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
+  |> filter(fn: (r) => ${predicate})
+union(tables: [prior, changes])
+  |> keep(columns: ["_time", "_value", "_field", "domain", "entity_id"])`;
+}
+
+// The time of the most recent cooling reported in [start, end).
+export function buildLastCoolingQuery(bucket: string, climate: string, start: Date, end: Date): string {
+  if (!SAFE_OBJECT_ID.test(climate)) throw new Error('Unsafe entity id');
+  return `from(bucket: ${fluxBucketLiteral(bucket)})
+  |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
+  |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${climate}" and r._field == "hvac_action_str")
+  |> filter(fn: (r) => r._value == "cooling")
+  |> group()
+  |> last()
+  |> keep(columns: ["_time"])`;
+}
+
+const SETPOINT_FIELDS = ['temperature', 'target_temp_low', 'target_temp_high'];
+
+export interface ParsedStates {
+  hvac: HvacSample[] | null;
+  comfort: ComfortSample[] | null;
+  // Occupancy per occupancy entity id.
+  occupancy: Map<string, OccupancySample[]>;
+}
+
+// Rows from buildStatesQuery → thermostat samples (one per state change; mode
+// and action carry forward, set points are per change since Home Assistant
+// omits empty attributes), comfort settings and occupancy. Unavailable or
+// unknown thermostat states are gaps so no transition is read across them.
+export function parseStates(
+  rows: Record<string, string>[],
+  entities: StateEntities,
+  unit: string | null | undefined,
+): ParsedStates {
+  const climate = new Map<number, Map<string, string>>();
+  const comfort: ComfortSample[] = [];
+  const occupancy = new Map<string, OccupancySample[]>();
+  rows.forEach((row) => {
+    /* eslint-disable no-underscore-dangle */
+    const t = Date.parse(row._time);
+    const field = row._field;
+    const value = row._value === undefined || row._value === null ? '' : String(row._value);
+    /* eslint-enable no-underscore-dangle */
+    if (!Number.isFinite(t)) return;
+    if (row.domain === 'climate' && row.entity_id === entities.climate) {
+      if (!climate.has(t)) climate.set(t, new Map());
+      climate.get(t)!.set(field.replace(/_str$/, ''), value);
+    } else if (row.domain === 'select' && row.entity_id === entities.comfort) {
+      comfort.push({ t, setting: value === 'unavailable' || value === 'unknown' || value === '' ? null : value });
+    } else if (row.domain === 'binary_sensor' && entities.occupancy.includes(row.entity_id)) {
+      const n = Number.parseFloat(value);
+      if (!Number.isFinite(n)) return;
+      if (!occupancy.has(row.entity_id)) occupancy.set(row.entity_id, []);
+      occupancy.get(row.entity_id)!.push({ t, occupied: n >= 0.5 });
     }
-    const attrs = (attributes && typeof attributes === 'object' ? attributes : {}) as Record<string, unknown>;
-    const setpoint = toNumber(attrs.temperature) ?? toNumber(attrs.target_temp_low);
-    return [{
+  });
+  let mode: string | null = null;
+  let action: string | null = null;
+  let setpoints = new Map<string, number | null>();
+  const hvac = [...climate.keys()].sort((a, b) => a - b).map((t): HvacSample => {
+    const fields = climate.get(t)!;
+    if (fields.has('state')) mode = fields.get('state')!;
+    if (fields.has('hvac_action')) action = fields.get('hvac_action')!;
+    if (SETPOINT_FIELDS.some((f) => fields.has(f))) {
+      setpoints = new Map(SETPOINT_FIELDS.map((f) => [f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unit))]));
+    }
+    if (mode === null || mode === 'unavailable' || mode === 'unknown') {
+      return {
+        t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
+      };
+    }
+    const temperature = setpoints.get('temperature') ?? null;
+    return {
       t,
       gap: false,
-      hvacMode: state,
-      hvacAction: typeof attrs.hvac_action === 'string' ? attrs.hvac_action : null,
-      presetMode: typeof attrs.preset_mode === 'string' ? attrs.preset_mode : null,
-      setpoint: plausibleSetpoint(toCelsius(setpoint, unit)),
-    }];
+      hvacMode: mode,
+      hvacAction: action,
+      presetMode: null,
+      setpoint: temperature ?? setpoints.get('target_temp_low') ?? null,
+      coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
+    };
   });
+  const byTime = (a: { t: number }, b: { t: number }) => a.t - b.t;
+  occupancy.forEach((samples) => samples.sort(byTime));
+  return {
+    hvac: hvac.length > 0 ? hvac : null,
+    comfort: comfort.length > 0 ? comfort.sort(byTime) : null,
+    occupancy,
+  };
 }
 
 // InfluxDB rows → per-sensor °C series, one point per 15-minute window. A
@@ -229,10 +391,17 @@ export function rowsToSeries(
   };
 }
 
+interface WindowData {
+  series: SensorSeriesInput[];
+  unknownUnitWindows: number;
+  states: ParsedStates | null;
+  degraded: boolean;
+}
+
 export class ClimatePlacementService {
   private deps: ClimatePlacementDeps;
 
-  private cache = new Map<number, { expires: number; result: Promise<PlacementInsights> }>();
+  private cache = new Map<string, { expires: number; result: Promise<PlacementInsights> }>();
 
   constructor(deps: ClimatePlacementDeps) {
     this.deps = deps;
@@ -242,22 +411,24 @@ export class ClimatePlacementService {
     return this.deps.influxdb?.configured === true;
   }
 
-  public async getInsights(daysInput: unknown): Promise<PlacementInsights> {
+  public async getInsights(daysInput: unknown, query: Record<string, unknown> = {}): Promise<PlacementInsights> {
     const days = parsePlacementDays(daysInput);
+    const config = parsePlacementConfig(query);
     if (!this.configured) throw namedError('PlacementUnavailableError', 'InfluxDB is not configured');
+    const key = configKey(days, config);
     const now = this.now().getTime();
-    const cached = this.cache.get(days);
+    const cached = this.cache.get(key);
     if (cached && cached.expires > now) return cached.result;
     const entry = { expires: now + PLACEMENT_CACHE_TTL_MS, result: null as Promise<PlacementInsights> | null };
-    const result = this.compute(days).then(({ insights, degraded }) => {
+    const result = this.compute(days, config).then(({ insights, degraded }) => {
       if (degraded) entry.expires = Math.min(entry.expires, this.now().getTime() + PLACEMENT_DEGRADED_TTL_MS);
       return insights;
     }).catch((err) => {
-      if (this.cache.get(days) === entry) this.cache.delete(days);
+      if (this.cache.get(key) === entry) this.cache.delete(key);
       throw err;
     });
     entry.result = result;
-    this.cache.set(days, entry as { expires: number; result: Promise<PlacementInsights> });
+    this.cache.set(key, entry as { expires: number; result: Promise<PlacementInsights> });
     return result;
   }
 
@@ -265,7 +436,10 @@ export class ClimatePlacementService {
     return this.deps.now?.() ?? new Date();
   }
 
-  private async compute(days: number): Promise<{ insights: PlacementInsights; degraded: boolean }> {
+  private async compute(
+    days: number,
+    config: ParticipationConfig | null,
+  ): Promise<{ insights: PlacementInsights; degraded: boolean }> {
     const end = this.now();
     const start = new Date(end.getTime() - days * DAY_MS);
     const { indoorClimate } = this.deps;
@@ -277,10 +451,80 @@ export class ClimatePlacementService {
     const sensors: IndoorSensor[] = status.sensors
       .map((s) => ({ id: objectId(s.entityId), name: s.name, isThermostat: s.isThermostat }))
       .filter((s) => SAFE_OBJECT_ID.test(s.id) && !OUTDOOR_PATTERN.test(s.id) && !OUTDOOR_PATTERN.test(s.name));
+    if (config && sensors.length > 0) {
+      const known = new Set(sensors.map((s) => s.id));
+      const unknown = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []).filter((id) => !known.has(id));
+      if (unknown.length > 0) throw inputError(`Unknown sensor ids: ${[...new Set(unknown)].join(', ')}`);
+    }
+
+    const climateId = status.thermostat ? objectId(status.thermostat.entityId) : null;
+    const entities: StateEntities | null = climateId && SAFE_OBJECT_ID.test(climateId)
+      ? { climate: climateId, comfort: `${climateId}_current_mode`, occupancy: sensors.map((s) => occupancyId(s.id)) }
+      : null;
+    const unit = status.thermostat?.temperatureUnit;
 
     // Missing discovery or thermostat counts as degraded so it is retried soon.
     let degraded = sensors.length === 0 || !status.thermostat;
-    const [{ series, unknownUnitWindows }, hvac] = await Promise.all([
+    const [heat, lastCooling] = await Promise.all([
+      this.fetchWindow(sensors, entities, unit, start, end),
+      entities ? this.fetchLastCooling(entities.climate, end).catch((err) => {
+        placementLogger.warn({ err }, 'Failed to look up the last cooling for placement insights');
+        degraded = true;
+        return undefined;
+      }) : Promise.resolve(undefined),
+    ]);
+    if (heat.degraded) degraded = true;
+
+    let cooling: CoolingInput | null | undefined;
+    if (lastCooling === null) cooling = null;
+    else if (lastCooling !== undefined && entities) {
+      if (lastCooling >= start.getTime()) {
+        cooling = { start, end };
+      } else {
+        const coolEnd = new Date(Math.min(lastCooling + COOLING_TAIL_MS, end.getTime()));
+        const coolStart = new Date(Math.max(
+          coolEnd.getTime() - days * DAY_MS,
+          end.getTime() - COOLING_LOOKBACK_DAYS * DAY_MS,
+        ));
+        const data = await this.fetchWindow(sensors, entities, unit, coolStart, coolEnd);
+        if (data.degraded) degraded = true;
+        cooling = {
+          start: coolStart, end: coolEnd, sensors: data.series, hvac: data.states?.hvac ?? null, comfort: data.states?.comfort ?? null,
+        };
+      }
+    }
+
+    const { series, states } = heat;
+    const hvac = states?.hvac ?? null;
+    if (series.every((sensor) => sensor.points.length === 0) || !hvac || hvac.every((sample) => sample.gap)) degraded = true;
+
+    const insights = analyzePlacement({
+      start,
+      end,
+      windowDays: days,
+      timeZone: resolveTimeZone(this.deps.timeZone),
+      sensors: series,
+      hvac,
+      comfort: states?.comfort ?? null,
+      participation: config,
+      cooling,
+      unknownUnitWindows: heat.unknownUnitWindows,
+      generatedAt: end,
+    });
+    return { insights, degraded };
+  }
+
+  // Temperatures and thermostat / comfort / occupancy history over a window;
+  // each source degrades independently.
+  private async fetchWindow(
+    sensors: IndoorSensor[],
+    entities: StateEntities | null,
+    unit: string | null | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<WindowData> {
+    let degraded = false;
+    const [{ series, unknownUnitWindows }, states] = await Promise.all([
       this.fetchSeries(sensors, start, end).catch((err) => {
         placementLogger.warn({ err }, 'Failed to read room temperatures for placement insights');
         degraded = true;
@@ -291,26 +535,19 @@ export class ClimatePlacementService {
           unknownUnitWindows: 0,
         };
       }),
-      this.fetchHvac(status, start, end).catch((err) => {
+      entities ? this.fetchStates(entities, unit, start, end).catch((err) => {
         placementLogger.warn({ err }, 'Failed to read thermostat history for placement insights');
         degraded = true;
         return null;
-      }),
+      }) : Promise.resolve(null),
     ]);
-
-    if (series.every((sensor) => sensor.points.length === 0) || !hvac || hvac.every((sample) => sample.gap)) degraded = true;
-
-    const insights = analyzePlacement({
-      start,
-      end,
-      windowDays: days,
-      timeZone: resolveTimeZone(this.deps.timeZone),
-      sensors: series,
-      hvac,
-      unknownUnitWindows,
-      generatedAt: end,
+    const withOccupancy = series.map((s) => {
+      const occupancy = states?.occupancy.get(occupancyId(s.id));
+      return occupancy ? { ...s, occupancy } : s;
     });
-    return { insights, degraded };
+    return {
+      series: withOccupancy, unknownUnitWindows, states, degraded,
+    };
   }
 
   private async fetchSeries(
@@ -325,15 +562,26 @@ export class ClimatePlacementService {
     return rowsToSeries(rows, sensors);
   }
 
-  private async fetchHvac(status: IndoorClimateStatus, start: Date, end: Date): Promise<HvacSample[] | null> {
-    const entityId = status.thermostat?.entityId;
-    if (!entityId) return null;
-    const history = await this.deps.homeAssistant.getHistory(
-      entityId,
-      start.toISOString(),
-      end.toISOString(),
-      { signal: AbortSignal.timeout(HISTORY_TIMEOUT_MS) },
+  private async fetchStates(
+    entities: StateEntities,
+    unit: string | null | undefined,
+    start: Date,
+    end: Date,
+  ): Promise<ParsedStates> {
+    const rows: Record<string, string>[] = await this.deps.influxdb.query(
+      buildStatesQuery(this.deps.bucket, entities, start, end),
     );
-    return parseClimateHistory(history, status.thermostat?.temperatureUnit);
+    return parseStates(rows, entities, unit);
+  }
+
+  // Epoch ms of the last cooling in the past year, null when there was none.
+  private async fetchLastCooling(climate: string, end: Date): Promise<number | null> {
+    const start = new Date(end.getTime() - COOLING_LOOKBACK_DAYS * DAY_MS);
+    const rows: Record<string, string>[] = await this.deps.influxdb.query(
+      buildLastCoolingQuery(this.deps.bucket, climate, start, end),
+    );
+    /* eslint-disable-next-line no-underscore-dangle */
+    const t = rows.length > 0 ? Date.parse(rows[0]._time) : NaN;
+    return Number.isFinite(t) ? t : null;
   }
 }

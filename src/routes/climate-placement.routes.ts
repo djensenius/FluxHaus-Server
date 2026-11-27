@@ -25,7 +25,7 @@ export default function createClimatePlacementRouter(
       return;
     }
     try {
-      res.json(await service.getInsights(req.query.days));
+      res.json(await service.getInsights(req.query.days, req.query));
     } catch (error) {
       if (isPlacementInputError(error)) {
         res.status(400).json({ error: (error as Error).message });
