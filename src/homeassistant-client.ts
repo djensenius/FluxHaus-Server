@@ -79,10 +79,15 @@ export class HomeAssistantClient {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  public async getHistory(entityId: string, start: string, end?: string): Promise<any> {
+  public async getHistory(
+    entityId: string,
+    start: string,
+    end?: string,
+    options: HomeAssistantRequestOptions = {},
+  ): Promise<any> {
     const params = new URLSearchParams({ filter_entity_id: entityId });
     if (end) params.set('end_time', end);
-    return this.request(`/api/history/period/${safeTimestamp(start, 'start')}?${params}`);
+    return this.request(`/api/history/period/${safeTimestamp(start, 'start')}?${params}`, signalInit(options));
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

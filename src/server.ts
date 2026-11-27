@@ -16,6 +16,8 @@ import auditMiddleware from './middleware/audit.middleware';
 import { csrfMiddleware, issueCsrfToken } from './middleware/csrf.middleware';
 import { createAuthRouter, getOidcIssuer, initOidc } from './middleware/oidc.middleware';
 import createMcpOAuthRouter from './routes/mcp-oauth.routes';
+import createClimatePlacementRouter from './routes/climate-placement.routes';
+import { ClimatePlacementService } from './climate-placement-service';
 import createCarAnalyticsRouter from './routes/car-analytics.routes';
 import {
   closePool, getPool, initDatabase, initPool,
@@ -1793,6 +1795,12 @@ export async function createServer(): Promise<Express> {
     dynamicEntityIds: { temperature: () => indoorClimate.temperatureObjectIds() },
   }, cors(corsOptions)));
   app.use(createCarAnalyticsRouter(carAnalytics, cors(corsOptions)));
+  app.use(createClimatePlacementRouter(new ClimatePlacementService({
+    influxdb,
+    bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
+    homeAssistant: homeAssistantClient,
+    indoorClimate,
+  }), cors(corsOptions)));
   app.use('/gt3', gt3Router);
 
   // Push test GUI (admin only)
