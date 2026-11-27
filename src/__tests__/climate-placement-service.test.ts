@@ -763,6 +763,13 @@ describe('GET /climate/placement-insights', () => {
     expect(response.body.error).toBe(message);
   });
 
+  it.each(['home', 'sleep', 'away'])('rejects the thermostat average in %s participation', async (setting) => {
+    const { service } = makeDeps();
+    const response = await request(buildApp(service)).get('/climate/placement-insights')
+      .query({ [setting]: 'office_temperature,home_current_temperature', followMe: 'false' }).expect(400);
+    expect(response.body.error).toBe('Thermostat average cannot participate: home_current_temperature');
+  });
+
   it('passes participation parameters through', async () => {
     const { service } = makeDeps();
     const response = await request(buildApp(service))

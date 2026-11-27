@@ -387,10 +387,11 @@ rooms, and one warm sensor stops it early (mirrored for cooling). The analysis
 puts the Sleep → Home wake-up first, then cooling and other heat-ups.
 
 - `days` is an integer from 3 to 30, default 14.
-- `home`, `sleep`, `away` (optional) are comma-separated `sensors[].id` values in
-  that comfort setting; an empty value means none. `followMe` (optional) is
+- `home`, `sleep`, `away` (optional) are comma-separated `sensors[].id` values for
+  room sensors in that comfort setting, excluding the `isThermostat` average;
+  an empty value means none. `followMe` (optional) is
   `true` or `false`; omitted, it is unknown, not off (see Recommendations).
-  Malformed values, or ids that aren't discovered sensors,
+  Malformed values, thermostat-average ids, or ids that aren't discovered sensors
   return `400`. Without them, participation is unknown and the text is
   conditional ("If it's in your Home comfort setting…"), or uses what the
   thermostat reading suggests (see below).
@@ -466,7 +467,9 @@ about 10 days:
   room. It is the effective average when it has readings. Otherwise the
   average is reconstructed from the configured setting's sensors, or from the
   fresh rooms when participation is unknown, only when the required temperatures
-  and Follow Me occupancy are known. With configured participation, a missing
+  and, where needed, Follow Me occupancy are known. Follow Me off doesn't
+  require occupancy; without any occupancy history, a single configured room
+  can still supply the average. With configured participation, a missing
   required sensor makes the average unknown rather than partial. The thermostat
   is never judged as an outlier, and rooms are compared with each other without
   it. Which rooms each setting

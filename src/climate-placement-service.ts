@@ -497,8 +497,14 @@ export class ClimatePlacementService {
       .map((s) => ({ id: objectId(s.entityId), name: s.name, isThermostat: s.isThermostat }))
       .filter((s) => SAFE_OBJECT_ID.test(s.id) && !OUTDOOR_PATTERN.test(s.id) && !OUTDOOR_PATTERN.test(s.name));
     if (config && sensors.length > 0) {
+      const selected = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []);
+      const thermostatIds = new Set(sensors.filter((s) => s.isThermostat).map((s) => s.id));
+      const thermostatMembers = selected.filter((id) => thermostatIds.has(id));
+      if (thermostatMembers.length > 0) {
+        throw inputError(`Thermostat average cannot participate: ${[...new Set(thermostatMembers)].join(', ')}`);
+      }
       const known = new Set(sensors.map((s) => s.id));
-      const unknown = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []).filter((id) => !known.has(id));
+      const unknown = selected.filter((id) => !known.has(id));
       if (unknown.length > 0) throw inputError(`Unknown sensor ids: ${[...new Set(unknown)].join(', ')}`);
     }
 
