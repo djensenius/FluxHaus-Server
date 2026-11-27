@@ -326,9 +326,9 @@ describe('analyzePlacement', () => {
     expect(result.recommendations[0].detail).toBe(
       'In 5 of 5 wake-ups (Sleep → Home), Office read 2.4 °C below the reported or approximated comfort reading. '
       + 'If it\'s in your Home comfort setting, a low reading could contribute to a longer warm-up. Kitchen peaked 1.0 °C over '
-      + 'the Home set point on average in the 2 hours after the corresponding heated wake-ups with sufficient readings. '
+      + 'the Home set point on average in the 2 hours after those cold, heated wake-ups with sufficient readings. '
       + 'Move it to an interior wall at about chest height, away from windows, doors and vents, or remove it from Home. '
-      + 'The Sleep set point averaged 4.0 °C below Home. '
+      + 'The Sleep set point averaged 4.0 °C below Home for those cold wake-ups. '
       + 'Smart Recovery can start heating before Home; consider a smaller Sleep setback or reviewing Smart Recovery timing.',
     );
     expect(result.recommendations[0].likelyCauses.length).toBeGreaterThan(0);
@@ -1564,10 +1564,11 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(result.recommendations[0].detail).toBe(
       'In 5 of 5 wake-ups (Sleep → Home), Bedroom read 1.5 °C below the reported or approximated comfort reading. '
       + 'If it\'s in your Home comfort setting, a low reading could contribute to a longer warm-up. Living, Kitchen and Office '
-      + 'peaked 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after the corresponding heated wake-ups '
+      + 'peaked 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after those cold, heated wake-ups '
       + 'with sufficient readings. Move it to an interior wall at about chest height, away from windows, doors and vents, '
       + 'or remove it from Home. The Sleep '
-      + 'set point averaged 4.0 °C below Home. The warm-up ran 150 minutes on average. Smart Recovery can start heating '
+      + 'set point averaged 4.0 °C below Home for those cold wake-ups. The warm-up ran 150 minutes on average for those '
+      + 'cold wake-ups. Smart Recovery can start heating '
       + 'before Home; consider a smaller Sleep setback or reviewing Smart Recovery timing.',
     );
   });
@@ -3830,6 +3831,144 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       expect(tip.detail).not.toMatch(/Sleep set point|smaller Sleep setback/);
     });
 
+    it.each(['away', 'unknown', 'gap'] as const)(
+      'review 017f8c1: keeps an earlier Sleep warm-up separate across %s',
+      (interruption) => {
+        const run = (coldLater: boolean) => {
+          const sensors = rooms({
+            home_current_temperature: 0,
+            bedroom_temperature: (t) => {
+              const hour = ((t - START) % DAY) / HOUR;
+              return (hour >= 3.5 && hour < 4) || (coldLater && hour >= 5.5 && hour < 6) ? -3 : 0;
+            },
+            living_temperature: 0,
+            kitchen_temperature: 0,
+          }, (t) => {
+            const hour = ((t - START) % DAY) / HOUR;
+            return hour >= 6.5 && hour < 8 ? 23 : 21;
+          });
+          const comfort = Array.from({ length: 5 }, (_, d) => [
+            { t: at(d, 0), setting: 'sleep' },
+            ...(interruption === 'gap' ? [] : [{ t: at(d, 4), setting: interruption === 'away' ? 'away' : null }]),
+            { t: at(d, 5), setting: 'sleep' },
+            { t: at(d, 6), setting: 'home' },
+            { t: at(d, 22), setting: 'sleep' },
+          ]).flat();
+          const history = Array.from({ length: 5 }, (_, d) => [
+            state(at(d, 0), 'idle', { presetMode: null }),
+            state(at(d, 3.5), 'heating', { presetMode: null }),
+            interruption === 'gap' ? gap(at(d, 4)) : state(at(d, 4), 'idle', { presetMode: null }),
+            state(at(d, 5), 'idle', { presetMode: null }),
+            state(at(d, 5.5), 'heating', { presetMode: null }),
+            state(at(d, 6.5), 'idle', { presetMode: null }),
+            state(at(d, 22), 'idle', { presetMode: null }),
+          ]).flat();
+          const members = sensors.filter((sensor) => !sensor.isThermostat).map((sensor) => sensor.id);
+          return analyzePlacement(wakeInput({
+            sensors, comfort, hvac: history, participation: { ...config(members), sleep: members },
+          }));
+        };
+        expect(run(false).recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+        const tip = run(true).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+        expect(tip).toMatchObject({ comfortSetting: 'sleep' });
+        expect(tip.detail).not.toContain('90 minutes');
+        if (interruption === 'gap') expect(tip.detail).not.toMatch(/warm-up ran \d+ minutes?/);
+        else expect(tip.detail).toContain('warm-up ran 60 minutes on average');
+      },
+    );
+
+    it('review 017f8c1: preserves a separate observed morning run before an interrupted Sleep interval', () => {
+      const comfort = Array.from({ length: 5 }, (_, d) => [
+        { t: at(d, 0), setting: 'sleep' }, { t: at(d, 4.5), setting: 'away' },
+        { t: at(d, 5), setting: 'sleep' }, { t: at(d, 6), setting: 'home' },
+        { t: at(d, 22), setting: 'sleep' },
+      ]).flat();
+      const history = Array.from({ length: 5 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null }),
+        state(at(d, 4), 'heating', { presetMode: null }),
+        state(at(d, 4.5), 'idle', { presetMode: null }),
+        state(at(d, 5.5), 'heating', { presetMode: null }),
+        state(at(d, 6.5), 'idle', { presetMode: null }),
+        state(at(d, 22), 'idle', { presetMode: null }),
+      ]).flat();
+      const result = analyzePlacement(wakeInput({ comfort, hvac: history }));
+      expect(result.coverage).toMatchObject({ wakeEvents: 5, morningEvents: 10, inferredMorningEvents: 0 });
+    });
+
+    it('review 017f8c1: scopes heating overshoot to the Home heat-ups supporting the outlier', () => {
+      const run = (sleepPeak: number, homePeak: number) => {
+        const days = 6;
+        const sensors = rooms({
+          bedroom_temperature: (t) => (Math.floor((t - START) / DAY) >= 3 ? -3 : 0),
+          living_temperature: 0,
+          kitchen_temperature: 0,
+        }, (t) => {
+          const day = Math.floor((t - START) / DAY);
+          const hour = ((t - START) % DAY) / HOUR;
+          return 21 + (hour >= 9 && hour < 11 ? (day < 3 ? sleepPeak : homePeak) : 0);
+        }, { days });
+        const history = Array.from({ length: days }, (_, d) => [
+          state(at(d, 0), 'idle', { presetMode: null }),
+          state(at(d, 6), 'heating', { presetMode: null }),
+          state(at(d, 9), 'idle', { presetMode: null }),
+        ]).flat();
+        const members = sensors.map((sensor) => sensor.id);
+        return analyzePlacement(input({
+          sensors,
+          primaryThermostatId: null,
+          hvac: history,
+          comfort: [{ t: START, setting: 'sleep' }, { t: at(3, 0), setting: 'home' }],
+          participation: { ...config(members), sleep: members },
+          end: new Date(START + days * DAY),
+          windowDays: days,
+        }));
+      };
+      const mixed = run(2, 0);
+      expect(mixed.sensors.find((sensor) => sensor.id === 'living_temperature')!.overshoot).toBe(1);
+      const tip = mixed.recommendations.find((rec) => rec.id === 'move-bedroom')!;
+      expect(tip).toMatchObject({ severity: 'medium', comfortSetting: 'home' });
+      expect(tip.detail).not.toContain('peaked');
+      expect(run(0, 0).recommendations.find((rec) => rec.id === 'move-bedroom')!.severity).toBe('medium');
+      const homePeak = run(0, 2).recommendations.find((rec) => rec.id === 'move-bedroom')!;
+      expect(homePeak.severity).toBe('high');
+      expect(homePeak.detail).toContain('peaked 2.0 and 2.0 °C above the set point');
+    });
+
+    it('review 017f8c1: pairs a mixed-sign Home outlier with overshoot from its cold heat-ups', () => {
+      const run = (coldPeaks: boolean) => {
+        const sensors = rooms({
+          bedroom_temperature: (t) => (Math.floor((t - START) / DAY) < 3 ? -3 : 1),
+          living_temperature: 0,
+          kitchen_temperature: 0,
+        }, (t) => {
+          const cold = Math.floor((t - START) / DAY) < 3;
+          const hour = ((t - START) % DAY) / HOUR;
+          return 21 + (cold === coldPeaks && hour >= 9 && hour < 11 ? 4 : 0);
+        });
+        const history = Array.from({ length: 5 }, (_, d) => [
+          state(at(d, 0), 'idle', { presetMode: null }),
+          state(at(d, 6), 'heating', { presetMode: null }),
+          state(at(d, 9), 'idle', { presetMode: null }),
+        ]).flat();
+        return analyzePlacement(input({
+          sensors,
+          primaryThermostatId: null,
+          hvac: history,
+          comfort: [{ t: START, setting: 'home' }],
+          participation: config(sensors.map((sensor) => sensor.id)),
+        }));
+      };
+      const warmPeaks = run(false);
+      expect(warmPeaks.sensors.find((sensor) => sensor.id === 'living_temperature')!.overshoot).toBe(1.6);
+      const tip = warmPeaks.recommendations.find((rec) => rec.id === 'move-bedroom')!;
+      expect(tip.severity).toBe('medium');
+      expect(tip.detail).toContain('3 of 5 heat-ups');
+      expect(tip.detail).not.toContain('peaked');
+      const coldTip = run(true).recommendations.find((rec) => rec.id === 'move-bedroom')!;
+      expect(coldTip.severity).toBe('high');
+      expect(coldTip.detail).toContain('peaked 4.0 and 4.0 °C above the set point');
+    });
+
     it('review 22241a2: excludes the first bucket if a valid heating target only returns after wake', () => {
       const history = Array.from({ length: 5 }, (_, d) => [
         state(at(d, 0), 'idle', { presetMode: null, hvacMode: 'cool', setpoint: 24 }),
@@ -4083,6 +4222,58 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       const tip = complete.recommendations.find((rec) => rec.id === 'wake-bedroom')!;
       expect(tip).toBeDefined();
       expect(tip.detail).toContain('peaked 1.3 and 1.3 °C over the Home set point');
+    });
+
+    it('review 017f8c1: pairs wake overshoot and the quoted cold mean with the same cold wakes', () => {
+      const run = (peakDays: number[], referenceDays = [0, 1, 2, 3, 4], followMe = false) => {
+        const sensors = rooms({
+          home_current_temperature: 0,
+          bedroom_temperature: (t) => (Math.floor((t - START) / DAY) < 3 ? -2 : 1),
+          living_temperature: 0,
+          kitchen_temperature: 0,
+        }, (t) => {
+          const day = Math.floor((t - START) / DAY);
+          const hour = ((t - START) % DAY) / HOUR;
+          return 21 + (peakDays.includes(day) && hour >= 7 && hour < 8 ? 4 : 0);
+        }).map((sensor) => ({
+          ...sensor,
+          points: sensor.isThermostat
+            ? sensor.points.filter((point) => referenceDays.includes(Math.floor((point.t - START) / DAY))) : sensor.points,
+          occupancy: !followMe || sensor.isThermostat ? undefined : sensor.id === 'bedroom_temperature'
+            ? [{ t: START - HOUR, occupied: false }, { t: at(3, 0), occupied: true }] : occupied(true),
+        }));
+        const history = Array.from({ length: 5 }, (_, d) => [
+          state(at(d, 0), 'idle', { presetMode: null }),
+          state(at(d, 6), 'heating', { presetMode: null }),
+          state(at(d, 9), 'idle', { presetMode: null }),
+          state(at(d, 22), 'idle', { presetMode: null }),
+        ]).flat();
+        return analyzePlacement(wakeInput({
+          sensors,
+          hvac: history,
+          participation: {
+            ...config(['bedroom_temperature', 'living_temperature', 'kitchen_temperature'], followMe),
+            thermostat: { home: true },
+          },
+        }));
+      };
+      const unrelatedPeaks = run([3, 4]);
+      expect(unrelatedPeaks.sensors.find((sensor) => sensor.id === 'living_temperature')!.wakeOvershoot).toBe(1.6);
+      expect(unrelatedPeaks.recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+
+      const pairedPeaks = run([0, 1, 2]);
+      const tip = pairedPeaks.recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      expect(tip).toMatchObject({ severity: 'high', comfortSetting: 'home' });
+      expect(tip.detail).toContain('In 3 of 5 wake-ups (Sleep → Home), Bedroom read 2.0 °C below');
+      expect(tip.detail).toContain('peaked 4.0 and 4.0 °C over the Home set point');
+
+      expect(run([0, 1, 2], [0, 3, 4]).recommendations.some((rec) => rec.id === 'wake-bedroom')).toBe(false);
+      const partial = run([0, 1, 2], [0, 1, 2, 3]).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      expect(partial.detail).toContain('In 3 of 4 wake-ups (Sleep → Home), Bedroom read 2.0 °C below');
+      const modeled = run([0, 1, 2], [0, 1, 2, 3, 4], true).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+      expect(modeled.severity).toBe('low');
+      expect(modeled.detail).toContain('If it counted');
+      expect(modeled.detail).toContain('approximately 0% of comparable samples');
     });
 
     it.each(['heating', 'cooling'] as const)(

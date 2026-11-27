@@ -613,19 +613,22 @@ about 10 days:
     between 04:00 and 10:00 server time, once per day. Set point or preset
     changes alone, and anything in `cool`/`off` mode, don't count. Server time
     is `TZ`, else the system time zone, else UTC.
-  - A *wake-up* is a Sleep → Home change (`coverage.wakeEvents`). Heating that
-    started in the 3 hours before it (Smart Recovery preheats, even if it
-    finished before Home), else the first heating within 2 hours after it, is
-    the wake-up heat-up and replaces the morning warm-up around it. Its room
-    offsets are measured from the start of that heating through the first 2
-    hours of Home, each reading against the comfort setting in force then.
+  - A *wake-up* is a Sleep → Home change (`coverage.wakeEvents`). Heating in the
+    immediately preceding Sleep interval within 3 hours of Home (Smart Recovery
+    preheats, even if they finished before Home), else the first heating within
+    2 hours after Home, is the wake-up heat-up and replaces the morning warm-up
+    in that same interval. Earlier Sleep intervals separated by Away or an
+    unknown setting, and heating across an unknown action or history gap, are
+    not combined. Its room offsets are measured from the start of that heating
+    through the first 2 hours of Home, stopping at an unknown action or gap,
+    each reading against the comfort setting in force then.
     Source windows and every room in a comparison must have a compatible,
     unchanged heat-capable mode and `heating` or `idle` action; cooling,
     gaps and windows spanning HVAC state changes don't count.
-    When the whole lead/tail search interval is inside the requested window,
-    its actions are known throughout, and run boundaries are observed, its
-    warm-up time is the sum of those heating runs (not the span from the
-    first start to the last stop). Otherwise its duration is unknown, not zero;
+    When the relevant Sleep/Home lead/tail search interval is inside the
+    requested window, its actions are known throughout, and run boundaries
+    are observed, its warm-up time is the sum of those heating runs (not the
+    span from the first start to the last stop). Otherwise its duration is unknown, not zero;
     aggregate wake-minute claims require all included wakes to be measurable.
     Its modeled effect on the comfort reading is
     measured per comfort setting over the time those runs heated in it.
@@ -685,13 +688,18 @@ about 10 days:
   heating stopped: a room already above the set point when heating stopped
   counts even if it didn't warm further.
 - **Cooling** uses the most recent cooling (`hvac_action_str` `cooling`) in the
-  past 365 days: up to `days` days of data ending 2 hours after it, or the
-  requested window when it falls inside it, so cooling tips also show in winter
+  past 365 days whose climate mode was `cool`, `heat_cool` or `auto`: up to
+  `days` days of data ending 2 hours after it, or the requested window when it
+  falls inside it, so cooling tips also show in winter
   (`coverage.coolingFrom`/`coolingTo`, `coolingEvents`; `null`/`0` when no
   cooling was found in the available history or the lookup could not be made).
-  A successful empty lookup does not prove complete coverage for the year;
-  a failed lookup makes no no-cooling claim. Cooling runs merge across reported
-  `idle` spells under 30 minutes (heating runs: 20 minutes), never across a
+  The lookup also reads 30 days of prior climate modes to establish the mode at
+  the boundary. An action incompatible with its known mode is ignored; when a
+  newer action's mode is missing, unavailable or conflicting, the window is
+  unknown and no no-cooling claim is made. A later positively compatible action
+  can establish the window. A successful empty lookup does not prove complete
+  coverage for the year; a failed lookup makes no no-cooling claim. Cooling runs
+  merge across reported `idle` spells under 30 minutes (heating runs: 20 minutes), never across a
   gap, an unknown action or any other action. Cooling event offsets and daily
   room comparisons use complete source buckets within actual active cooling,
   not the merged idle spells; every room in a comparison must belong to the
@@ -760,10 +768,12 @@ about 10 days:
   actionable checks, not proof that placement caused the heating or cooling:
   - `wake-<sensor>` (`move`): a sensor at least 0.5 °C below the comfort average
     in 60% of measurable heated wake-ups while other rooms end up at least
-    0.5 °C over the Home set point on those same wake-ups with sufficient room
-    readings. Idle wakes and heated wakes without that sensor's qualifying
-    reference offsets do not contribute to the tip's overshoot. It targets the
-    setting the temperature evidence came from: Home
+    0.5 °C over the Home set point on those same cold wake-ups with sufficient
+    room readings. The quoted cold offset and modeled Follow Me share use those
+    cold wake-ups; the consistency denominator also includes comparable warmer
+    wake-ups. Idle wakes, warmer wakes and heated wakes without that sensor's
+    qualifying reference offsets do not contribute to the tip's overshoot. It
+    targets the setting the temperature evidence came from: Home
     when measured there, else the setting the preheat ran in (e.g. Sleep,
     "while heating in Sleep before Home"). A sensor configured or estimated
     outside that setting isn't treated as a participant. It can mention a Sleep
@@ -807,7 +817,11 @@ about 10 days:
     when that setting is known. When no setting is known, useful room
     comparisons may still yield `low`, conditional move advice with
     `comfortSetting: null`; they do not infer Home membership or suggest
-    changing a specific setting.
+    changing a specific setting. Heating-tip overshoot and severity use only
+    the biased heat-ups supporting that sensor's assessment, in Home when
+    scoped there; a sampled-date-only assessment has no matched heat-up
+    overshoot. The public `overshoot` field continues to summarize all measured
+    heat-ups.
     Cooling runs are split where the comfort setting changes, and cooling is
     judged separately in each setting from that setting's parts only (parts in
     an unknown setting form their own conditional, setting-neutral group),

@@ -327,17 +327,64 @@ union(tables: [prior, priorStateHistory, changes])
   |> keep(columns: ["_time", "_value", "_field", "domain", "entity_id", "_measurement", "unit_of_measurement"])`;
 }
 
-// The time of the most recent cooling reported in [start, end).
+// Cooling actions and climate-mode changes in [start, end), plus recent
+// prior mode changes to establish the mode at the lookback boundary.
 export function buildLastCoolingQuery(bucket: string, climate: string, start: Date, end: Date): string {
   if (!SAFE_OBJECT_ID.test(climate)) throw new Error('Unsafe entity id');
-  return `from(bucket: ${fluxBucketLiteral(bucket)})
+  const prior = new Date(start.getTime() - PRIOR_STATE_DAYS * DAY_MS);
+  return `prior = from(bucket: ${fluxBucketLiteral(bucket)})
+  |> range(start: time(v: "${prior.toISOString()}"), stop: time(v: "${start.toISOString()}"))
+  |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${climate}" and r._field == "state")
+changes = from(bucket: ${fluxBucketLiteral(bucket)})
   |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
-  |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${climate}" and r._field == "hvac_action_str")
-  |> filter(fn: (r) => r._value == "cooling")
-  |> group()
-  |> sort(columns: ["_time"])
-  |> last()
-  |> keep(columns: ["_time"])`;
+  |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${climate}"
+    and (r._field == "state" or (r._field == "hvac_action_str" and r._value == "cooling")))
+union(tables: [prior, changes])
+  |> keep(columns: ["_time", "_field", "_value"])`;
+}
+
+// Most recent positively compatible cooling; undefined when a newer action's
+// mode cannot be established, null when no possible cooling was reported.
+function lastCompatibleCooling(rows: Record<string, string>[], start: number, end: number): number | null | undefined {
+  const changes = new Map<number, { modes: Set<string>; cooling: boolean }>();
+  const prior = start - PRIOR_STATE_DAYS * DAY_MS;
+  let malformed = false;
+  rows.forEach((row) => {
+    const { _time: time, _field: field, _value: value } = row;
+    const t = Date.parse(time);
+    if (!Number.isFinite(t)) {
+      malformed = true;
+      return;
+    }
+    if (t < prior || t >= end) return;
+    if (field !== 'state' && field !== 'hvac_action_str') {
+      malformed = true;
+      return;
+    }
+    if (field === 'hvac_action_str' && value !== 'cooling') {
+      malformed = true;
+      return;
+    }
+    if (!changes.has(t)) changes.set(t, { modes: new Set(), cooling: false });
+    const change = changes.get(t)!;
+    if (field === 'state') change.modes.add(typeof value === 'string' ? value.trim().toLowerCase() : '');
+    else if (t >= start && value === 'cooling') change.cooling = true;
+  });
+  if (malformed) return undefined;
+  let mode: string | null = null;
+  let latest: number | null = null;
+  let uncertain = false;
+  [...changes.entries()].sort(([a], [b]) => a - b).forEach(([t, change]) => {
+    if (change.modes.size > 0) mode = change.modes.size === 1 ? [...change.modes][0] : null;
+    if (!change.cooling) return;
+    if (/^(cool|heat_cool|auto)$/.test(mode ?? '')) {
+      latest = t;
+      uncertain = false;
+    } else if (!/^(heat|off|dry|fan_only)$/.test(mode ?? '')) {
+      uncertain = true;
+    }
+  });
+  return uncertain ? undefined : latest;
 }
 
 const SETPOINT_FIELDS = ['temperature', 'target_temp_low', 'target_temp_high'];
@@ -705,6 +752,7 @@ export class ClimatePlacementService {
       }) : Promise.resolve(undefined),
     ]);
     if (heat.degraded) degraded = true;
+    if (entities && lastCooling === undefined) degraded = true;
 
     let cooling: CoolingInput | null | undefined;
     if (lastCooling === null) cooling = null;
@@ -859,14 +907,13 @@ export class ClimatePlacementService {
     return parseStates(rows, entities, unit);
   }
 
-  // Epoch ms of the last cooling found in available history, else null.
-  private async fetchLastCooling(climate: string, end: Date): Promise<number | null> {
+  // Epoch ms of the last compatible cooling, null if absent, undefined if
+  // the most recent candidate's mode cannot be established.
+  private async fetchLastCooling(climate: string, end: Date): Promise<number | null | undefined> {
     const start = new Date(end.getTime() - COOLING_LOOKBACK_DAYS * DAY_MS);
     const rows: Record<string, string>[] = await this.deps.influxdb.query(
       buildLastCoolingQuery(this.deps.bucket, climate, start, end),
     );
-    /* eslint-disable-next-line no-underscore-dangle */
-    const t = rows.length > 0 ? Date.parse(rows[0]._time) : NaN;
-    return Number.isFinite(t) ? t : null;
+    return lastCompatibleCooling(rows, start.getTime(), end.getTime());
   }
 }

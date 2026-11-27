@@ -47,9 +47,13 @@ const climateRow = (time: string, field: string, value: string) => ({
   _time: time, _field: field, _value: value, domain: 'climate', entity_id: 'home',
 });
 
+const coolingRows = (time: string) => [
+  climateRow(time, 'state', 'cool'), climateRow(time, 'hvac_action_str', 'cooling'),
+];
+
 const queryKind = (flux: string) => {
-  if (flux.includes('union(')) return 'states';
   if (flux.includes('r._value == "cooling"')) return 'cooling';
+  if (flux.includes('union(')) return 'states';
   if (flux.includes('r._field == "current_temperature"')) return 'reported';
   return 'temperatures';
 };
@@ -117,6 +121,22 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
     advance: (ms: number) => { now += ms; },
     service: new ClimatePlacementService(deps as never),
   };
+}
+
+function neutralHeating(fixture: ReturnType<typeof makeDeps>): void {
+  const temperatures: Rows = [];
+  for (let t = Date.parse('2026-01-17T00:00:00Z'); t < NOW.getTime(); t += 15 * 60_000) {
+    ['home_current_temperature', 'office_temperature', 'kitchen_temperature'].forEach((entityId) => temperatures.push({
+      _time: new Date(t).toISOString(), _value: '21', _measurement: '°C', entity_id: entityId,
+    }));
+  }
+  fixture.rows.temperatures = temperatures;
+  fixture.rows.states = [
+    climateRow('2026-01-13T00:00:00Z', 'state', 'heat'),
+    climateRow('2026-01-13T00:00:00Z', 'hvac_action_str', 'idle'),
+    climateRow('2026-01-13T00:00:00Z', 'temperature', '21'),
+    { _time: '2026-01-13T00:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+  ];
 }
 
 describe('parsePlacementDays', () => {
@@ -602,7 +622,9 @@ describe('thermostat, comfort and occupancy history', () => {
     const flux = buildLastCoolingQuery('home_assistant', 'home', new Date(0), new Date(1000));
     expect(flux).toContain('r._field == "hvac_action_str"');
     expect(flux).toContain('r._value == "cooling"');
-    expect(flux).toContain('|> group()\n  |> sort(columns: ["_time"])\n  |> last()');
+    expect(flux).toContain('r._field == "state"');
+    expect(flux).toContain('union(tables: [prior, changes])');
+    expect(flux).toContain('keep(columns: ["_time", "_field", "_value"])');
     expect(() => buildLastCoolingQuery('home_assistant', 'bad"', new Date(0), new Date(1))).toThrow('Unsafe entity id');
   });
 });
@@ -884,7 +906,7 @@ describe('ClimatePlacementService', () => {
     const fixture = makeDeps();
     useClimateReference(fixture);
     fixture.rows.reported = [{ ...reportedRow('2026-01-19T06:00:00Z', '68'), unit_tag: '°F' }];
-    fixture.rows.cooling = [{ _time: '2026-01-19T06:00:00Z' }];
+    fixture.rows.cooling = coolingRows('2026-01-19T06:00:00Z');
     fixture.rows.temperatures = fixture.rows.temperatures.map((row) => (
       row.entity_id === 'office_temperature' ? { ...row, _value: '18' } : row
     ));
@@ -910,7 +932,7 @@ describe('ClimatePlacementService', () => {
     const fixture = makeDeps();
     useClimateReference(fixture);
     fixture.rows.reported = [{ ...reportedRow(), unit_tag: '°C' }];
-    fixture.rows.cooling = [{ _time: '2025-10-15T12:00:00Z' }];
+    fixture.rows.cooling = coolingRows('2025-10-15T12:00:00Z');
     const currentQuery = fixture.deps.influxdb.query.getMockImplementation()!;
     fixture.deps.influxdb.query.mockImplementation(async (flux: string) => {
       if (!flux.includes('2025-10-08T14:00:00.000Z')) return currentQuery(flux);
@@ -1048,7 +1070,7 @@ describe('ClimatePlacementService', () => {
     };
     const recent = makeDeps();
     configureCooling(recent);
-    recent.rows.cooling = [{ _time: '2026-01-19T06:00:00Z' }];
+    recent.rows.cooling = coolingRows('2026-01-19T06:00:00Z');
     const current = await recent.service.getInsights('7');
     expect(current.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.cooling).toBe(-1.5);
     expect(current.coverage).toMatchObject({
@@ -1060,7 +1082,7 @@ describe('ClimatePlacementService', () => {
 
     const older = makeDeps();
     configureCooling(older);
-    older.rows.cooling = [{ _time: '2025-10-15T12:00:00Z' }];
+    older.rows.cooling = coolingRows('2025-10-15T12:00:00Z');
     const queryCurrentWindow = older.deps.influxdb.query.getMockImplementation()!;
     older.deps.influxdb.query.mockImplementation(async (flux: string) => {
       if (!flux.includes('2025-10-08T14:00:00.000Z')) return queryCurrentWindow(flux);
@@ -1195,7 +1217,7 @@ describe('ClimatePlacementService', () => {
       ]),
       unclassifiedTemperatureIds: new Set<string>(),
     });
-    rows.cooling = [{ _time: '2025-10-15T12:00:00Z' }];
+    rows.cooling = coolingRows('2025-10-15T12:00:00Z');
     (rows.states as Rows).push({
       _time: '2026-01-19T06:00:00Z', _field: 'value', _value: value === '0' ? '1' : '0',
       domain: 'binary_sensor', entity_id: 'home_occupancy',
@@ -1415,18 +1437,178 @@ describe('ClimatePlacementService', () => {
 
   it('reuses the window for cooling within it, else fetches the last cooling season', async () => {
     const recent = makeDeps();
-    recent.rows.cooling = [{ _time: '2026-01-18T12:00:00Z' }];
+    recent.rows.cooling = coolingRows('2026-01-18T12:00:00Z');
     const shared = await recent.service.getInsights('7');
     expect(shared.coverage).toMatchObject({ coolingFrom: '2026-01-13T00:00:00.000Z', coolingTo: '2026-01-20T00:00:00.000Z' });
     expect(recent.calls('temperatures')).toHaveLength(1);
 
     const old = makeDeps();
-    old.rows.cooling = [{ _time: '2025-10-15T12:00:00Z' }];
+    old.rows.cooling = coolingRows('2025-10-15T12:00:00Z');
     const result = await old.service.getInsights('7');
     expect(result.coverage).toMatchObject({ coolingFrom: '2025-10-08T14:00:00.000Z', coolingTo: '2025-10-15T14:00:00.000Z' });
     expect(old.calls('temperatures')).toHaveLength(2);
     expect(old.calls('temperatures')[1]).toContain('range(start: time(v: "2025-10-08T14:00:00.000Z"), stop: time(v: "2025-10-15T14:00:00.000Z"))');
     expect(old.calls('states')[1]).toContain('stop: time(v: "2025-10-15T14:00:00.000Z")');
+  });
+
+  it('review 017f8c1: finds older compatible cooling when a newer cooling action is in heat mode', async () => {
+    const fixture = makeDeps();
+    fixture.rows.cooling = [
+      climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2026-01-13T00:00:00Z', 'state', 'heat'),
+      climateRow('2025-10-15T12:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2025-10-13T00:00:00Z', 'state', 'cool'),
+      climateRow('2025-10-14T12:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2025-10-13T12:00:00Z', 'hvac_action_str', 'cooling'),
+    ];
+    fixture.rows.states = [
+      climateRow('2026-01-13T00:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+    ];
+    const oldTemperatures: Rows = [];
+    for (let t = Date.parse('2025-10-13T00:00:00Z'); t < Date.parse('2025-10-15T14:00:00Z'); t += 15 * 60_000) {
+      [
+        ['home_current_temperature', '23'], ['office_temperature', '21'], ['kitchen_temperature', '24'],
+      ].forEach(([entityId, value]) => oldTemperatures.push({
+        _time: new Date(t).toISOString(), _value: value, _measurement: '°C', entity_id: entityId,
+      }));
+    }
+    const oldStates: Rows = [
+      climateRow('2025-10-13T00:00:00Z', 'state', 'cool'),
+      climateRow('2025-10-13T00:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2025-10-13T00:00:00Z', 'temperature', '24'),
+      { _time: '2025-10-13T00:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      ...['13', '14', '15'].flatMap((day) => [
+        climateRow(`2025-10-${day}T12:00:00Z`, 'hvac_action_str', 'cooling'),
+        ...(day === '15' ? [] : [climateRow(`2025-10-${day}T15:00:00Z`, 'hvac_action_str', 'idle')]),
+      ]),
+    ];
+    const currentQuery = fixture.deps.influxdb.query.getMockImplementation()!;
+    fixture.deps.influxdb.query.mockImplementation(async (flux: string) => {
+      if (!flux.includes('2025-10-08T14:00:00.000Z')) return currentQuery(flux);
+      if (queryKind(flux) === 'temperatures') return oldTemperatures;
+      if (queryKind(flux) === 'states') return oldStates;
+      return [];
+    });
+    const result = await fixture.service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', followMe: 'false', thermostatHome: 'false',
+    });
+    expect(result.coverage).toMatchObject({
+      coolingFrom: '2025-10-08T14:00:00.000Z', coolingTo: '2025-10-15T14:00:00.000Z', coolingEvents: 3,
+    });
+    expect(result.recommendations.find((rec) => rec.id === 'cooling-kitchen')!.detail).toContain('3 of 3 cooling runs');
+    expect(fixture.calls('temperatures')).toHaveLength(2);
+  });
+
+  it.each(['cool', 'heat_cool', 'auto'])(
+    'review 017f8c1: accepts a fresh cooling action with a simultaneous %s mode',
+    async (mode) => {
+      const fixture = makeDeps();
+      fixture.rows.cooling = [
+        climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+        climateRow('2026-01-19T12:00:00Z', 'state', mode),
+        climateRow('2026-01-13T00:00:00Z', 'state', 'heat'),
+      ];
+      const result = await fixture.service.getInsights('7');
+      expect(result.coverage.coolingFrom).toBe('2026-01-13T00:00:00.000Z');
+      expect(fixture.calls('temperatures')).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ['unavailable', [climateRow('2026-01-18T00:00:00Z', 'state', 'unavailable')]],
+    ['unknown', [climateRow('2026-01-18T00:00:00Z', 'state', 'unknown')]],
+    ['unsupported', [climateRow('2026-01-18T00:00:00Z', 'state', 'vendor_mode')]],
+    ['conflicting', [
+      climateRow('2026-01-19T12:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T12:00:00Z', 'state', 'cool'),
+    ]],
+    ['malformed action', [{ _time: '2026-01-19T13:00:00Z', _field: 'hvac_action_str' }]],
+  ])('review 017f8c1: leaves cooling uncertain with %s mode evidence', async (_description, recentRows) => {
+    const fixture = makeDeps();
+    neutralHeating(fixture);
+    fixture.rows.cooling = [
+      climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+      ...recentRows,
+      climateRow('2025-10-15T12:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2025-10-15T12:00:00Z', 'state', 'cool'),
+    ];
+    const result = await fixture.service.getInsights('7');
+    expect(result.coverage.coolingFrom).toBeNull();
+    expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail).not.toContain('No cooling was found');
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('cooling')).toHaveLength(2);
+  });
+
+  it('review 017f8c1: does not treat an action without any mode as evidence of no cooling', async () => {
+    const fixture = makeDeps();
+    neutralHeating(fixture);
+    fixture.rows.cooling = [climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling')];
+    const result = await fixture.service.getInsights('7');
+    expect(result.coverage.coolingFrom).toBeNull();
+    expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail).not.toContain('No cooling was found');
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('cooling')).toHaveLength(2);
+  });
+
+  it('review 017f8c1: ignores an incompatible simultaneous action after a prior valid cooling run', async () => {
+    const fixture = makeDeps();
+    fixture.rows.cooling = [
+      climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2026-01-19T12:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T13:00:00Z', 'state', 'cool'),
+      ...coolingRows('2025-10-15T12:00:00Z'),
+    ];
+    const result = await fixture.service.getInsights('7');
+    expect(result.coverage.coolingFrom).toBe('2025-10-08T14:00:00.000Z');
+    expect(fixture.calls('temperatures')).toHaveLength(2);
+  });
+
+  it('review 017f8c1: can conclude no compatible cooling from a known incompatible action', async () => {
+    const fixture = makeDeps();
+    neutralHeating(fixture);
+    fixture.rows.cooling = [
+      climateRow('2026-01-19T12:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2026-01-19T12:00:00Z', 'state', 'heat'),
+    ];
+    const result = await fixture.service.getInsights('7');
+    expect(result.coverage.coolingFrom).toBeNull();
+    expect(result.recommendations.find((rec) => rec.id === 'no-changes')!.detail)
+      .toContain('No cooling was found in the available history for the past year.');
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('cooling')).toHaveLength(1);
+  });
+
+  it('review 017f8c1: accepts a later verified cooling action after an uncertain candidate', async () => {
+    const fixture = makeDeps();
+    neutralHeating(fixture);
+    fixture.rows.cooling = [
+      climateRow('2026-01-18T12:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2026-01-18T00:00:00Z', 'state', 'unavailable'),
+      ...coolingRows('2026-01-19T12:00:00Z'),
+    ];
+    const result = await fixture.service.getInsights('7');
+    expect(result.coverage.coolingFrom).toBe('2026-01-13T00:00:00.000Z');
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('cooling')).toHaveLength(1);
+  });
+
+  it('review 017f8c1: includes the cooling lookback start but excludes the end and uses a prior mode', async () => {
+    const fixture = makeDeps();
+    fixture.rows.cooling = [
+      climateRow('2025-01-19T23:00:00Z', 'state', 'cool'),
+      climateRow('2025-01-20T00:00:00Z', 'hvac_action_str', 'cooling'),
+      climateRow('2026-01-20T00:00:00Z', 'state', 'cool'),
+      climateRow('2026-01-20T00:00:00Z', 'hvac_action_str', 'cooling'),
+    ];
+    const result = await fixture.service.getInsights('7');
+    expect(result.coverage).toMatchObject({
+      coolingFrom: '2025-01-20T00:00:00.000Z', coolingTo: '2025-01-20T02:00:00.000Z',
+    });
   });
 
   it('degrades when the cooling lookup fails and retries sooner', async () => {
