@@ -353,6 +353,88 @@ describe('analyzePlacement', () => {
     );
   });
 
+  it('does not use a Sleep-only overshoot to suggest adding a sensor to Home', () => {
+    const hvac = Array.from({ length: 5 }, (_, d) => [
+      state(at(d, 0), 'idle', { presetMode: 'sleep', setpoint: 17 }),
+      state(at(d, 5), 'heating', { presetMode: 'sleep', setpoint: 21 }),
+      state(at(d, 6), 'idle', { presetMode: 'sleep', setpoint: 21 }),
+      state(at(d, 9), 'idle', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 12), 'heating', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 14), 'idle', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 22), 'idle', { presetMode: 'sleep', setpoint: 17 }),
+    ]).flat();
+    const comfort = Array.from({ length: 5 }, (_, d) => [
+      { t: at(d, 0), setting: 'sleep' as const },
+      { t: at(d, 9), setting: 'home' as const },
+      { t: at(d, 22), setting: 'sleep' as const },
+    ]).flat();
+    const sensors = series({
+      living_temperature: (t) => {
+        const hour = ((t - START) % DAY) / HOUR;
+        return hour >= 6 && hour < 8 ? 5 : 0;
+      },
+      bedroom_temperature: 0,
+      kitchen_temperature: 0,
+      office_temperature: 0,
+    }, 5);
+    const result = analyzePlacement(input({
+      sensors,
+      hvac,
+      comfort,
+      participation: {
+        ...FOLLOW_ME_OFF,
+        home: ['bedroom_temperature', 'kitchen_temperature', 'office_temperature'],
+      },
+    }));
+
+    expect(result.sensors.find((s) => s.id === 'living_temperature')!.overshoot).toBeGreaterThan(1);
+    expect(result.recommendations.some((r) => r.sensorId === 'living_temperature' && r.comfortSetting === 'home'))
+      .toBe(false);
+  });
+
+  it('does not count Sleep readings after heating stops in Home', () => {
+    const hvac = Array.from({ length: 5 }, (_, d) => [
+      state(at(d, 0), 'idle', { presetMode: 'sleep', setpoint: 17 }),
+      state(at(d, 2), 'idle', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 5), 'heating', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 6), 'idle', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 7), 'idle', { presetMode: 'sleep', setpoint: 17 }),
+      state(at(d, 9), 'idle', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 14), 'heating', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 17), 'idle', { presetMode: 'home', setpoint: 21 }),
+      state(at(d, 22), 'idle', { presetMode: 'sleep', setpoint: 17 }),
+    ]).flat();
+    const comfort = Array.from({ length: 5 }, (_, d) => [
+      { t: at(d, 0), setting: 'sleep' as const },
+      { t: at(d, 2), setting: 'home' as const },
+      { t: at(d, 7), setting: 'sleep' as const },
+      { t: at(d, 9), setting: 'home' as const },
+      { t: at(d, 22), setting: 'sleep' as const },
+    ]).flat();
+    const sensors = series({
+      living_temperature: (t) => {
+        const hour = ((t - START) % DAY) / HOUR;
+        return hour >= 7 && hour < 9 ? 5 : 0;
+      },
+      bedroom_temperature: 0,
+      kitchen_temperature: 0,
+      office_temperature: 0,
+    }, 5);
+    const result = analyzePlacement(input({
+      sensors,
+      hvac,
+      comfort,
+      participation: {
+        ...FOLLOW_ME_OFF,
+        home: ['bedroom_temperature', 'kitchen_temperature', 'office_temperature'],
+      },
+    }));
+
+    expect(result.sensors.find((s) => s.id === 'living_temperature')!.overshoot).toBe(0);
+    expect(result.recommendations.some((r) => r.sensorId === 'living_temperature' && r.comfortSetting === 'home'))
+      .toBe(false);
+  });
+
   it('says so when every sensor is representative and nothing overshoots', () => {
     const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5) }));
     expect(result.recommendations).toEqual([expect.objectContaining({
@@ -1388,7 +1470,7 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
       ]).flat(),
     })).recommendations.find((r) => r.id === 'wake-bedroom')!.detail;
     // Merged across idle: one 120-minute warm-up; split by cooling: the first run.
-    expect(ramp('idle', 'heat')).toContain('the warm-up ran 120 minutes on average');
+    expect(ramp('idle', 'heat')).toContain('the warm-up ran 110 minutes on average');
     expect(ramp('cooling', 'heat_cool')).toContain('the warm-up ran 60 minutes on average');
   });
 
@@ -1562,6 +1644,43 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     ]).flat();
     const wake = analyzePlacement(wakeInput({ hvac: split })).recommendations.find((r) => r.id === 'wake-bedroom')!;
     expect(wake.detail).toContain('the warm-up ran 150 minutes on average');
+  });
+
+  it('uses sensor buckets, not grid boundaries, for heating evidence across idle gaps', () => {
+    const hvac = Array.from({ length: 5 }, (_, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 17 }),
+      state(at(d, 4.5), 'heating', { presetMode: null, setpoint: 21 }),
+      state(at(d, 5.5), 'idle', { presetMode: null, setpoint: 21 }),
+      state(at(d, 5.75), 'heating', { presetMode: null, setpoint: 21 }),
+      state(at(d, 7), 'idle', { presetMode: null, setpoint: 21 }),
+      state(at(d, 22), 'idle', { presetMode: null, setpoint: 17 }),
+    ]).flat();
+    const participation = {
+      home: ['kitchen_temperature', 'office_temperature'],
+      sleep: ['bedroom_temperature', 'living_temperature'],
+      away: null,
+      followMe: false,
+    };
+    const wake = (anomalyHour: number | null) => {
+      const sensors = rooms({
+        ...WAKE_BIASES,
+        bedroom_temperature: (t) => {
+          const hour = ((t - START) % DAY) / HOUR;
+          return hour === anomalyHour ? 10 : -1.5;
+        },
+      }, wakeBase);
+      return analyzePlacement(wakeInput({ sensors, hvac, participation }))
+        .recommendations.find((r) => r.id === 'wake-bedroom')!;
+    };
+    const baseline = wake(null);
+    const idleBucket = wake(5.5);
+    const heatingEndBucket = wake(5.25);
+    const heatingStartBucket = wake(4.5);
+
+    expect(idleBucket.detail).toBe(baseline.detail);
+    expect(heatingEndBucket).toBeUndefined();
+    expect(heatingStartBucket).toBeUndefined();
+    expect(idleBucket.detail).toContain('the warm-up ran 135 minutes on average');
   });
 
   it('stops measuring wake overshoot at a later set point change', () => {

@@ -766,6 +766,14 @@ function settingAt(timeline: SettingChange[], t: number): ComfortSetting | null 
   return index >= 0 ? timeline[index].setting : null;
 }
 
+function homeOvershootWindow(timeline: SettingChange[], window: OvershootWindow): OvershootWindow | null {
+  if (timeline.length === 0) return window;
+  if (settingAt(timeline, window.from) !== 'home') return null;
+  const nextChange = timeline.find((change) => change.t > window.from);
+  const to = Math.min(window.to, nextChange?.t ?? window.to);
+  return to > window.from ? { ...window, to } : null;
+}
+
 // Thermostat states with presetMode set to the comfort setting in force, plus a
 // copy of the state in force at each setting change, so heat-up and return
 // detection see setting changes. Without comfort history the samples are kept.
@@ -854,12 +862,11 @@ interface Wake {
   // (Smart Recovery preheats, possibly finishing before Home) to the end of
   // the last one starting before Home; else the first run after Home.
   run: Run | null;
-  // The heating runs themselves (the span can include idle, cooling or
-  // unknown time between them), split where the comfort setting changes.
+  // Active heating intervals split where the comfort setting changes.
   parts: SettingRun[];
   // Home set point minus the set point before the warm-up.
   setback: number | null;
-  // Heating time within [h - WAKE_LEAD_MS, h + WAKE_TAIL_MS].
+  // Active heating time in the selected warm-up.
   heatingMs: number;
 }
 
@@ -873,6 +880,7 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
     if (timeline[i - 1].setting === 'sleep' && timeline[i].setting === 'home' && h >= from && h <= to) {
       const next = timeline[i + 1]?.t ?? Number.POSITIVE_INFINITY;
       const runs = runsWithin(samples, h - WAKE_LEAD_MS, Math.min(h + WAKE_TAIL_MS, next), heatingNow, HEAT_RUN_MERGE_MS);
+      const activeRuns = runsWithin(samples, h - WAKE_LEAD_MS, Math.min(h + WAKE_TAIL_MS, next), heatingNow, 0);
       const before = runs.filter((r) => r.from < h);
       const after = runs.find((r) => r.from >= h);
       let selected: Run[] = [];
@@ -887,8 +895,16 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
           setback = home.setpoint - before.setpoint;
         }
       }
+      const selectedActiveRuns = run
+        ? activeRuns.filter((r) => r.from < run.to && r.to > run.from)
+        : [];
       wakes.push({
-        h, next, run, parts: splitBySetting(timeline, selected), setback, heatingMs: runs.reduce((sum, r) => sum + r.to - r.from, 0),
+        h,
+        next,
+        run,
+        parts: splitBySetting(timeline, selectedActiveRuns),
+        setback,
+        heatingMs: selectedActiveRuns.reduce((sum, r) => sum + r.to - r.from, 0),
       });
     }
   }
@@ -911,6 +927,10 @@ function wakeMeasureWindow(wake: Wake): Run {
 function inRuns(runs: Run[], t: number): boolean {
   const index = firstIndexAfter(runs, t, (r) => r.from, false) - 1;
   return index >= 0 && t <= runs[index].to;
+}
+
+function inActiveRuns(runs: Run[], source: number | undefined): boolean {
+  return source !== undefined && runs.some((run) => source >= run.from && source + BUCKET_MS <= run.to);
 }
 
 function occupiedAt(occupancy: OccupancySample[] | undefined, t: number): boolean | null {
@@ -1385,6 +1405,7 @@ interface Measured {
   heat: EventStat[];
   cool: EventStat[];
   overshoots: number[];
+  homeOvershoots: number[];
   heatSamples: number;
   coolSamples: number;
   // Sum of |offset| over heat-up samples, for the mean absolute difference.
@@ -1406,20 +1427,21 @@ function measure(
   only: ComfortSetting | null = null,
 ): Measured {
   const measured: Measured = {
-    heat: [], cool: [], overshoots: [], heatSamples: 0, coolSamples: 0, absoluteOffsetSum: 0,
+    heat: [], cool: [], overshoots: [], homeOvershoots: [], heatSamples: 0, coolSamples: 0, absoluteOffsetSum: 0,
   };
   contexts.forEach((ctx) => {
     const times = only ? ctx.times.filter((t) => inSetting(ctx, t, only)) : ctx.times;
     if (ctx.cohort.has(id) && times.length >= MIN_EVENT_SAMPLES) {
       const members = [...ctx.cohort];
       const filled = ctx.grid.values.get(id)!;
+      const sources = ctx.grid.sources.get(id)!;
       const offsets = times.map((t) => filled.get(t)! - cohortMean(ctx.grid, members, t));
       const bySetting: Partial<Record<ComfortSetting, number>> = {};
       const parts = ctx.heatParts ?? [];
       COMFORT_SETTINGS.forEach((setting) => {
         const runs = parts.filter((p) => p.setting === setting);
         const effective = times
-          .filter((t) => inRuns(runs, t))
+          .filter((t) => inActiveRuns(runs, sources.get(t)))
           .map((t) => {
             const average = effectiveAt(ctx.model, ctx.grid, t, setting);
             return average === null ? null : filled.get(t)! - average;
@@ -1439,8 +1461,14 @@ function measure(
         measured.coolSamples += offsets.length;
       }
     }
-    const overshoot = ctx.overshoot && !only ? overshootIn(points, ctx.overshoot) : null;
-    if (overshoot !== null) measured.overshoots.push(overshoot);
+    const window = ctx.overshoot && !only ? ctx.overshoot : null;
+    if (window) {
+      const overshoot = overshootIn(points, window);
+      if (overshoot !== null) measured.overshoots.push(overshoot);
+      const homeWindow = homeOvershootWindow(ctx.model.timeline, window);
+      const homeOvershoot = homeWindow ? overshootIn(points, homeWindow) : null;
+      if (homeOvershoot !== null) measured.homeOvershoots.push(homeOvershoot);
+    }
   });
   return measured;
 }
@@ -2019,7 +2047,8 @@ function addRec(a: Analyzed, skew: Skew, env: Env): Ranked | null {
 // A room that overshoots after heating stops while it may not be in Home.
 function overshootAddRec(a: Analyzed, env: Env): Ranked | null {
   const s = a.out;
-  if (s.overshoot === null || s.overshoot < OVERSHOOT_THRESHOLD || env.passiveHeat || env.heatingRare) return null;
+  const homeOvershoot = mean(a.measured.homeOvershoots);
+  if (homeOvershoot === null || homeOvershoot < OVERSHOOT_THRESHOLD || env.passiveHeat || env.heatingRare) return null;
   if (s.verdict !== 'representative' && s.verdict !== 'warm_outlier') return null;
   const known = knownIn(a, 'home');
   if (known.value === true) return null;
@@ -2039,14 +2068,14 @@ function overshootAddRec(a: Analyzed, env: Env): Ranked | null {
     : '';
   const lead = known.value === false ? 'It isn\'t in your Home comfort setting; adding it' : 'If it isn\'t in your Home comfort setting, adding it';
   return {
-    magnitude: s.overshoot,
+    magnitude: homeOvershoot,
     rank: 1,
     rec: recBase(a, {
       id: `add-${slug(s.id)}`,
       severity: 'medium',
       action: 'include_in_comfort',
       title: `Consider adding ${s.name} to your Home comfort setting`,
-      detail: `${s.name} peaked ${fmt(s.overshoot)} °C above the set point on average after the thermostat stopped heating`
+      detail: `${s.name} peaked ${fmt(homeOvershoot)} °C above the set point on average after the thermostat stopped heating`
         + `${tracks}${provenance}. ${lead} would help Ecobee stop heating sooner.`,
       mode: 'heating',
       period: null,
