@@ -11,6 +11,7 @@ import {
   analyzePlacement,
   BUCKET_MS,
   COMFORT_SETTINGS,
+  compatibleHvacAction,
   reportedHasUsableHistory,
   type ComfortSample,
   type CoolingInput,
@@ -411,18 +412,23 @@ export function parseStates(
   let action: string | null = null;
   let preset: string | null = null;
   let setpoints = new Map<string, number | null>();
+  let setpointObservedAt: number | null = null;
   const hvac = [...climate.keys()].sort((a, b) => a - b).map((t): HvacSample => {
     const fields = climate.get(t)!;
     if (fields.has('state')) {
       const nextMode = fields.get('state')!;
       // A single-temperature target observed in one mode is not evidence of
       // the target in another mode until that target is reported again.
-      if (nextMode !== mode) setpoints = new Map();
+      if (nextMode !== mode) {
+        setpoints = new Map();
+        setpointObservedAt = null;
+      }
       mode = nextMode;
     }
     // An unknown/unavailable action isn't a reported action: no heating start
     // or satisfaction is read from (or into) it.
     if (fields.has('hvac_action')) action = unknownState(fields.get('hvac_action')!) ? null : fields.get('hvac_action')!;
+    action = compatibleHvacAction(mode, action);
     if (fields.has('preset_mode')) {
       const value = fields.get('preset_mode')!;
       preset = value === 'none' || unknownState(value) ? null : value;
@@ -431,6 +437,7 @@ export function parseStates(
       setpoints = new Map(SETPOINT_FIELDS.map((f) => [
         f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unitConflict ? null : unit)),
       ]));
+      setpointObservedAt = t;
     }
     if (mode === null || mode === 'unavailable' || mode === 'unknown') {
       // An outage clears what was carried: after it, the action, preset and
@@ -438,20 +445,23 @@ export function parseStates(
       action = null;
       preset = null;
       setpoints = new Map();
+      setpointObservedAt = null;
       return {
         t, gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
       };
     }
     const temperature = setpoints.get('temperature') ?? null;
+    const setpoint = /^(heat_cool|auto)$/i.test(mode)
+      ? setpoints.get('target_temp_low') ?? null
+      : temperature ?? setpoints.get('target_temp_low') ?? null;
     return {
       t,
       gap: false,
       hvacMode: mode,
       hvacAction: action,
       presetMode: preset,
-      setpoint: /^(heat_cool|auto)$/i.test(mode)
-        ? setpoints.get('target_temp_low') ?? null
-        : temperature ?? setpoints.get('target_temp_low') ?? null,
+      setpoint,
+      ...(setpoint !== null && setpointObservedAt !== null ? { setpointObservedAt } : {}),
       coolSetpoint: mode === 'cool' ? temperature : setpoints.get('target_temp_high') ?? null,
     };
   });

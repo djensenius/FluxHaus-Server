@@ -165,6 +165,9 @@ export interface HvacSample {
   // `target_temp_low` for heating in heat_cool/auto. Cool-mode `temperature`
   // remains here for compatibility, but is never a heating target.
   setpoint: number | null;
+  // When the carried set point was last reported. Direct callers may omit
+  // this when each sample is itself a complete snapshot.
+  setpointObservedAt?: number;
   // Cooling set point in °C (`temperature` in cool mode, else
   // `target_temp_high`); absent/null when unknown.
   coolSetpoint?: number | null;
@@ -388,6 +391,14 @@ function isCooling(action: string | null): boolean {
   return /^cooling$/i.test(action ?? '');
 }
 
+// An incompatible action is not evidence that the new mode is idle. Keep a
+// compatible action, including one freshly reported with the mode change.
+export function compatibleHvacAction(mode: string | null, action: string | null): string | null {
+  if (mode && isHeating(action) && !/^(heat|heat_cool|auto)$/i.test(mode)) return null;
+  if (mode && isCooling(action) && !/^(cool|heat_cool|auto)$/i.test(mode)) return null;
+  return action;
+}
+
 // Only actions whose heating/cooling meaning is known can establish runtime
 // or a transition. Vendor-specific actions are not evidence of idle.
 function knownAction(action: string | null): boolean {
@@ -466,7 +477,9 @@ function nearEvent(sorted: PlacementEvent[], t: number): boolean {
 // home/comfort.
 export function detectHvacEvents(samples: HvacSample[], timeZone: string): PlacementEvent[] {
   const clock = localClock(timeZone);
-  const sorted = [...samples].sort((a, b) => a.t - b.t);
+  const sorted = samples.map((sample) => ({
+    ...sample, hvacAction: compatibleHvacAction(sample.hvacMode, sample.hvacAction),
+  })).sort((a, b) => a.t - b.t);
   const returns: PlacementEvent[] = [];
   const mornings = new Map<string, PlacementEvent>();
 
@@ -1034,7 +1047,7 @@ interface Wake {
 // Sleep → Home changes in [from, to], each with its warm-up: the heating runs
 // in the lead window before the change (ending before it or crossing it),
 // else the first run after it.
-function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: number, to: number): Wake[] {
+function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: number, to: number, raw: HvacSample[]): Wake[] {
   const wakes: Wake[] = [];
   for (let i = 1; i < timeline.length; i += 1) {
     const h = timeline[i].t;
@@ -1054,11 +1067,16 @@ function detectWakes(samples: HvacSample[], timeline: SettingChange[], from: num
       if (run) {
         const beforeTime = Math.min(run.from, h) - 1;
         const before = samples[stateIndexAt(samples, beforeTime)];
+        const beforeRaw = raw[stateIndexAt(raw, beforeTime)];
         const home = samples[stateIndexAt(samples, h + BUCKET_MS)];
         const sleepTarget = heatingTargetOf(before);
         const homeTarget = heatingTargetOf(home);
+        // A synthesized comfort transition or an unrelated climate update
+        // doesn't make a carried target a fresh observation in this Sleep.
+        const sleepTargetAt = before?.setpointObservedAt ?? beforeRaw?.t ?? Number.NEGATIVE_INFINITY;
         if (sleepTarget !== null && homeTarget !== null && h + BUCKET_MS < next
-          && settingAt(timeline, beforeTime) === 'sleep'
+          && beforeTime >= timeline[i - 1].t && settingDuring(timeline, { from: beforeTime, to: h }) === 'sleep'
+          && sleepTargetAt >= timeline[i - 1].t
           && heatingTargetModeDuring(samples, beforeTime, h + BUCKET_MS)) {
           setback = homeTarget - sleepTarget;
         }
@@ -1627,15 +1645,18 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
 // ---------------------------------------------------------------------------
 // Per-event offsets.
 
-interface EventContext {
-  event: PlacementEvent;
-  mode: PlacementMode;
-  setting: ComfortSetting | null;
-  model: Model;
+interface EventScope {
   cohort: Set<string>;
   times: number[];
   // The grid restricted to readings taken within the event window.
   grid: Grid;
+}
+
+interface EventContext extends EventScope {
+  event: PlacementEvent;
+  mode: PlacementMode;
+  setting: ComfortSetting | null;
+  model: Model;
   // Post-satisfaction window and the set point in force; null when the
   // thermostat history can't establish it.
   overshoot: OvershootWindow | null;
@@ -1645,6 +1666,10 @@ interface EventContext {
   wake: Wake | null;
   // Source-window compatibility for heating comparisons.
   heatingSamples: HvacSample[] | null;
+  // Select cohorts within the setting being assessed, not the combined wake.
+  settingScopes: Partial<Record<ComfortSetting, EventScope>>;
+  // Wake effects use just the active heating parts of each setting.
+  wakeScopes: Partial<Record<ComfortSetting, EventScope>>;
 }
 
 // Restrict both the grid bucket and each room's source bucket to compatible,
@@ -1695,6 +1720,38 @@ function activeEventGrid(grid: Grid, runs: Run[]): Grid {
   return { times: [...active.keys()], values, sources };
 }
 
+// Setting-scoped coverage includes only complete grid and source buckets in
+// that setting, even when a fresh reading was carried from an earlier one.
+function settingEventGrid(grid: Grid, timeline: SettingChange[], setting: ComfortSetting): Grid {
+  const times = grid.times.filter((t) => settingDuring(timeline, { from: t - BUCKET_MS, to: t }) === setting);
+  const values = new Map<string, Map<number, number>>();
+  const sources = new Map<string, Map<number, number>>();
+  grid.values.forEach((filled, id) => {
+    const kept = new Map<number, number>();
+    const origin = new Map<number, number>();
+    times.forEach((t) => {
+      const source = grid.sources.get(id)?.get(t);
+      if (source !== undefined && settingDuring(timeline, { from: source, to: source + BUCKET_MS }) === setting) {
+        kept.set(t, filled.get(t)!);
+        origin.set(t, source);
+      }
+    });
+    values.set(id, kept);
+    sources.set(id, origin);
+  });
+  return { times, values, sources };
+}
+
+function eventScope(grid: Grid, model: Model, samples: HvacSample[] | null, setting: ComfortSetting | null): EventScope {
+  const { cohort, times } = cohortAt(grid, grid.times, model.roomSet);
+  const comparable = samples || setting ? times.filter((t) => {
+    const source = sourceWindow(grid, t, cohort);
+    return !!source && (!samples || heatingPossibleDuring(samples, source))
+      && (!setting || settingDuring(model.timeline, source) === setting);
+  }) : times;
+  return { grid, cohort: new Set(cohort), times: comparable };
+}
+
 function eventContext(
   grid: Grid,
   model: Model,
@@ -1712,13 +1769,21 @@ function eventContext(
   const windowed = windowGrid(grid, window.from, window.to);
   const restricted = activeRuns ? activeEventGrid(windowed, activeRuns)
     : heatingSamples ? heatingEventGrid(windowed, heatingSamples) : windowed;
-  const { cohort, times } = cohortAt(restricted, restricted.times, model.roomSet);
-  const comparable = heatingSamples ? times.filter((t) => {
-    const source = sourceWindow(restricted, t, cohort);
-    return !!source && heatingPossibleDuring(heatingSamples, source);
-  }) : times;
+  const settingScopes: EventContext['settingScopes'] = {};
+  const wakeScopes: EventContext['wakeScopes'] = {};
+  if (heatingSamples) {
+    COMFORT_SETTINGS.forEach((scopeSetting) => {
+      const scoped = settingEventGrid(restricted, model.timeline, scopeSetting);
+      settingScopes[scopeSetting] = eventScope(scoped, model, heatingSamples, scopeSetting);
+      if (heatParts) {
+        const active = activeEventGrid(scoped, heatParts.filter((part) => part.setting === scopeSetting));
+        wakeScopes[scopeSetting] = eventScope(active, model, heatingSamples, scopeSetting);
+      }
+    });
+  }
   return {
-    event, mode, setting, model, cohort: new Set(cohort), times: comparable, grid: restricted, overshoot, heatParts, wake, heatingSamples,
+    ...eventScope(restricted, model, heatingSamples, null),
+    event, mode, setting, model, overshoot, heatParts, wake, heatingSamples, settingScopes, wakeScopes,
   };
 }
 
@@ -1767,29 +1832,26 @@ interface EventStat {
   type: PlacementEventType;
   // Mean offset from the house (room) average.
   offset: number;
-  // Wake-ups: mean offset from the reported or approximated reading while heating
-  // ran, per comfort setting in force then (when established at
-  // MIN_EVENT_SAMPLES grid times).
-  bySetting: Partial<Record<ComfortSetting, number>>;
   inferred: boolean;
-  wake: Wake | null;
+}
+
+interface WakeStat {
+  wake: Wake;
+  // Effective and room-only offsets from comparable heating samples in each
+  // setting, with cohorts and sample thresholds scoped to that setting.
+  bySetting: Partial<Record<ComfortSetting, { effective: number; house: number }>>;
 }
 
 interface Measured {
   heat: EventStat[];
   cool: EventStat[];
+  wakes: WakeStat[];
   overshoots: number[];
   homeOvershoots: number[];
   heatSamples: number;
   coolSamples: number;
   // Sum of |offset| over heat-up samples, for the mean absolute difference.
   absoluteOffsetSum: number;
-}
-
-// Whether every room used in this reference has a source interval in `only`.
-function inSetting(ctx: EventContext, t: number, only: ComfortSetting): boolean {
-  const source = sourceWindow(ctx.grid, t, [...ctx.cohort]);
-  return source !== null && settingDuring(ctx.model.timeline, source) === only;
 }
 
 // Offsets per event; with `only`, from just the grid times in that comfort
@@ -1801,38 +1863,16 @@ function measure(
   only: ComfortSetting | null = null,
 ): Measured {
   const measured: Measured = {
-    heat: [], cool: [], overshoots: [], homeOvershoots: [], heatSamples: 0, coolSamples: 0, absoluteOffsetSum: 0,
+    heat: [], cool: [], wakes: [], overshoots: [], homeOvershoots: [], heatSamples: 0, coolSamples: 0, absoluteOffsetSum: 0,
   };
   const coolingByRun = new Map<number, { stat: EventStat; samples: number }>();
   contexts.forEach((ctx) => {
-    const times = only ? ctx.times.filter((t) => inSetting(ctx, t, only)) : ctx.times;
-    if (ctx.cohort.has(id) && times.length >= MIN_EVENT_SAMPLES) {
-      const members = [...ctx.cohort];
-      const filled = ctx.grid.values.get(id)!;
-      const sources = ctx.grid.sources.get(id)!;
-      const offsets = times.map((t) => filled.get(t)! - cohortMean(ctx.grid, members, t));
-      const bySetting: Partial<Record<ComfortSetting, number>> = {};
-      const parts = ctx.heatParts ?? [];
-      COMFORT_SETTINGS.forEach((setting) => {
-        const runs = parts.filter((p) => p.setting === setting);
-        const effective = times
-          .filter((t) => inActiveRuns(runs, sources.get(t)))
-          .map((t) => {
-            const run = runs.find((part) => inActiveRuns([part], sources.get(t)))!;
-            if (ctx.heatingSamples) {
-              const source = sourceWindow(ctx.grid, t, [id]);
-              const combined = spanningWindow(source, effectiveSource(ctx.model, ctx.grid, t, setting));
-              if (!combined || !heatingPossibleDuring(ctx.heatingSamples, combined)) return null;
-            }
-            const average = effectiveAt(ctx.model, ctx.grid, t, setting, id, run);
-            return average === null ? null : filled.get(t)! - average;
-          })
-          .filter((o): o is number => o !== null);
-        if (effective.length >= MIN_EVENT_SAMPLES) bySetting[setting] = mean(effective)!;
-      });
-      const stat: EventStat = {
-        type: ctx.event.type, offset: mean(offsets)!, bySetting, inferred: ctx.event.inferred, wake: ctx.wake,
-      };
+    const scope = only ? ctx.settingScopes[only] : ctx;
+    if (scope?.cohort.has(id) && scope.times.length >= MIN_EVENT_SAMPLES) {
+      const members = [...scope.cohort];
+      const filled = scope.grid.values.get(id)!;
+      const offsets = scope.times.map((t) => filled.get(t)! - cohortMean(scope.grid, members, t));
+      const stat: EventStat = { type: ctx.event.type, offset: mean(offsets)!, inferred: ctx.event.inferred };
       if (ctx.mode === 'heating') {
         measured.heat.push(stat);
         measured.heatSamples += offsets.length;
@@ -1848,6 +1888,39 @@ function measure(
         } else coolingByRun.set(ctx.event.t, { stat, samples: offsets.length });
         measured.coolSamples += offsets.length;
       }
+    }
+    if (ctx.wake && !only) {
+      const bySetting: WakeStat['bySetting'] = {};
+      COMFORT_SETTINGS.forEach((setting) => {
+        const scoped = ctx.wakeScopes[setting];
+        if (!scoped?.cohort.has(id) || scoped.times.length < MIN_EVENT_SAMPLES) return;
+        const members = [...scoped.cohort];
+        const filled = scoped.grid.values.get(id)!;
+        const sources = scoped.grid.sources.get(id)!;
+        const runs = (ctx.heatParts ?? []).filter((part) => part.setting === setting);
+        const offsets = scoped.times
+          .map((t) => {
+            const run = runs.find((part) => inActiveRuns([part], sources.get(t)))!;
+            if (ctx.heatingSamples) {
+              const source = sourceWindow(scoped.grid, t, [id]);
+              const combined = spanningWindow(source, effectiveSource(ctx.model, scoped.grid, t, setting));
+              if (!combined || !heatingPossibleDuring(ctx.heatingSamples, combined)) return null;
+            }
+            const average = effectiveAt(ctx.model, scoped.grid, t, setting, id, run);
+            return average === null ? null : {
+              effective: filled.get(t)! - average,
+              house: filled.get(t)! - cohortMean(scoped.grid, members, t),
+            };
+          })
+          .filter((offset): offset is NonNullable<typeof offset> => offset !== null);
+        if (offsets.length >= MIN_EVENT_SAMPLES) {
+          bySetting[setting] = {
+            effective: mean(offsets.map((offset) => offset.effective))!,
+            house: mean(offsets.map((offset) => offset.house))!,
+          };
+        }
+      });
+      measured.wakes.push({ wake: ctx.wake, bySetting });
     }
     const window = ctx.overshoot && !only ? ctx.overshoot : null;
     if (window) {
@@ -2369,8 +2442,8 @@ function wakeSetting(a: Analyzed): {
   setting: ComfortSetting; offsets: number[]; wakes: Wake[]; cold: number; offset: number; known: Known; share: Contribution | null;
 } | null {
   const candidates = COMFORT_SETTINGS.map((setting) => {
-    const events = a.measured.heat.filter((e) => e.wake !== null && e.bySetting[setting] !== undefined);
-    const offsets = events.map((e) => e.bySetting[setting]!);
+    const events = a.measured.wakes.filter((e) => e.bySetting[setting] !== undefined);
+    const offsets = events.map((e) => e.bySetting[setting]!.effective);
     if (offsets.length < 2) return null;
     const cold = offsets.filter((o) => o <= -AFFECTED_THRESHOLD).length;
     const offset = mean(offsets)!;
@@ -2379,7 +2452,7 @@ function wakeSetting(a: Analyzed): {
     const share = a.contribution.wake[setting] ?? null;
     if (known.value === false) return null;
     return {
-      setting, offsets, wakes: events.map((e) => e.wake!), cold, offset, known, share,
+      setting, offsets, wakes: events.map((e) => e.wake), cold, offset, known, share,
     };
   }).filter((c): c is NonNullable<typeof c> => c !== null);
   return candidates.find((c) => c.setting === 'home')
@@ -2398,8 +2471,10 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
   // It must also stand out from the typical room, so one warm room inflating
   // the average doesn't make every other room look like the culprit. Compare
   // the same heated wakes that supplied this setting's reference offsets.
-  const wakeOffset = (o: Analyzed) => mean(o.measured.heat
-    .filter((e) => e.wake !== null && eligible.has(e.wake)).map((e) => e.offset));
+  const wakeOffset = (o: Analyzed) => mean(o.measured.wakes
+    .filter((e) => eligible.has(e.wake))
+    .map((e) => e.bySetting[setting]?.house)
+    .filter((offset): offset is number => offset !== undefined));
   const typical = median(rooms.map(wakeOffset).filter((o): o is number => o !== null));
   const own = wakeOffset(a);
   if (typical === null || own === null || own - typical > -AFFECTED_THRESHOLD) return null;
@@ -2814,7 +2889,9 @@ function dataset(
   thermostatOccupancy: OccupancySample[] | null | undefined,
   reportedTemperature: ReportedTemperatureInput | null | undefined,
 ): Dataset {
-  const raw = [...(hvac ?? [])].sort((a, b) => a.t - b.t);
+  const raw = (hvac ?? []).map((sample) => ({
+    ...sample, hvacAction: compatibleHvacAction(sample.hvacMode, sample.hvacAction),
+  })).sort((a, b) => a.t - b.t);
   // The Ecobee comfort setting takes precedence over the thermostat's preset,
   // which fills in wherever the comfort setting is unknown.
   const known = !!comfort && comfort.some((c) => normalizeSetting(c.setting) !== null);
@@ -2898,7 +2975,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
 
   // Every Sleep → Home change is a wake-up; those with a heating run are
   // heat-ups that replace the observed morning warm-up around them.
-  const wakes = detectWakes(samples, heat.timeline, startMs, endMs);
+  const wakes = detectWakes(samples, heat.timeline, startMs, endMs, heat.raw);
   const wakeEvents = new Map<PlacementEvent, Wake>();
   wakes.forEach((wake) => {
     if (wake.run) wakeEvents.set({ type: 'wake', t: wake.run.from, inferred: false }, wake);

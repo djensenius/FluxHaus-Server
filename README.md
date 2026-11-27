@@ -494,9 +494,14 @@ about 10 days:
   window started, so stale readings are never compared. A sensor joins an
   event's house average only if it is fresh for at least 75% of the event, and
   the average is only taken where every joined sensor is fresh, so membership
-  doesn't change within an event. Only 15-minute averages whose whole window
-  lies inside the event window count, so readings from just before an event
-  (e.g. while the thermostat was still off) never do.
+  doesn't change within an event. Home-specific heating advice selects its
+  cohort using only eligible Home windows; wake advice selects it separately
+  for each setting over its active heating windows. Sleep coverage therefore
+  cannot make sparse Home readings count as a well-covered Home cohort, or
+  vice versa. Only 15-minute averages whose whole source window lies inside
+  the event count, so readings from just before it (e.g. while the thermostat
+  was still off) never do. Scoped comparisons also require each source window
+  to be wholly inside the setting being assessed.
 - **Thermostat history** is the climate entity's InfluxDB fields (`domain`
   `climate`): `state` (mode), `hvac_action_str`, `preset_mode_str`, and set points
   (`temperature` in single-target modes, `target_temp_low` for heating and
@@ -508,8 +513,10 @@ about 10 days:
   evidence is unknown or conflicts with that assumption, set points in that
   fetched window are discarded rather than guessed. Plausible values and
   absent conflict evidence cannot prove the unit never changed.
-  Mode, action and preset carry forward between changes; set points come from
-  each change and are cleared on a mode change until reported again. A
+  Mode, action and preset carry forward between changes, except that a heating
+  or cooling action incompatible with the reported mode is unknown, not idle;
+  a compatible action reported at the same time as the mode is retained. Set
+  points come from each change and are cleared on a mode change until reported again. A
   single `temperature` in `heat_cool`/`auto` is not identified as a heating
   target without `target_temp_low`. The last value
   before the window (within 30 days) gives the state at its start.
@@ -761,9 +768,12 @@ about 10 days:
     "while heating in Sleep before Home"). A sensor configured or estimated
     outside that setting isn't treated as a participant. It can mention a Sleep
     setback of 2 °C or more, a warm-up of an hour or more, and Smart Recovery.
-    Setback advice requires applicable heating targets from Sleep and Home
-    without intervening incompatible states or gaps; if only the warm-up
-    duration is known it can suggest reviewing recovery timing instead.
+    Setback advice requires applicable heating targets from Home and the
+    immediately preceding continuous Sleep interval, without intervening
+    incompatible states or gaps. The Sleep target must have been reported
+    during that interval before the warm-up; a carried older target or a
+    synthesized setting transition isn't a new observation. If only the
+    warm-up duration is known it can suggest reviewing recovery timing instead.
     Changing the setback or reviewing recovery timing does not promise a
     reduction in total heating runtime.
 

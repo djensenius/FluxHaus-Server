@@ -18,7 +18,7 @@ import {
   rowsToSeries,
   toCelsius,
 } from '../climate-placement-service';
-import { detectHvacEvents } from '../climate-placement';
+import { analyzePlacement, detectHvacEvents } from '../climate-placement';
 import createClimatePlacementRouter from '../routes/climate-placement.routes';
 
 vi.mock('../logger', () => ({
@@ -201,16 +201,20 @@ describe('thermostat, comfort and occupancy history', () => {
     ], entities, '°F');
     expect(parsed.hvac).toEqual([
       {
-        t: Date.parse('2026-01-19T06:00:00Z'), gap: false, hvacMode: 'heat', hvacAction: 'heating', presetMode: null, setpoint: 20, coolSetpoint: null,
+        t: Date.parse('2026-01-19T06:00:00Z'), gap: false, hvacMode: 'heat', hvacAction: 'heating', presetMode: null, setpoint: 20,
+        setpointObservedAt: Date.parse('2026-01-19T06:00:00Z'), coolSetpoint: null,
       },
       {
-        t: Date.parse('2026-01-19T07:00:00Z'), gap: false, hvacMode: 'heat_cool', hvacAction: 'heating', presetMode: null, setpoint: 15, coolSetpoint: 25,
+        t: Date.parse('2026-01-19T07:00:00Z'), gap: false, hvacMode: 'heat_cool', hvacAction: 'heating', presetMode: null, setpoint: 15,
+        setpointObservedAt: Date.parse('2026-01-19T07:00:00Z'), coolSetpoint: 25,
       },
       {
-        t: Date.parse('2026-01-19T08:00:00Z'), gap: false, hvacMode: 'heat_cool', hvacAction: 'idle', presetMode: null, setpoint: 15, coolSetpoint: 25,
+        t: Date.parse('2026-01-19T08:00:00Z'), gap: false, hvacMode: 'heat_cool', hvacAction: 'idle', presetMode: null, setpoint: 15,
+        setpointObservedAt: Date.parse('2026-01-19T07:00:00Z'), coolSetpoint: 25,
       },
       {
-        t: Date.parse('2026-01-19T09:00:00Z'), gap: false, hvacMode: 'cool', hvacAction: 'idle', presetMode: null, setpoint: 25, coolSetpoint: 25,
+        t: Date.parse('2026-01-19T09:00:00Z'), gap: false, hvacMode: 'cool', hvacAction: 'idle', presetMode: null, setpoint: 25,
+        setpointObservedAt: Date.parse('2026-01-19T09:00:00Z'), coolSetpoint: 25,
       },
       {
         t: Date.parse('2026-01-19T10:00:00Z'), gap: true, hvacMode: null, hvacAction: null, presetMode: null, setpoint: null,
@@ -228,6 +232,180 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(parsed.hvac!.at(-1)).toMatchObject({
       gap: false, hvacMode: 'heat', hvacAction: 'heating', presetMode: 'home', setpoint: 21,
     });
+  });
+
+  it.each([
+    ['cool', 'cooling', 'heat', 'heating'],
+    ['heat', 'heating', 'cool', 'cooling'],
+  ])('review 8c5e5d2: does not carry %s/%s into %s mode', (beforeMode, beforeAction, nextMode, nextAction) => {
+    const rows = [
+      climateRow('2026-01-19T05:00:00Z', 'state', beforeMode),
+      climateRow('2026-01-19T05:00:00Z', 'hvac_action_str', beforeAction),
+      climateRow('2026-01-19T06:00:00Z', 'state', nextMode),
+      climateRow('2026-01-19T07:00:00Z', 'hvac_action_str', 'idle'),
+    ];
+    const actions = (history: Rows) => parseStates(history, entities, '°C').hvac!.map((sample) => sample.hvacAction);
+    expect(actions(rows)).toEqual([beforeAction, null, 'idle']);
+    expect(actions([...rows, climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', nextAction)]))
+      .toEqual([beforeAction, nextAction, 'idle']);
+    expect(actions([...rows, climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'idle')]))
+      .toEqual([beforeAction, 'idle', 'idle']);
+    expect(actions([...rows, climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', beforeAction)]))
+      .toEqual([beforeAction, null, 'idle']);
+    const compatible = [rows[0], rows[1], climateRow('2026-01-19T06:00:00Z', 'state', 'heat_cool'), rows[3]];
+    expect(actions(compatible)).toEqual([beforeAction, beforeAction, 'idle']);
+    const idle = [rows[0], climateRow('2026-01-19T05:00:00Z', 'hvac_action_str', 'idle'), rows[2], rows[3]];
+    expect(actions(idle)).toEqual(['idle', 'idle', 'idle']);
+    const recovery = [...rows.slice(0, 3), climateRow('2026-01-19T07:00:00Z', 'hvac_action_str', nextAction)];
+    expect(detectHvacEvents(parseStates(recovery, entities, '°C').hvac!, 'UTC')).toEqual([]);
+  });
+
+  it('review 8c5e5d2: does not use a carried cooling action after a mode-only switch for placement advice', () => {
+    const start = Date.parse('2026-01-05T00:00:00Z');
+    const hour = 60 * 60 * 1000;
+    const days = 3;
+    const at = (day: number, h: number) => new Date(start + (day * 24 + h) * hour).toISOString();
+    const rows = Array.from({ length: days }, (_, day) => [
+      climateRow(at(day, 0), 'state', 'cool'),
+      climateRow(at(day, 0), 'hvac_action_str', 'idle'),
+      climateRow(at(day, 1), 'hvac_action_str', 'cooling'),
+      climateRow(at(day, 2), 'state', 'heat'),
+      climateRow(at(day, 4), 'hvac_action_str', 'idle'),
+    ]).flat();
+    const sensors = ['bedroom_temperature', 'living_temperature', 'kitchen_temperature'].map((id) => ({
+      id,
+      name: id.replace('_temperature', ''),
+      isThermostat: false,
+      points: Array.from({ length: days * 24 * 4 }, (_, i) => ({
+        t: start + (i * hour) / 4,
+        v: 20 + (id === 'kitchen_temperature' && i % 96 >= 8 && i % 96 < 16 ? 3 : 0),
+      })),
+    }));
+    const end = new Date(start + days * 24 * hour);
+    const result = analyzePlacement({
+      sensors,
+      primaryThermostatId: null,
+      hvac: parseStates(rows, entities, '°C').hvac,
+      comfort: [{ t: start, setting: 'home' }],
+      participation: {
+        home: sensors.map((sensor) => sensor.id),
+        sleep: null,
+        away: null,
+        followMe: false,
+        thermostat: { home: false, sleep: false, away: false },
+      },
+      start: new Date(start),
+      end,
+      windowDays: days,
+      timeZone: 'UTC',
+      generatedAt: end,
+      cooling: { start: new Date(start), end },
+    });
+    expect(result.coverage.coolingEvents).toBe(3);
+    expect(result.recommendations.filter((rec) => rec.mode === 'cooling' && rec.sensorId === 'kitchen_temperature')).toEqual([]);
+  });
+
+  it('review 8c5e5d2: does not claim heating runtime through a mode-only switch', () => {
+    const start = Date.parse('2026-01-05T00:00:00Z');
+    const hour = 60 * 60 * 1000;
+    const days = 5;
+    const at = (day: number, h: number) => new Date(start + (day * 24 + h) * hour).toISOString();
+    const sensors = ['bedroom_temperature', 'living_temperature'].map((id) => ({
+      id,
+      name: id,
+      isThermostat: false,
+      points: Array.from({ length: days * 24 * 4 }, (_, i) => ({ t: start + (i * hour) / 4, v: 22 })),
+    }));
+    const end = new Date(start + days * 24 * hour);
+    const run = (reportedAction: string | null) => {
+      const rows = Array.from({ length: days }, (_, day) => [
+        climateRow(at(day, 0), 'state', 'heat'),
+        climateRow(at(day, 0), 'hvac_action_str', 'idle'),
+        climateRow(at(day, 0), 'temperature', '20'),
+        climateRow(at(day, 1), 'hvac_action_str', 'heating'),
+        climateRow(at(day, 2), 'state', 'cool'),
+        ...(reportedAction ? [climateRow(at(day, 2), 'hvac_action_str', reportedAction)] : []),
+        climateRow(at(day, 4), 'state', 'heat'),
+        climateRow(at(day, 4), 'hvac_action_str', 'idle'),
+        climateRow(at(day, 4), 'temperature', '20'),
+      ]).flat();
+      return analyzePlacement({
+        sensors,
+        primaryThermostatId: null,
+        hvac: parseStates(rows, entities, '°C').hvac,
+        comfort: [{ t: start, setting: 'home' }],
+        participation: {
+          home: sensors.map((sensor) => sensor.id),
+          sleep: null,
+          away: null,
+          followMe: false,
+          thermostat: { home: false, sleep: false, away: false },
+        },
+        start: new Date(start),
+        end,
+        windowDays: days,
+        timeZone: 'UTC',
+        generatedAt: end,
+      }).recommendations.find((rec) => rec.id === 'passive-warmth-heating')!;
+    };
+    expect(run(null).detail).not.toContain('heating was reported running');
+    expect(run('cooling').detail).toContain('heating was reported running 5.0 h over 5 days');
+  });
+
+  it('review 8c5e5d2: does not mistake a carried target for a new Sleep observation', () => {
+    const start = Date.parse('2026-01-05T00:00:00Z');
+    const hour = 60 * 60 * 1000;
+    const days = 5;
+    const at = (day: number, h: number) => start + (day * 24 + h) * hour;
+    const time = (day: number, h: number) => new Date(at(day, h)).toISOString();
+    const sensors = ['bedroom_temperature', 'living_temperature', 'kitchen_temperature'].map((id) => ({
+      id,
+      name: id.replace('_temperature', ''),
+      isThermostat: false,
+      points: Array.from({ length: days * 24 * 4 }, (_, i) => ({
+        t: start + (i * hour) / 4,
+        v: (i % 96 >= 24 && i % 96 < 88 ? 21 : 17) + (id === 'bedroom_temperature' ? -1.5 : 0.5),
+      })),
+    }));
+    const end = new Date(at(days, 0));
+    const comfort = Array.from({ length: days }, (_, day) => [
+      { t: at(day, 0), setting: 'sleep' },
+      { t: at(day, 4.75), setting: 'away' },
+      { t: at(day, 5), setting: 'sleep' },
+      { t: at(day, 6), setting: 'home' },
+      { t: at(day, 22), setting: 'sleep' },
+    ]).flat();
+    const run = (sleepTarget: string | null) => {
+      const rows = Array.from({ length: days }, (_, day) => [
+        climateRow(time(day, 0), 'state', 'heat'),
+        climateRow(time(day, 0), 'hvac_action_str', 'idle'),
+        climateRow(time(day, 0), 'temperature', '17'),
+        climateRow(time(day, 5.1), 'hvac_action_str', 'idle'),
+        ...(sleepTarget ? [climateRow(time(day, 5.1), 'temperature', sleepTarget)] : []),
+        climateRow(time(day, 5.5), 'hvac_action_str', 'heating'),
+        climateRow(time(day, 5.5), 'temperature', '21'),
+        climateRow(time(day, 7), 'hvac_action_str', 'idle'),
+      ]).flat();
+      const all = sensors.map((sensor) => sensor.id);
+      return analyzePlacement({
+        sensors,
+        primaryThermostatId: null,
+        hvac: parseStates(rows, entities, '°C').hvac,
+        comfort,
+        participation: {
+          home: all, sleep: all, away: null, followMe: false, thermostat: { home: false, sleep: false, away: false },
+        },
+        start: new Date(start),
+        end,
+        windowDays: days,
+        timeZone: 'UTC',
+        generatedAt: end,
+      }).recommendations.find((rec) => rec.id === 'wake-bedroom')!;
+    };
+    const carried = run(null);
+    expect(carried).toBeDefined();
+    expect(carried.detail).not.toMatch(/Sleep set point|smaller Sleep setback/);
+    expect(run('20').detail).toContain('The Sleep set point averaged 1.0 °C below Home');
   });
 
   it.each(['heat_cool', 'auto'])(
