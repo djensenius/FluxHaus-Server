@@ -1627,8 +1627,140 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     const excluded = withBedroom(false, true);
     expect(excluded.recommendations.some((r) => r.sensorId === 'bedroom_temperature')).toBe(false);
     const summary = excluded.sensors.find((s) => s.id === 'bedroom_temperature')!.verdictSummary!;
-    expect(summary).toContain('rarely counted');
+    expect(summary).toContain('with Follow Me it never counted toward the thermostat\'s average in Home, so it didn\'t steer it');
     expect(summary).not.toContain('likely');
+  });
+
+  it('qualifies heating advice when Follow Me contribution is unknown', () => {
+    const all = ['office_temperature', 'kitchen_temperature', 'living_temperature', 'bedroom_temperature'];
+    const withOccupancy = (value: boolean | null) => analyzePlacement(input({
+      sensors: series(BIASES, 5).map((r) => ({ ...r, occupancy: [{ t: START - DAY, occupied: value }] })),
+      participation: config(all, true),
+    }));
+    // Occupancy unavailable throughout: whether the Kitchen counted is unknown.
+    const unknown = withOccupancy(null);
+    const rec = unknown.recommendations.find((r) => r.id === 'remove-kitchen')!;
+    expect(rec).toMatchObject({ severity: 'low', title: 'Kitchen may be stopping the heat early' });
+    expect(rec.detail).toContain('It\'s in your Home comfort setting, but with Follow Me on, the occupancy and '
+      + 'comfort-setting history couldn\'t show whether it counted toward the average for enough of the time. '
+      + 'If it counted, Ecobee stops heating');
+    expect(rec.detail).not.toContain('Because it\'s in');
+    expect(rec.detail).not.toContain('it counted 1');
+    const summary = unknown.sensors.find((s) => s.id === 'kitchen_temperature')!.verdictSummary!;
+    expect(summary).toContain('with Follow Me on, the occupancy and comfort-setting history couldn\'t show');
+    expect(summary).toContain('so it may or may not be pushing the average up');
+    expect(summary).not.toContain('likely');
+    // The wake-up tip is qualified the same way.
+    const wake = unknown.recommendations.find((r) => r.id === 'wake-office')!;
+    expect(wake).toMatchObject({ severity: 'low', title: 'Office may be holding the morning warm-up on' });
+    expect(wake.detail).toContain('couldn\'t show whether it counted toward the average for enough of the time. '
+      + 'If it counted, Ecobee keeps heating until it warms up');
+    // Occupied throughout: it counted, and that's stated.
+    const known = withOccupancy(true).recommendations.find((r) => r.id === 'remove-kitchen')!;
+    expect(known.title).toBe('Kitchen is stopping the heat early');
+    expect(known.detail).toContain('Because it\'s in your Home comfort setting, Ecobee stops heating');
+    expect(known.detail).toContain('With Follow Me on, it counted 100% of the time in Home');
+  });
+
+  it('qualifies cooling advice when Follow Me contribution is unknown', () => {
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const summer = coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 });
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(flat, wakeBase),
+      participation: config(['kitchen_temperature', 'living_temperature', 'bedroom_temperature'], true),
+      cooling: {
+        ...summer,
+        sensors: summer.sensors!.map((r) => ({ ...r, occupancy: [{ t: SUMMER - DAY, occupied: null }] })),
+      },
+    }));
+    const rec = result.recommendations.find((r) => r.mode === 'cooling')!;
+    expect(rec).toMatchObject({
+      id: 'cooling-kitchen', action: 'move', severity: 'low', title: 'Kitchen may be keeping the AC on',
+    });
+    expect(rec.detail).toContain('It\'s in your Home comfort setting, but with Follow Me on, the occupancy and '
+      + 'comfort-setting history couldn\'t show whether it counted toward the average for enough of the time. '
+      + 'If it counted, the AC keeps running');
+    expect(rec.detail).not.toContain('Because it\'s in');
+    expect(result.sensors.find((s) => s.id === 'kitchen_temperature')!.verdictSummary)
+      .toContain('so it may or may not be pushing the average up so the AC overcools other rooms');
+  });
+
+  it('states a small measured Follow Me share instead of hiding it', () => {
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const summer = coolingInput({ kitchen_temperature: 1.5, living_temperature: -0.5, bedroom_temperature: -0.5 });
+    // The others are always occupied; the Kitchen only for the first hour of
+    // the first day's cooling.
+    const kitchen: OccupancySample[] = [
+      { t: SUMMER - DAY, occupied: false },
+      { t: SUMMER + 13 * HOUR, occupied: true },
+      { t: SUMMER + 14 * HOUR, occupied: false },
+    ];
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(flat, wakeBase),
+      participation: config(['kitchen_temperature', 'living_temperature', 'bedroom_temperature'], true),
+      cooling: {
+        ...summer,
+        sensors: summer.sensors!.map((r) => ({
+          ...r, occupancy: r.id === 'kitchen_temperature' ? kitchen : [{ t: SUMMER - DAY, occupied: true }],
+        })),
+      },
+    }));
+    const rec = result.recommendations.find((r) => r.mode === 'cooling')!;
+    expect(rec).toMatchObject({ id: 'cooling-kitchen', title: 'Kitchen is keeping the AC on' });
+    const share = Number(/it counted (\d+)% of the time while the AC ran in Home/.exec(rec.detail)![1]);
+    expect(share).toBeGreaterThan(0);
+    expect(share).toBeLessThan(20);
+  });
+
+  it('judges a cooling run spanning Home and Sleep per setting, without blending', () => {
+    // Cooling 13:00–16:00; Home until 14:30, then Sleep. The Kitchen is only in
+    // Sleep and reads 2.0 °C warm in Home, 1.2 °C in Sleep.
+    const switchAt = 14.5;
+    const inSleep = (t: number) => ((t - SUMMER) % DAY) / HOUR >= switchAt;
+    const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
+    const all = ['kitchen_temperature', 'living_temperature', 'bedroom_temperature'];
+    const run = (home: string[]) => analyzePlacement(wakeInput({
+      sensors: rooms(flat, wakeBase),
+      participation: {
+        home, sleep: all, away: null, followMe: false,
+      },
+      cooling: {
+        ...coolingInput({}),
+        sensors: rooms({
+          kitchen_temperature: (t) => (inSleep(t) ? 1.2 : 2),
+          living_temperature: (t) => (inSleep(t) ? -0.6 : -1),
+          bedroom_temperature: (t) => (inSleep(t) ? -0.6 : -1),
+        }, coolBase, { from: SUMMER }),
+        comfort: Array.from({ length: 5 }, (_, d) => [
+          { t: SUMMER + d * DAY, setting: 'home' },
+          { t: SUMMER + d * DAY + switchAt * HOUR, setting: 'sleep' },
+        ]).flat(),
+      },
+    }));
+    const result = run(['living_temperature', 'bedroom_temperature']);
+    expect(result.coverage.coolingEvents).toBe(5);
+    const cooling = result.recommendations.filter((r) => r.mode === 'cooling');
+    expect(cooling.map((r) => [r.id, r.action, r.comfortSetting]).sort()).toEqual([
+      ['add-cooling-kitchen', 'include_in_comfort', 'home'],
+      ['cooling-kitchen', 'move', 'sleep'],
+    ]);
+    const home = cooling.find((r) => r.comfortSetting === 'home')!;
+    const sleep = cooling.find((r) => r.comfortSetting === 'sleep')!;
+    // Each tip quotes only its own setting's offset.
+    expect(home.detail).toContain('2.0 °C above on average while cooling ran in Home');
+    expect(home.detail).toContain('It isn\'t in your Home comfort setting');
+    expect(home.detail).not.toContain('Sleep');
+    expect(sleep.detail).toContain('1.2 °C above on average while cooling ran in Sleep');
+    expect(sleep.detail).toContain('Because it\'s in your Sleep comfort setting, the AC keeps running');
+    expect(sleep.detail).not.toContain('Home');
+    // In both settings: two placement tips, told apart by setting.
+    const both = run(all).recommendations.filter((r) => r.mode === 'cooling');
+    expect(both.map((r) => [r.id, r.action, r.comfortSetting]).sort()).toEqual([
+      ['cooling-kitchen-home', 'move', 'home'],
+      ['cooling-kitchen-sleep', 'move', 'sleep'],
+    ]);
+    expect(both.find((r) => r.comfortSetting === 'home')!.detail).toContain('2.0 °C above on average while cooling ran in Home');
+    expect(both.find((r) => r.comfortSetting === 'sleep')!.detail).toContain('1.2 °C above on average while cooling ran in Sleep');
   });
 
   it('estimates cooling membership from the cooling data', () => {

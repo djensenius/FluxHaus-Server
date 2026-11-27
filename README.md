@@ -571,16 +571,28 @@ about 10 days:
   - `wake-<sensor>` (`move`): a sensor at least 0.5 °C below the comfort average
     in 60% of wake-ups while other rooms end up at least 0.5 °C over the Home
     set point. It mentions a Sleep setback of 2 °C or more, or a warm-up of an
-    hour or more, and Smart Recovery. With Follow Me, a sensor that counted
-    toward the average less than 20% of the time isn't blamed (it counts while
-    occupied, or while no participating room is). The same applies to other
-    heat-ups (over Home) and cooling (over the cooling runs, from the cooling
-    data and the setting in force), and to `verdictSummary`.
+    hour or more, and Smart Recovery. With Follow Me, a sensor counts toward
+    the average while occupied, or while no participating room is. One that
+    never counted isn't blamed; otherwise the measured share is stated
+    ("it counted 7% of the time …"), with no cutoff. When that share can't be
+    measured (occupancy known for under 75% of the time, or membership
+    unknown), the tip is `low`, says "may be" and states that it's unknown
+    whether the sensor counted ("If it counted, …"), and `verdictSummary` says
+    it may or may not be skewing the average. The same applies to other
+    heat-ups (over Home) and cooling (over that setting's cooling runs, from
+    the cooling data).
   - `move-<sensor>` / `remove-<sensor>` (`move`, `exclude_from_comfort` for a
     warm Kitchen known to participate) for other heat-ups;
-    `cooling-<sensor>` (always `move`) for cooling. Heating tips are about Home;
-    cooling tips about the comfort setting in force for most of the cooling
-    runs (Home when unknown).
+    `cooling-<sensor>` (always `move`) for cooling. Heating tips are about Home.
+    Cooling runs are split where the comfort setting changes, and cooling is
+    judged separately in each setting from that setting's parts only (parts in
+    an unknown setting are left out, or treated as Home when no setting is
+    known), so evidence and advice are never blended across settings; the text
+    names the setting ("while cooling ran in Sleep") when cooling ran in more
+    than one. A room with the same kind of tip in two settings gets the
+    setting appended (`cooling-<sensor>-sleep`). Without a heating verdict,
+    `verdict` uses the first skewed setting by cooling time; `coolingOffset`, `coolingUndershoot` and the
+    cooling `consistency` counts cover all cooling.
   - `add-<sensor>` / `add-cooling-<sensor>` (`include_in_comfort`) for a room known
     not to participate that is consistently off, or a room that overshoots by
     1.0 °C or more when no other heating tip applies.
