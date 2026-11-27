@@ -393,6 +393,13 @@ function unknownState(value: string): boolean {
   return value === '' || value === 'unavailable' || value === 'unknown';
 }
 
+function sameClimateValue(field: string, a: string, b: string): boolean {
+  if (a === b) return true;
+  if (!SETPOINT_FIELDS.includes(field) || !a.trim() || !b.trim()) return false;
+  const number = Number(a);
+  return Number.isFinite(number) && number === Number(b) && number === toNumber(a) && number === toNumber(b);
+}
+
 export interface ParsedStates {
   hvac: HvacSample[] | null;
   comfort: ComfortSample[] | null;
@@ -406,17 +413,18 @@ export interface ParsedStates {
 // Rows from buildStatesQuery → thermostat samples (one per state change; mode,
 // action and preset carry forward, set points are per change since Home
 // Assistant omits empty attributes), comfort settings and occupancy.
-// Unavailable or unknown thermostat states are gaps so no transition is read
-// across them, and they clear the carried action, preset and set points; unavailable or unknown occupancy is kept as unknown (null) so
-// the last value isn't carried across an outage.
+// Unavailable, unknown or conflicting thermostat states are gaps so no
+// transition is read across them, and they clear the carried action, preset
+// and set points. Conflicting fields are unknown until reported again;
+// unavailable, unknown or conflicting occupancy isn't carried across an outage.
 export function parseStates(
   rows: Record<string, string>[],
   entities: StateEntities,
   unit: string | null | undefined,
 ): ParsedStates {
-  const climate = new Map<number, Map<string, string>>();
-  const comfort: ComfortSample[] = [];
-  const occupancy = new Map<string, OccupancySample[]>();
+  const climate = new Map<number, Map<string, string | null>>();
+  const comfort = new Map<number, ComfortSample>();
+  const occupancy = new Map<string, Map<number, boolean | null>>();
   const reportedInvalidations: number[] = [];
   const assumedUnit = knownUnit(unit ?? undefined);
   let unitConflict = false;
@@ -441,9 +449,16 @@ export function parseStates(
         return;
       }
       if (!climate.has(t)) climate.set(t, new Map());
-      climate.get(t)!.set(field.replace(/_str$/, ''), value);
+      const fields = climate.get(t)!;
+      const key = field.replace(/_str$/, '');
+      const previous = fields.get(key);
+      if (!fields.has(key)) fields.set(key, value);
+      else if (previous === null || previous === undefined || !sameClimateValue(key, previous, value)) fields.set(key, null);
     } else if (row.domain === 'select' && row.entity_id === entities.comfort) {
-      comfort.push({ t, setting: value === 'unavailable' || value === 'unknown' || value === '' ? null : value });
+      const setting = unknownState(value) ? null : value;
+      const previous = comfort.get(t);
+      if (!previous) comfort.set(t, { t, setting });
+      else if (previous.ambiguous || previous.setting !== setting) comfort.set(t, { t, setting: null, ambiguous: true });
     } else if (row.domain === 'binary_sensor' && entities.occupancy.includes(row.entity_id)) {
       // Home Assistant writes on/off as `value` 1/0 and anything else (e.g.
       // unavailable) as a `state` string.
@@ -451,8 +466,10 @@ export function parseStates(
       let occupied: boolean | null = null;
       if (Number.isFinite(n)) occupied = n >= 0.5;
       else if (value === 'on' || value === 'off') occupied = value === 'on';
-      if (!occupancy.has(row.entity_id)) occupancy.set(row.entity_id, []);
-      occupancy.get(row.entity_id)!.push({ t, occupied });
+      if (!occupancy.has(row.entity_id)) occupancy.set(row.entity_id, new Map());
+      const values = occupancy.get(row.entity_id)!;
+      if (!values.has(t)) values.set(t, occupied);
+      else if (values.get(t) !== occupied) values.set(t, null);
     }
   });
   let mode: string | null = null;
@@ -463,7 +480,7 @@ export function parseStates(
   const hvac = [...climate.keys()].sort((a, b) => a - b).map((t): HvacSample => {
     const fields = climate.get(t)!;
     if (fields.has('state')) {
-      const nextMode = fields.get('state')!;
+      const nextMode = fields.get('state') ?? null;
       // A single-temperature target observed in one mode is not evidence of
       // the target in another mode until that target is reported again.
       if (nextMode !== mode) {
@@ -474,14 +491,17 @@ export function parseStates(
     }
     // An unknown/unavailable action isn't a reported action: no heating start
     // or satisfaction is read from (or into) it.
-    if (fields.has('hvac_action')) action = unknownState(fields.get('hvac_action')!) ? null : fields.get('hvac_action')!;
+    if (fields.has('hvac_action')) {
+      const value = fields.get('hvac_action') ?? '';
+      action = unknownState(value) ? null : value;
+    }
     action = compatibleHvacAction(mode, action);
     if (fields.has('preset_mode')) {
-      const value = fields.get('preset_mode')!;
+      const value = fields.get('preset_mode') ?? '';
       preset = value === 'none' || unknownState(value) ? null : value;
     }
     if (SETPOINT_FIELDS.some((f) => fields.has(f))) {
-      setpoints = new Map(SETPOINT_FIELDS.map((f) => [
+      setpoints = new Map(SETPOINT_FIELDS.filter((f) => fields.has(f)).map((f) => [
         f, plausibleSetpoint(toCelsius(toNumber(fields.get(f)), unitConflict ? null : unit)),
       ]));
       setpointObservedAt = t;
@@ -500,7 +520,7 @@ export function parseStates(
     const temperature = setpoints.get('temperature') ?? null;
     const setpoint = /^(heat_cool|auto)$/i.test(mode)
       ? setpoints.get('target_temp_low') ?? null
-      : temperature ?? setpoints.get('target_temp_low') ?? null;
+      : setpoints.has('temperature') ? temperature : setpoints.get('target_temp_low') ?? null;
     return {
       t,
       gap: false,
@@ -513,11 +533,14 @@ export function parseStates(
     };
   });
   const byTime = (a: { t: number }, b: { t: number }) => a.t - b.t;
-  occupancy.forEach((samples) => samples.sort(byTime));
+  const occupancyHistory = new Map([...occupancy].map(([id, values]) => [
+    id, [...values].map(([t, occupied]): OccupancySample => ({ t, occupied })).sort(byTime),
+  ]));
+  const comfortHistory = [...comfort.values()].sort(byTime);
   return {
     hvac: hvac.length > 0 ? hvac : null,
-    comfort: comfort.length > 0 ? comfort.sort(byTime) : null,
-    occupancy,
+    comfort: comfortHistory.length > 0 ? comfortHistory : null,
+    occupancy: occupancyHistory,
     reportedInvalidations: reportedInvalidations.sort((a, b) => a - b),
     unitConflict,
     targetUnitAssumed: hvac.some((sample) => sample.setpoint !== null || (sample.coolSetpoint ?? null) !== null),
@@ -619,6 +642,13 @@ interface WindowData {
   states: ParsedStates | null;
   reported: ReportedTemperatureInput | null;
   degraded: boolean;
+}
+
+// The lookback query filters for cooling actions, so only the selected
+// window's unfiltered state history can reveal a conflicting action at the
+// same rounded millisecond.
+function uncertainCoolingAnchor(states: ParsedStates | null, t: number): boolean {
+  return states?.hvac?.some((sample) => sample.t === t && (sample.gap || sample.hvacAction === null)) ?? false;
 }
 
 export class ClimatePlacementService {
@@ -758,7 +788,8 @@ export class ClimatePlacementService {
     if (lastCooling === null) cooling = null;
     else if (lastCooling !== undefined && entities) {
       if (lastCooling >= start.getTime()) {
-        cooling = { start, end };
+        if (uncertainCoolingAnchor(heat.states, lastCooling)) degraded = true;
+        else cooling = { start, end };
       } else {
         const coolEnd = new Date(Math.min(lastCooling + COOLING_TAIL_MS, end.getTime()));
         const coolStart = new Date(Math.max(
@@ -767,13 +798,16 @@ export class ClimatePlacementService {
         ));
         const data = await this.fetchWindow(sensors, entities, reportedClimate, unit, coolStart, coolEnd);
         if (data.degraded) degraded = true;
-        cooling = {
-          start: coolStart, end: coolEnd, sensors: data.series, hvac: data.states?.hvac ?? null, comfort: data.states?.comfort ?? null,
-          targetUnitAssumed: data.states?.targetUnitAssumed ?? false,
-          thermostatOccupancy: physicalOccupancy ? data.states?.occupancy.get(physicalOccupancy) ?? null : null,
-          reportedTemperature: data.reported && reportedHasUsableHistory(data.reported, data.states?.hvac ?? [])
-            ? data.reported : null,
-        };
+        if (uncertainCoolingAnchor(data.states, lastCooling)) degraded = true;
+        else {
+          cooling = {
+            start: coolStart, end: coolEnd, sensors: data.series, hvac: data.states?.hvac ?? null, comfort: data.states?.comfort ?? null,
+            targetUnitAssumed: data.states?.targetUnitAssumed ?? false,
+            thermostatOccupancy: physicalOccupancy ? data.states?.occupancy.get(physicalOccupancy) ?? null : null,
+            reportedTemperature: data.reported && reportedHasUsableHistory(data.reported, data.states?.hvac ?? [])
+              ? data.reported : null,
+          };
+        }
       }
     }
 

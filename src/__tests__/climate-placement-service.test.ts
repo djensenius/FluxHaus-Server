@@ -242,6 +242,169 @@ describe('thermostat, comfort and occupancy history', () => {
     ]);
   });
 
+  it.each([
+    ['unavailable mode', 'state', 'unavailable', 'state', 'heat', { gap: true, hvacMode: null }],
+    ['conflicting modes', 'state', 'cool', 'state', 'heat', { gap: true, hvacMode: null }],
+    ['unknown action', 'hvac_action_str', 'unknown', 'hvac_action_str', 'idle', { gap: false, hvacAction: null }],
+    ['conflicting actions', 'hvac_action_str', 'heating', 'hvac_action_str', 'idle', { gap: false, hvacAction: null }],
+    ['unknown target', 'temperature_str', 'unknown', 'temperature', '21', { gap: false, setpoint: null }],
+    ['conflicting targets', 'temperature', '19', 'temperature', '21', { gap: false, setpoint: null }],
+    ['malformed target', 'temperature_str', '21bad', 'temperature', '21', { gap: false, setpoint: null }],
+    ['unknown preset', 'preset_mode_str', 'none', 'preset_mode', 'home', { gap: false, presetMode: null }],
+    ['conflicting presets', 'preset_mode_str', 'away', 'preset_mode_str', 'home', { gap: false, presetMode: null }],
+  ])('review 34fc041: retains %s at a rounded-millisecond collision', (_name, firstField, firstValue, secondField, secondValue, expected) => {
+    const before = '2026-01-19T05:00:00Z';
+    const first = '2026-01-19T06:05:00.000100Z';
+    const second = '2026-01-19T06:05:00.000900Z';
+    const unrelated = '2026-01-19T06:05:00.001000Z';
+    const recovery = '2026-01-19T06:05:00.002000Z';
+    expect(Date.parse(first)).toBe(Date.parse(second));
+    const initial = [
+      climateRow(before, 'state', 'heat'), climateRow(before, 'hvac_action_str', 'heating'),
+      climateRow(before, 'temperature', '21'), climateRow(before, 'preset_mode_str', 'home'),
+    ];
+    const collisions = [
+      climateRow(first, firstField, firstValue), climateRow(second, secondField, secondValue),
+      climateRow(second, secondField, secondValue),
+    ];
+    const recovered = [
+      climateRow(recovery, 'state', 'heat'), climateRow(recovery, 'hvac_action_str', 'idle'),
+      climateRow(recovery, 'temperature', '21'), climateRow(recovery, 'preset_mode_str', 'home'),
+    ];
+    const otherField = firstField.startsWith('preset_mode') ? 'hvac_action_str' : 'preset_mode_str';
+    const otherValue = otherField === 'hvac_action_str' ? 'heating' : 'home';
+    [collisions, [...collisions].reverse()].forEach((ordered) => {
+      const history = parseStates([...initial, ...ordered, climateRow(unrelated, otherField, otherValue), ...recovered], entities, '°C').hvac!;
+      expect(history[1]).toMatchObject({ t: Date.parse(first), ...expected });
+      expect(history[2]).toMatchObject({ t: Date.parse(unrelated), ...expected });
+      expect(history[3]).toMatchObject({
+        t: Date.parse(recovery), gap: false, hvacMode: 'heat', hvacAction: 'idle', setpoint: 21, presetMode: 'home',
+      });
+    });
+  });
+
+  it.each([
+    ['target_temp_low', '20', '21', 'target_temp_high', '24', null, 24],
+    ['target_temp_high', '24', '25', 'target_temp_low', '20', 20, null],
+  ])('review 34fc041: keeps only the nonconflicting range target when %s collides',
+    (field, firstValue, secondValue, otherField, otherValue, heating, cooling) => {
+      const before = '2026-01-19T05:00:00Z';
+      const first = '2026-01-19T06:05:00.000100Z';
+      const second = '2026-01-19T06:05:00.000900Z';
+      const parsed = parseStates([
+        climateRow(before, 'state', 'heat_cool'), climateRow(before, 'hvac_action_str', 'idle'),
+        climateRow(before, 'target_temp_low', '20'), climateRow(before, 'target_temp_high', '24'),
+        climateRow(first, field, firstValue), climateRow(second, field, secondValue),
+        climateRow(second, otherField, otherValue),
+      ], entities, '°C');
+      expect(parsed.hvac![1]).toMatchObject({ gap: false, setpoint: heating, coolSetpoint: cooling });
+    });
+
+  it('review 34fc041: does not replace a conflicting single target with a range target', () => {
+    const time = '2026-01-19T06:05:00.000100Z';
+    const later = '2026-01-19T06:05:00.000900Z';
+    const parsed = parseStates([
+      climateRow('2026-01-19T05:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T05:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow(time, 'temperature_str', 'unknown'), climateRow(later, 'temperature', '21'),
+      climateRow(later, 'target_temp_low', '20'),
+    ], entities, '°C');
+    expect(parsed.hvac![1].setpoint).toBeNull();
+  });
+
+  it('review 34fc041: keeps simultaneous independent fields and identical duplicate readings', () => {
+    const before = '2026-01-19T05:00:00Z';
+    const first = '2026-01-19T06:00:00.000100Z';
+    const second = '2026-01-19T06:00:00.000900Z';
+    const parsed = parseStates([
+      climateRow(before, 'state', 'heat'), climateRow(before, 'hvac_action_str', 'idle'),
+      climateRow(before, 'temperature', '20'),
+      climateRow(first, 'state', 'heat'), climateRow(second, 'state', 'heat'),
+      climateRow(first, 'hvac_action_str', 'heating'), climateRow(second, 'hvac_action_str', 'heating'),
+      climateRow(first, 'temperature', '21'), climateRow(second, 'temperature_str', '21.0'),
+      climateRow(second, 'preset_mode_str', 'home'),
+      { _time: first, _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      { _time: second, _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      { _time: first, _field: 'state', _value: 'on', domain: 'binary_sensor', entity_id: 'bedroom_occupancy' },
+      { _time: second, _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'bedroom_occupancy' },
+    ], entities, '°C');
+    expect(parsed.hvac![1]).toMatchObject({
+      t: Date.parse(first), gap: false, hvacMode: 'heat', hvacAction: 'heating', setpoint: 21, presetMode: 'home',
+    });
+    expect(detectHvacEvents(parsed.hvac!, 'UTC')).toEqual([{ type: 'morning', t: Date.parse(first), inferred: false }]);
+    expect(parsed.comfort).toEqual([{ t: Date.parse(first), setting: 'home' }]);
+    expect(parsed.occupancy.get('bedroom_occupancy')).toEqual([{ t: Date.parse(first), occupied: true }]);
+  });
+
+  const collisionOffset = (extra: Rows, followMe: boolean, sourceHour = 6.25) => {
+    const start = Date.parse('2026-01-19T00:00:00Z');
+    const hour = 60 * 60_000;
+    const selectEntities = { ...entities, occupancy: ['bedroom_occupancy', 'living_occupancy'] };
+    const parsed = parseStates([
+      climateRow('2026-01-19T00:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T00:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T00:00:00Z', 'temperature', '20'),
+      climateRow('2026-01-19T00:00:00Z', 'preset_mode_str', 'home'),
+      ...['bedroom_occupancy', 'living_occupancy'].map((entityId) => ({
+        _time: '2026-01-19T00:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: entityId,
+      })),
+      ...extra,
+    ], selectEntities, '°C');
+    const times = Array.from({ length: 3 }, (_, i) => start + (sourceHour + i / 4) * hour);
+    const sensors = ['bedroom', 'living'].map((room) => ({
+      id: `${room}_temperature`,
+      name: room,
+      isThermostat: false,
+      points: times.map((t) => ({ t, v: room === 'bedroom' ? 22 : 20 })),
+      occupancy: parsed.occupancy.get(`${room}_occupancy`),
+    }));
+    return analyzePlacement({
+      start: new Date(start), end: new Date(start + 8 * hour), windowDays: 1, timeZone: 'UTC',
+      sensors, primaryThermostatId: null, hvac: parsed.hvac, comfort: parsed.comfort,
+      reportedTemperature: followMe ? null : { points: times.map((t) => ({ t, v: 20 })) },
+      participation: {
+        home: sensors.map((sensor) => sensor.id), sleep: null, away: null, followMe,
+        thermostat: { home: false, sleep: false, away: false },
+      },
+    }).sensors.find((sensor) => sensor.id === 'bedroom_temperature')!.periodOffsets.home;
+  };
+  const selectRow = (time: string, value: string) => ({
+    _time: time, _field: 'state', _value: value, domain: 'select', entity_id: 'home_current_mode',
+  });
+  const bedroomOccupancyRow = (time: string, field: string, value: string) => ({
+    _time: time, _field: field, _value: value, domain: 'binary_sensor', entity_id: 'bedroom_occupancy',
+  });
+
+  it.each(['sleep', 'unknown'])(
+    'review 34fc041: a %s/home comfort collision stays unknown rather than falling back to the preset',
+    (firstValue) => {
+      const first = '2026-01-19T06:00:00.000100Z';
+      const second = '2026-01-19T06:00:00.000900Z';
+      const collision = [selectRow(first, firstValue), selectRow(second, 'home')];
+      [collision, [...collision].reverse()].forEach((ordered) => {
+        expect(collisionOffset(ordered, false)).toBeNull();
+        expect(collisionOffset([...ordered, selectRow('2026-01-19T07:00:00.001Z', 'home')], false, 7.25)).toBe(2);
+      });
+      expect(collisionOffset([selectRow(first, 'home'), selectRow(second, 'home')], false)).toBe(2);
+    },
+  );
+
+  it.each(['off', 'unavailable'])(
+    'review 34fc041: a %s/occupied collision leaves Follow Me occupancy unknown',
+    (firstValue) => {
+      const first = '2026-01-19T06:00:00.000100Z';
+      const second = '2026-01-19T06:00:00.000900Z';
+      const collision = [bedroomOccupancyRow(first, 'state', firstValue), bedroomOccupancyRow(second, 'value', '1')];
+      [collision, [...collision].reverse()].forEach((ordered) => {
+        expect(collisionOffset(ordered, true)).toBeNull();
+        expect(collisionOffset([...ordered, bedroomOccupancyRow('2026-01-19T07:00:00.001Z', 'value', '1')], true, 7.25))
+          .toBe(1);
+      });
+      expect(collisionOffset([bedroomOccupancyRow(first, 'state', 'on'), bedroomOccupancyRow(second, 'value', '1')], true))
+        .toBe(1);
+    },
+  );
+
   it('carries prior climate fields across distinct timestamps', () => {
     const parsed = parseStates([
       climateRow('2026-01-19T05:00:00Z', 'state', 'heat'),
@@ -1452,12 +1615,13 @@ describe('ClimatePlacementService', () => {
   });
 
   it('review 57a228c: does not pair a preheat across a parsed climate outage', async () => {
-    const run = async (outage: boolean) => {
+    const run = async (outage: 'none' | 'five-minutes' | 'mode-collision' | 'action-collision' | 'target-collision') => {
       const fixture = makeDeps();
       const start = Date.parse('2026-01-15T00:00:00Z');
       const hour = 60 * 60_000;
       const day = 24 * hour;
       const iso = (t: number) => new Date(t).toISOString();
+      const micro = (t: number, fraction: string) => iso(t).replace('.000Z', `.${fraction}Z`);
       const comfort = (t: number, setting: string) => ({
         _time: iso(t), _field: 'state', _value: setting, domain: 'select', entity_id: 'home_current_mode',
       });
@@ -1466,6 +1630,34 @@ describe('ClimatePlacementService', () => {
       for (let d = 0; d < 5; d += 1) {
         const beginning = start + d * day;
         const wake = beginning + 6 * hour;
+        const collision = wake + 5 * 60_000;
+        let interruption: Rows = [climateRow(iso(collision), 'hvac_action_str', 'idle')];
+        if (outage === 'five-minutes') interruption = [
+          climateRow(iso(collision), 'state', 'unavailable'),
+          climateRow(iso(wake + 10 * 60_000), 'state', 'heat'),
+          climateRow(iso(wake + 10 * 60_000), 'hvac_action_str', 'idle'),
+          climateRow(iso(wake + 10 * 60_000), 'temperature', '21'),
+        ];
+        if (outage === 'mode-collision') interruption = [
+          climateRow(micro(collision, '000100'), 'state', 'unavailable'),
+          climateRow(micro(collision, '000900'), 'state', 'heat'),
+          climateRow(micro(collision, '000900'), 'hvac_action_str', 'idle'),
+          climateRow(micro(collision, '000900'), 'temperature', '21'),
+          climateRow(iso(wake + 10 * 60_000), 'state', 'heat'),
+          climateRow(iso(wake + 10 * 60_000), 'hvac_action_str', 'idle'),
+          climateRow(iso(wake + 10 * 60_000), 'temperature', '21'),
+        ];
+        if (outage === 'action-collision') interruption = [
+          climateRow(micro(collision, '000100'), 'hvac_action_str', 'unknown'),
+          climateRow(micro(collision, '000900'), 'hvac_action_str', 'idle'),
+          climateRow(iso(wake + 10 * 60_000), 'hvac_action_str', 'idle'),
+        ];
+        if (outage === 'target-collision') interruption = [
+          climateRow(micro(collision, '000100'), 'temperature_str', 'unknown'),
+          climateRow(micro(collision, '000900'), 'temperature', '21'),
+          climateRow(micro(collision, '000900'), 'hvac_action_str', 'idle'),
+          climateRow(iso(wake + 10 * 60_000), 'temperature', '21'),
+        ];
         states.push(
           climateRow(iso(beginning), 'state', 'heat'),
           climateRow(iso(beginning), 'hvac_action_str', 'idle'),
@@ -1473,13 +1665,7 @@ describe('ClimatePlacementService', () => {
           comfort(beginning, 'sleep'),
           climateRow(iso(beginning + 5.5 * hour), 'hvac_action_str', 'heating'),
           comfort(wake, 'home'),
-          ...(outage
-            ? [
-              climateRow(iso(wake + 5 * 60_000), 'state', 'unavailable'),
-              climateRow(iso(wake + 10 * 60_000), 'state', 'heat'),
-              climateRow(iso(wake + 10 * 60_000), 'hvac_action_str', 'idle'),
-              climateRow(iso(wake + 10 * 60_000), 'temperature', '21'),
-            ] : [climateRow(iso(wake + 5 * 60_000), 'hvac_action_str', 'idle')]),
+          ...interruption,
           climateRow(iso(beginning + 17 * hour), 'hvac_action_str', 'heating'),
           climateRow(iso(beginning + 20 * hour), 'hvac_action_str', 'idle'),
           comfort(beginning + 22 * hour, 'sleep'),
@@ -1506,12 +1692,14 @@ describe('ClimatePlacementService', () => {
         thermostatSleep: 'false',
       });
     };
-    const interrupted = await run(true);
-    expect(interrupted.coverage.wakeEvents).toBe(5);
-    expect(interrupted.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.wakeOvershoot).toBeNull();
-    expect(interrupted.recommendations.some((rec) => rec.id === 'wake-office')).toBe(false);
+    for (const kind of ['five-minutes', 'mode-collision', 'action-collision', 'target-collision'] as const) {
+      const interrupted = await run(kind);
+      expect(interrupted.coverage.wakeEvents).toBe(5);
+      expect(interrupted.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.wakeOvershoot).toBeNull();
+      expect(interrupted.recommendations.some((rec) => rec.id === 'wake-office')).toBe(false);
+    }
 
-    const continuous = await run(false);
+    const continuous = await run('none');
     expect(continuous.sensors.find((sensor) => sensor.id === 'kitchen_temperature')!.wakeOvershoot).toBe(2);
     expect(continuous.recommendations.find((rec) => rec.id === 'wake-office')).toMatchObject({
       severity: 'high', comfortSetting: 'sleep',
@@ -1565,6 +1753,63 @@ describe('ClimatePlacementService', () => {
     });
     expect(result.recommendations.find((rec) => rec.id === 'cooling-kitchen')!.detail).toContain('3 of 3 cooling runs');
     expect(fixture.calls('temperatures')).toHaveLength(2);
+  });
+
+  it.each(['current', 'older'] as const)(
+    'review 34fc041: a conflicting %s cooling anchor is uncertain even though the lookup only returns cooling actions',
+    async (window) => {
+      const fixture = makeDeps();
+      neutralHeating(fixture);
+      const anchor = window === 'current' ? '2026-01-19T12:00:00' : '2025-10-15T12:00:00';
+      const first = `${anchor}.000100Z`;
+      const second = `${anchor}.000900Z`;
+      const mode = climateRow(`${anchor}.000000Z`, 'state', 'cool');
+      const conflicting = [climateRow(first, 'hvac_action_str', 'unknown'), climateRow(second, 'hvac_action_str', 'cooling')];
+      // The bounded lookback query filters out the unknown action, while the
+      // selected window's state query sees both action records.
+      fixture.rows.cooling = [mode, conflicting[1], ...coolingRows('2025-10-13T12:00:00Z')];
+      if (window === 'current') {
+        fixture.rows.states.push(mode, ...conflicting);
+      } else {
+        const oldStates = [mode, ...conflicting];
+        const oldTemperatures = ['home_current_temperature', 'office_temperature', 'kitchen_temperature'].map((entityId) => ({
+          _time: '2025-10-15T12:00:00Z', _value: '21', _measurement: '°C', entity_id: entityId,
+        }));
+        const currentQuery = fixture.deps.influxdb.query.getMockImplementation()!;
+        fixture.deps.influxdb.query.mockImplementation(async (flux: string) => {
+          if (!flux.includes('2025-10-08T14:00:00.000Z')) return currentQuery(flux);
+          if (queryKind(flux) === 'states') return oldStates;
+          if (queryKind(flux) === 'temperatures') return oldTemperatures;
+          return [];
+        });
+      }
+
+      const result = await fixture.service.getInsights('7');
+      expect(result.coverage.coolingFrom).toBeNull();
+      const summary = result.recommendations.find((rec) => rec.id === 'no-changes')!.detail;
+      expect(summary).toContain('Cooling history could not be assessed reliably.');
+      expect(summary).not.toContain('No mode-compatible cooling runs were found');
+      expect(summary).not.toContain('No cooling action was confirmed');
+      fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+      await fixture.service.getInsights('7');
+      expect(fixture.calls('cooling')).toHaveLength(2);
+    },
+  );
+
+  it('review 34fc041: identical cooling action duplicates keep a valid current cooling anchor', async () => {
+    const fixture = makeDeps();
+    neutralHeating(fixture);
+    const first = '2026-01-19T12:00:00.000100Z';
+    const second = '2026-01-19T12:00:00.000900Z';
+    const mode = climateRow('2026-01-19T11:00:00Z', 'state', 'cool');
+    const actions = [climateRow(first, 'hvac_action_str', 'cooling'), climateRow(second, 'hvac_action_str', 'cooling')];
+    fixture.rows.cooling = [mode, ...actions];
+    fixture.rows.states.push(mode, ...actions);
+    const result = await fixture.service.getInsights('7');
+    expect(result.coverage).toMatchObject({ coolingFrom: '2026-01-13T00:00:00.000Z', coolingEvents: 1 });
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getInsights('7');
+    expect(fixture.calls('cooling')).toHaveLength(1);
   });
 
   it.each(['cool', 'heat_cool', 'auto'])(

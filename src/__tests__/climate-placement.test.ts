@@ -444,11 +444,19 @@ describe('analyzePlacement', () => {
   });
 
   it('says so when every sensor is representative and nothing overshoots', () => {
-    const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5) }));
+    const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5), cooling: null }));
     expect(result.recommendations).toEqual([expect.objectContaining({
       id: 'no-changes', action: 'none', sensorId: null, title: 'No placement issues found',
     })]);
     expect(result.recommendations[0].detail).toContain('None of them peaked 1.0 °C or more above the set point');
+  });
+
+  it('qualifies the summary when cooling history could not be assessed', () => {
+    const result = analyzePlacement(input({ sensors: series({ living_temperature: 0, bedroom_temperature: 0 }, 5) }));
+    expect(result.recommendations[0]).toMatchObject({
+      id: 'no-changes', title: 'No placement issues found in the available data',
+    });
+    expect(result.recommendations[0].detail).toContain('Cooling history could not be assessed reliably.');
   });
 
   it('does not claim rooms stayed below the set point without set points', () => {

@@ -441,11 +441,12 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
   expired results are evicted first, then the least recently used); results
   with missing data (a failed read, no eligible room sensors, no thermostat,
   no usable current-window thermostat reference history, missing room
-  temperature data or no thermostat history) are cached for 1 minute so they
-  are retried soon. A separate thermostat temperature entity is not required,
-  and the age of the last change-driven reference value alone does not shorten
-  the cache; stale values still cannot be used in comparisons. Where evidence
-  is missing, values are `null` or events are marked inferred rather than guessed.
+  temperature data, no thermostat history or an ambiguous cooling anchor) are
+  cached for 1 minute so they are retried soon. A separate thermostat
+  temperature entity is not required, and the age of the last change-driven
+  reference value alone does not shorten the cache; stale values still cannot
+  be used in comparisons. Where evidence is missing, values are `null` or
+  events are marked inferred rather than guessed.
 
 All history comes from the InfluxDB bucket Home Assistant writes to (the
 configured `INFLUXDB_BUCKET`), since the Home Assistant recorder keeps only
@@ -520,6 +521,13 @@ about 10 days:
   single `temperature` in `heat_cool`/`auto` is not identified as a heating
   target without `target_temp_low`. The last value
   before the window (within 30 days) gives the state at its start.
+  When fetched values of a field differ but their timestamps collapse into
+  the same millisecond, they aren't ordered: a mode conflict is a gap and clears
+  carried values; an action, target or preset conflict makes that field unknown
+  until reported again. Independent simultaneous fields and identical
+  duplicates (including equivalent numeric targets) remain usable. Single
+  timestamps are still rounded down to milliseconds, so a recovery just after
+  a source-window boundary may be treated as starting at that boundary.
   Only `off`, `heating`, `cooling`, `drying`, `fan` and `idle` are treated as
   known actions. An `unavailable`/`unknown` or unsupported action is unknown
   (not a heating start, stop, satisfaction or zero-runtime evidence).
@@ -539,7 +547,8 @@ about 10 days:
   select is unavailable), the climate entity's preset (`away`, `home`, `sleep`,
   …) is used instead, so wake-ups and returns from Away still work. A
   `none`/`unknown`/`unavailable` preset (or a gap) is unknown, not the previous
-  preset.
+  preset. Conflicting select values in the same millisecond remain unknown
+  instead of falling back to the preset until a later select observation.
 - **Occupancy** comes from each discovered `occupancy` binary sensor (`value`
   0/1, change-driven, so each value holds until the next), matched to a
   temperature entity by their shared Home Assistant device ID, not their names.
@@ -553,15 +562,17 @@ about 10 days:
   timing and physical semantics have not been verified and can differ from
   Ecobee's API; no fixed motion-detection time is assumed. An
   `unavailable`/`unknown` state (a `state` field) makes occupancy unknown until
-  the next value: it isn't carried across an outage, the Follow Me average
-  isn't guessed while a required participant's occupancy is unknown (including
-  a room or built-in sensor with no occupancy stream when others have one), and
-  `occupiedShare` is `null` unless occupancy was known for at least 75% of the
-  time. Reconstructed readings and contribution estimates require the relevant
-  occupancy to be known and stable across the actual source-temperature
-  intervals; a later grid-time change is not applied retroactively. For
-  heating or cooling contributions those intervals must also lie within the
-  relevant active run and comfort setting.
+  the next value; conflicting occupied/unoccupied or unknown/known values in
+  the same millisecond also become unknown. Equivalent duplicate readings
+  such as `on` and `1` remain usable. Occupancy isn't carried across an outage.
+  The Follow Me average isn't guessed while a required participant's occupancy
+  is unknown (including a room or built-in sensor with no occupancy stream
+  when others have one), and `occupiedShare` is `null` unless occupancy was
+  known for at least 75% of the time. Reconstructed readings and contribution
+  estimates require the relevant occupancy to be known and stable across the
+  actual source-temperature intervals; a later grid-time change is not applied
+  retroactively. For heating or cooling contributions those intervals must also
+  lie within the relevant active run and comfort setting.
 - **Thermostat-associated temperatures:** an `isThermostat` entity is not
   automatically the thermostat-reported comfort reading. A shared device, a
   name, a sole temperature entity, or even a matching current snapshot does not
@@ -699,9 +710,13 @@ about 10 days:
   unknown and no no-cooling claim is made. A later positively compatible action
   can establish the window. A successful lookup with no compatible action is
   described as unconfirmed, not proof that cooling did not occur: records may
-  be incomplete or contain incompatible actions. A failed lookup makes no
-  no-cooling claim. Cooling runs merge across reported `idle` spells under
-  30 minutes (heating runs: 20 minutes), never across a
+  be incomplete or contain incompatible actions. Because the lookup filters for
+  cooling actions, the selected window is also checked for conflicting actions
+  in the anchor's millisecond. If it conflicts, the cooling window is unknown,
+  including when an older season exists; a no-change summary says cooling
+  couldn't be assessed reliably, and the result is retried sooner. A failed
+  lookup also makes no no-cooling claim. Cooling runs merge across reported
+  `idle` spells under 30 minutes (heating runs: 20 minutes), never across a
   gap, an unknown action or any other action. Cooling event offsets and daily
   room comparisons use complete source buckets within actual active cooling,
   not the merged idle spells; every room in a comparison must belong to the

@@ -111,6 +111,9 @@ export interface OccupancySample {
 export interface ComfortSample {
   t: number;
   setting: string | null;
+  // Conflicting select values at the same timestamp cannot use the preset
+  // as a substitute until a later unambiguous select observation.
+  ambiguous?: boolean;
 }
 
 export interface SensorSeriesInput {
@@ -900,6 +903,10 @@ function normalizeSetting(raw: string | null): ComfortSetting | null {
   return null;
 }
 
+function hasComfortEvidence(comfort: ComfortSample[] | null | undefined): boolean {
+  return !!comfort && comfort.some((c) => c.ambiguous === true || normalizeSetting(c.setting) !== null);
+}
+
 function coolPointOf(sample: HvacSample): number | null {
   if (sample.coolSetpoint !== undefined && sample.coolSetpoint !== null) return sample.coolSetpoint;
   return /^cool$/i.test(sample.hvacMode ?? '') ? sample.setpoint : null;
@@ -907,26 +914,32 @@ function coolPointOf(sample: HvacSample): number | null {
 
 // Comfort setting changes, time-sorted. A known comfort setting (the Ecobee
 // select) takes precedence; while it is unknown (before its first value, or
-// unavailable) the thermostat's preset is used. Without any known comfort
-// setting the timeline is the preset history. An unknown preset (or a gap) is
-// kept as unknown, so an earlier preset isn't carried past it.
+// unavailable) the thermostat's preset is used, except after a conflicting
+// select observation. Without comfort evidence the timeline is the preset
+// history. An unknown preset (or a gap) is kept as unknown, so an earlier
+// preset isn't carried past it.
 function settingTimeline(comfort: ComfortSample[] | null | undefined, samples: HvacSample[]): SettingChange[] {
   const presets = samples
-    .map((s) => ({ t: s.t, comfort: false, setting: s.gap ? null : normalizeSetting(s.presetMode) }));
-  const known = !!comfort && comfort.some((c) => normalizeSetting(c.setting) !== null);
+    .map((s) => ({ t: s.t, comfort: false, setting: s.gap ? null : normalizeSetting(s.presetMode), ambiguous: false }));
+  const known = hasComfortEvidence(comfort);
   const events = known
-    ? [...comfort!.map((c) => ({ t: c.t, comfort: true, setting: normalizeSetting(c.setting) })), ...presets]
+    ? [...comfort!.map((c) => ({
+      t: c.t, comfort: true, setting: normalizeSetting(c.setting), ambiguous: c.ambiguous === true,
+    })), ...presets]
       .sort((a, b) => a.t - b.t)
     : presets;
   let select: ComfortSetting | null = null;
+  let selectAmbiguous = false;
   let preset: ComfortSetting | null = null;
   const changes: SettingChange[] = [];
   events.forEach((e, i) => {
-    if (e.comfort) select = e.setting;
-    else preset = e.setting;
+    if (e.comfort) {
+      select = e.setting;
+      selectAmbiguous = e.ambiguous;
+    } else preset = e.setting;
     // Settle all events at one time before recording the setting in force.
     if (events[i + 1]?.t === e.t) return;
-    const setting = select ?? preset;
+    const setting = selectAmbiguous ? null : select ?? preset;
     if (changes.length === 0 || changes[changes.length - 1].setting !== setting) changes.push({ t: e.t, setting });
   });
   return changes.some((c) => c.setting !== null) ? changes : [];
@@ -2832,7 +2845,7 @@ function noChanges(
   const missing = rooms.filter((a) => a.out.verdict === 'insufficient').map((a) => a.out.name);
   const insufficientScope = assessed.some((a) => a.incompleteScopedEvidence);
   const incompleteHeating = assessed.some((a) => a.incompleteHeatingEvidence);
-  const incomplete = insufficientScope || incompleteHeating;
+  const incomplete = insufficientScope || incompleteHeating || !cooling.checked;
   const overshootKnown = assessed.every((a) => a.out.overshoot !== null);
   const outliers = assessed.filter((a) => a.out.verdict === 'cold_outlier' || a.out.verdict === 'warm_outlier');
   const overshooting = assessed.filter((a) => (a.out.overshoot ?? 0) >= OVERSHOOT_THRESHOLD);
@@ -2854,7 +2867,9 @@ function noChanges(
   } else {
     parts.push('Overshoot after heating stopped couldn\'t be measured.');
   }
-  if (cooling.checked && !cooling.found) {
+  if (!cooling.checked) {
+    parts.push('Cooling history could not be assessed reliably.');
+  } else if (!cooling.found) {
     parts.push('No cooling action was confirmed with a compatible thermostat mode in the available history for the past year. '
       + 'Gaps or conflicting records do not rule out cooling.');
   } else if (cooling.found && cooling.events === 0) {
@@ -2965,8 +2980,8 @@ function dataset(
     ...sample, hvacAction: compatibleHvacAction(sample.hvacMode, sample.hvacAction),
   })).sort((a, b) => a.t - b.t);
   // The Ecobee comfort setting takes precedence over the thermostat's preset,
-  // which fills in wherever the comfort setting is unknown.
-  const known = !!comfort && comfort.some((c) => normalizeSetting(c.setting) !== null);
+  // which fills in for an unknown setting except after a select conflict.
+  const known = hasComfortEvidence(comfort);
   const timeline = settingTimeline(comfort, raw);
   const rooms = sensors.filter((s) => !s.isThermostat).map((s) => s.id);
   const occupancy = new Map(sensors
