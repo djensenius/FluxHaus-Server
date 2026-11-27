@@ -319,7 +319,7 @@ describe('thermostat, comfort and occupancy history', () => {
     const flux = buildLastCoolingQuery('home_assistant', 'home', new Date(0), new Date(1000));
     expect(flux).toContain('r._field == "hvac_action_str"');
     expect(flux).toContain('r._value == "cooling"');
-    expect(flux).toContain('|> group()\n  |> last()');
+    expect(flux).toContain('|> group()\n  |> sort(columns: ["_time"])\n  |> last()');
     expect(() => buildLastCoolingQuery('home_assistant', 'bad"', new Date(0), new Date(1))).toThrow('Unsafe entity id');
   });
 });

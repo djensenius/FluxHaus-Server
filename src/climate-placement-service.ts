@@ -269,6 +269,7 @@ export function buildLastCoolingQuery(bucket: string, climate: string, start: Da
   |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${climate}" and r._field == "hvac_action_str")
   |> filter(fn: (r) => r._value == "cooling")
   |> group()
+  |> sort(columns: ["_time"])
   |> last()
   |> keep(columns: ["_time"])`;
 }
