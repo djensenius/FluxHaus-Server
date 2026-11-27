@@ -275,6 +275,118 @@ describe('IndoorClimate', () => {
     ]);
   });
 
+  it('associates placement sensors and occupancy by device, not entity names', async () => {
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([
+      ...DISCOVERY.filter((e) => !['sensor.home_current_temperature', 'binary_sensor.home_occupancy'].includes(e.entity_id)),
+      { entity_id: 'sensor.renamed_temperature', device_id: 'dev_home', device_name: 'Home' },
+      { entity_id: 'binary_sensor.hall_motion', device_id: 'dev_home', device_name: 'Home' },
+      { entity_id: 'binary_sensor.renamed_occupancy', device_id: 'dev_kitchen', device_name: 'Kitchen' },
+      { entity_id: 'climate.upstairs', device_id: 'dev_upstairs', device_name: 'Upstairs' },
+      { entity_id: 'sensor.upstairs_temperature', device_id: 'dev_upstairs', device_name: 'Upstairs' },
+      { entity_id: 'binary_sensor.upstairs_occupancy', device_id: 'dev_upstairs', device_name: 'Upstairs' },
+    ]));
+    mockStates({
+      ...STATES,
+      'sensor.renamed_temperature': STATES['sensor.home_current_temperature'],
+      'binary_sensor.hall_motion': STATES['binary_sensor.home_occupancy'],
+      'binary_sensor.renamed_occupancy': STATES['binary_sensor.home_occupancy'],
+      'climate.upstairs': { state: 'off', attributes: {} },
+      'sensor.upstairs_temperature': STATES['sensor.home_current_temperature'],
+      'binary_sensor.upstairs_occupancy': STATES['binary_sensor.bedroom_occupancy'],
+    });
+    indoorClimate = new IndoorClimate({ client: mockClient });
+    await indoorClimate.refresh();
+
+    const placement = indoorClimate.placementDiscovery();
+    expect(placement.climateEntityId).toBe('climate.home');
+    expect(placement.thermostatTemperatureEntityId).toBe('sensor.renamed_temperature');
+    expect(placement.occupancyByTemperature.get('sensor.renamed_temperature')).toBe('binary_sensor.hall_motion');
+    // Two occupancy entities on the Kitchen device are ambiguous, including
+    // one whose name resembles the thermostat's renamed temperature.
+    expect(placement.occupancyByTemperature.has('sensor.kitchen_temperature')).toBe(false);
+    expect(placement.occupancyByTemperature.get('sensor.upstairs_temperature')).toBe('binary_sensor.upstairs_occupancy');
+    expect(indoorClimate.cachedStatus.sensors.find((s) => s.entityId === 'sensor.upstairs_temperature')!.isThermostat)
+      .toBe(true);
+  });
+
+  it('leaves placement identities unknown when devices or matches are ambiguous', async () => {
+    const extra = [
+      { entity_id: 'sensor.second_home_temperature', device_id: 'dev_home', device_name: 'Home' },
+      { entity_id: 'binary_sensor.second_home_occupancy', device_id: 'dev_home', device_name: 'Home' },
+    ];
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([...DISCOVERY, ...extra]));
+    mockStates({
+      ...STATES,
+      'sensor.second_home_temperature': STATES['sensor.home_current_temperature'],
+      'binary_sensor.second_home_occupancy': STATES['binary_sensor.home_occupancy'],
+    });
+    indoorClimate = new IndoorClimate({ client: mockClient, discoveryInterval: 0 });
+    await indoorClimate.refresh();
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+    expect(indoorClimate.placementDiscovery().occupancyByTemperature.has('sensor.home_current_temperature')).toBe(false);
+
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify(DISCOVERY.map((entity) => (
+      entity.entity_id === 'climate.home' ? { ...entity, device_id: null } : entity
+    ))));
+    await indoorClimate.refresh();
+    const placement = indoorClimate.placementDiscovery();
+    expect(placement.thermostatTemperatureEntityId).toBeNull();
+    // Without the climate's device, no unflagged temperature can safely be
+    // distinguished from a thermostat reading for placement analysis.
+    expect(placement.unclassifiedTemperatureIds).toEqual(new Set([
+      'sensor.home_current_temperature', 'sensor.bedroom_temperature', 'sensor.kitchen_temperature',
+    ]));
+  });
+
+  it('does not use missing sensor IDs or a device shared by two climates to select a thermostat', async () => {
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify(DISCOVERY.map((entity) => (
+      entity.entity_id === 'sensor.home_current_temperature' ? { ...entity, device_id: null } : entity
+    ))));
+    indoorClimate = new IndoorClimate({ client: mockClient, discoveryInterval: 0 });
+    await indoorClimate.refresh();
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+    expect(indoorClimate.placementDiscovery().unclassifiedTemperatureIds).toEqual(new Set(['sensor.home_current_temperature']));
+
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([
+      ...DISCOVERY,
+      { entity_id: 'climate.upstairs', device_id: 'dev_home', device_name: 'Home' },
+    ]));
+    mockStates({ ...STATES, 'climate.upstairs': { state: 'off', attributes: {} } });
+    await indoorClimate.refresh();
+    expect(indoorClimate.cachedStatus.sensors.find((s) => s.entityId === 'sensor.home_current_temperature')!.isThermostat)
+      .toBe(true);
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+  });
+
+  it('retains unreadable discovered sensors as possible unclassified temperatures', async () => {
+    const mystery = { entity_id: 'sensor.mystery', device_id: 'dev_unknown', device_name: 'Unknown' };
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([...DISCOVERY, mystery]));
+    indoorClimate = new IndoorClimate({ client: mockClient, discoveryInterval: 0 });
+    await indoorClimate.refresh();
+    expect(indoorClimate.cachedStatus.sensors.map((s) => s.entityId)).not.toContain('sensor.mystery');
+    expect(indoorClimate.placementDiscovery().unclassifiedTemperatureIds).toEqual(new Set(['sensor.mystery']));
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBe('sensor.home_current_temperature');
+
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([
+      ...DISCOVERY, { ...mystery, device_id: 'dev_home' },
+    ]));
+    await indoorClimate.refresh();
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+  });
+
+  it('does not assume a unique occupancy match when another binary sensor on the device is unreadable', async () => {
+    mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([
+      ...DISCOVERY,
+      { entity_id: 'binary_sensor.unreadable_hall', device_id: 'dev_home', device_name: 'Home' },
+    ]));
+    indoorClimate = new IndoorClimate({ client: mockClient });
+    await indoorClimate.refresh();
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBe('sensor.home_current_temperature');
+    expect(indoorClimate.placementDiscovery().occupancyByTemperature.has('sensor.home_current_temperature')).toBe(false);
+    expect(indoorClimate.placementDiscovery().occupancyByTemperature.get('sensor.bedroom_temperature'))
+      .toBe('binary_sensor.bedroom_occupancy');
+  });
+
   it('exposes Influx object ids for the discovered temperature sensors', async () => {
     indoorClimate = new IndoorClimate({ client: mockClient });
     await indoorClimate.refresh();

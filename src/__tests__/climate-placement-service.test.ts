@@ -89,6 +89,16 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
       unit: '°C',
     },
     refresh: vi.fn().mockResolvedValue(undefined),
+    placementDiscovery: vi.fn().mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map([
+        ['sensor.home_current_temperature', 'binary_sensor.home_occupancy'],
+        ['sensor.office_temperature', 'binary_sensor.office_occupancy'],
+        ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+      ]),
+      unclassifiedTemperatureIds: new Set<string>(),
+    }),
   };
   let now = NOW.getTime();
   const deps = {
@@ -552,6 +562,171 @@ describe('ClimatePlacementService', () => {
     });
     expect(result.coverage.occupancyAvailable).toBe(true);
     expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBe(offset);
+  });
+
+  it('uses the discovered thermostat occupancy even when entity names collide', async () => {
+    const { service, deps, rows, calls } = makeDeps();
+    deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map([
+        ['sensor.home_current_temperature', 'binary_sensor.renamed_hall_motion'],
+        ['sensor.office_temperature', 'binary_sensor.home_occupancy'],
+        ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+      ]),
+      unclassifiedTemperatureIds: new Set<string>(),
+    });
+    rows.temperatures = rows.temperatures.filter((row) => row.entity_id !== 'home_current_temperature');
+    (rows.states as Rows).push(
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'renamed_hall_motion' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'home_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'kitchen_occupancy' },
+    );
+    const result = await service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'true',
+    });
+    expect(calls('states')[0]).toContain('r.entity_id == "renamed_hall_motion"');
+    expect(calls('states')[0]).not.toContain('r.entity_id == "office_occupancy"');
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBeNull();
+  });
+
+  it('does not guess thermostat occupancy when discovery cannot uniquely match it', async () => {
+    const { service, deps, rows, calls } = makeDeps();
+    deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map([
+        ['sensor.office_temperature', 'binary_sensor.office_occupancy'],
+        ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+      ]),
+      unclassifiedTemperatureIds: new Set<string>(),
+    });
+    rows.temperatures = rows.temperatures.filter((row) => row.entity_id !== 'home_current_temperature');
+    (rows.states as Rows).push(
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'home_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'office_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'kitchen_occupancy' },
+    );
+    const result = await service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'true',
+    });
+    expect(calls('states')[0]).not.toContain('r.entity_id == "home_occupancy"');
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBeNull();
+  });
+
+  it('uses only the selected climate device’s thermostat reading and leaves other thermostats out of rooms', async () => {
+    const run = async (primary: string | null, climateEntityId = 'climate.home') => {
+      const { service, deps, rows } = makeDeps();
+      deps.indoorClimate.cachedStatus.sensors.unshift(sensor('sensor.second_temperature', 'Second thermostat', true));
+      deps.indoorClimate.placementDiscovery.mockReturnValue({
+        climateEntityId,
+        thermostatTemperatureEntityId: primary,
+        occupancyByTemperature: new Map(),
+        unclassifiedTemperatureIds: new Set<string>(),
+      });
+      rows.temperatures.push({
+        _time: '2026-01-19T06:00:00Z', _value: '15', _measurement: '°C', entity_id: 'second_temperature',
+      });
+      return service.getInsights('7');
+    };
+    const selected = await run('sensor.home_current_temperature');
+    expect(selected.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBe(-1.5);
+    const secondary = selected.sensors.find((s) => s.id === 'second_temperature')!;
+    expect(secondary.isThermostat).toBe(true);
+    expect(secondary.verdictSummary).toContain('not known to be the selected thermostat\'s comfort reading');
+    for (const result of [await run(null), await run('sensor.home_current_temperature', 'climate.other')]) {
+      expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBeNull();
+      expect(result.sensors.find((s) => s.id === 'second_temperature')!.isThermostat).toBe(true);
+      expect(result.sensors.find((s) => s.id === 'home_current_temperature')!.verdictSummary)
+        .toContain('not known to be the selected thermostat\'s comfort reading');
+    }
+  });
+
+  it.each([
+    ['0', '1', -2],
+    ['1', '0', null],
+  ])('uses the primary thermostat occupancy %s, not the secondary %s', async (primary, secondary, expected) => {
+    const { service, deps, rows } = makeDeps();
+    deps.indoorClimate.cachedStatus.sensors.unshift(sensor('sensor.second_temperature', 'Second thermostat', true));
+    deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map([
+        ['sensor.home_current_temperature', 'binary_sensor.home_occupancy'],
+        ['sensor.second_temperature', 'binary_sensor.second_occupancy'],
+        ['sensor.office_temperature', 'binary_sensor.office_occupancy'],
+        ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+      ]),
+      unclassifiedTemperatureIds: new Set<string>(),
+    });
+    rows.temperatures = rows.temperatures.filter((row) => row.entity_id !== 'home_current_temperature');
+    rows.temperatures.push({
+      _time: '2026-01-19T06:00:00Z', _value: '15', _measurement: '°C', entity_id: 'second_temperature',
+    });
+    (rows.states as Rows).push(
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: primary, domain: 'binary_sensor', entity_id: 'home_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: secondary, domain: 'binary_sensor', entity_id: 'second_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'office_occupancy' },
+      { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'kitchen_occupancy' },
+    );
+    const result = await service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'true',
+    });
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBe(expected);
+  });
+
+  it('omits unclassifiable temperatures without reclassifying a secondary thermostat as a room', async () => {
+    const { service, deps, rows, calls, advance } = makeDeps();
+    deps.indoorClimate.cachedStatus.sensors = [
+      sensor('sensor.second_temperature', 'Second thermostat', true),
+      sensor('sensor.home_current_temperature', 'Unknown thermostat', false),
+      sensor('sensor.office_temperature', 'Unknown room', false),
+    ];
+    deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: null,
+      occupancyByTemperature: new Map(),
+      unclassifiedTemperatureIds: new Set(['sensor.home_current_temperature', 'sensor.office_temperature']),
+    });
+    rows.temperatures.push({
+      _time: '2026-01-19T06:00:00Z', _value: '15', _measurement: '°C', entity_id: 'second_temperature',
+    });
+    const result = await service.getInsights('7', { home: 'home_current_temperature', thermostatHome: 'false' });
+    expect(result.coverage.thermostatParticipationSupported).toBe(true);
+    expect(result.sensors.map((s) => [s.id, s.isThermostat])).toEqual([['second_temperature', true]]);
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('7', { home: 'home_current_temperature', thermostatHome: 'false' });
+    expect(calls('temperatures')).toHaveLength(2);
+  });
+
+  it('treats a partially unclassifiable inventory as degraded even with an identified primary and rooms', async () => {
+    const { service, deps, calls, advance } = makeDeps();
+    deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map(),
+      unclassifiedTemperatureIds: new Set(['sensor.office_temperature']),
+    });
+    const result = await service.getInsights('7');
+    expect(result.sensors.map((s) => s.id)).toEqual(['home_current_temperature', 'kitchen_temperature']);
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('7');
+    expect(calls('temperatures')).toHaveLength(2);
+  });
+
+  it('treats an unreadable discovery candidate absent from the snapshot as an incomplete inventory', async () => {
+    const { service, deps, calls, advance } = makeDeps();
+    deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map(),
+      unclassifiedTemperatureIds: new Set(['sensor.mystery']),
+    });
+    const result = await service.getInsights('7');
+    expect(result.sensors.map((s) => s.id)).not.toContain('mystery');
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('7');
+    expect(calls('temperatures')).toHaveLength(2);
   });
 
   it('reuses the window for cooling within it, else fetches the last cooling season', async () => {

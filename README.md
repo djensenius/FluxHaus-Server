@@ -380,10 +380,13 @@ coordinated with a running web server.
 
 `GET /climate/placement-insights?days=14&home=<ids>&sleep=<ids>&away=<ids>&thermostatHome=true|false&thermostatSleep=true|false&thermostatAway=true|false&followMe=true|false`
 (admin and demo users) looks for the sensor that skews the Ecobee comfort
-average. Ecobee heats and cools to the mean of the sensors in the active
-comfort setting (with Follow Me, only the occupied ones, or all of them when
-none is occupied), so one cold sensor keeps the heat on and overheats the other
-rooms, and one warm sensor stops it early (mirrored for cooling). The analysis
+reading. It approximates the effect using a simple mean of the sensors in the
+active comfort setting (with Follow Me, only the occupied ones, or all when
+none is occupied). A cold sensor can then keep the heat on longer, and a warm
+sensor can stop it early (mirrored for cooling). Ecobee documents that its
+displayed temperature may be humidity-adjusted; whether or how this applies to
+the HomeKit reading is unverified. The simple mean is an analysis approximation,
+not a claim that HomeKit reports an unadjusted arithmetic mean. The analysis
 puts the Sleep → Home wake-up first, then cooling and other heat-ups.
 
 - `days` is an integer from 3 to 30, default 14.
@@ -415,7 +418,8 @@ puts the Sleep → Home wake-up first, then cooling and other heat-ups.
   choices don't establish a sensor-free setting:
   [Ecobee uses its thermostat sensor when the last sensor is removed](https://www.ecobee.com/home/developer/api/documentation/v1/objects/Climate.shtml).
   A `participation-empty-<setting>` recommendation asks you to check the
-  setting; actual participation stays unknown rather than being invented.
+  setting; actual room and thermostat participation stays unknown rather than
+  categorically excluding rooms or inventing a sensor-free setting.
 - Results are computed on request and cached per `days` and participation
   (including each thermostat tri-state) for 15 minutes (at most 32 at once:
   expired results are evicted first, then the least recently used); results
@@ -473,45 +477,68 @@ about 10 days:
   …) is used instead, so wake-ups and returns from Away still work. A
   `none`/`unknown`/`unavailable` preset (or a gap) is unknown, not the previous
   preset.
-- **Occupancy** is each room's `binary_sensor.<room>_occupancy` (`value` 0/1,
-  change-driven, so each value holds until the next), matched to
-  `sensor.<room>_temperature` (`home_occupancy` to the thermostat's
-  `home_current_temperature` for the physical built-in sensor when available).
-  Sensors without temperature (e.g. a door) are ignored. Used for Follow Me
-  (`coverage.occupancyAvailable`). HomeKit occupancy semantics can differ
-  from Ecobee's API; no fixed motion-detection time is assumed. An
+- **Occupancy** comes from each discovered `occupancy` binary sensor (`value`
+  0/1, change-driven, so each value holds until the next), matched to a
+  temperature entity by their shared Home Assistant device ID, not their names.
+  For the thermostat, analysis assumes that a uniquely matched occupancy entity
+  on the primary climate device reflects its physical built-in sensor. Missing,
+  multiple or unclassifiable binary-sensor matches are unknown; sensors without
+  temperature (e.g. a door) are ignored. Used for Follow Me (`coverage.occupancyAvailable`).
+  Current device associations are applied to the history; an entity reassigned
+  during the window may not have had the same device then. HomeKit's occupancy
+  timing and physical semantics have not been verified and can differ from
+  Ecobee's API; no fixed motion-detection time is assumed. An
   `unavailable`/`unknown` state (a `state` field) makes occupancy unknown until
   the next value: it isn't carried across an outage, the Follow Me average
   isn't guessed while a required participant's occupancy is unknown (including
   a room or built-in sensor with no occupancy stream when others have one), and
   `occupiedShare` is `null` unless occupancy was known for at least 75% of the
-  time.
+  time. Reconstructed readings and contribution estimates require the relevant
+  occupancy to be known and stable across the actual source-temperature
+  intervals; a later grid-time change is not applied retroactively. For
+  heating or cooling contributions those intervals must also lie within the
+  relevant active run and comfort setting.
 - **The thermostat's current temperature** (`isThermostat`, named
-  "Thermostat (Ecobee average)") is Ecobee's averaged comfort reading, not a
-  room or a separate reading of the physical sensor. It is the effective
-  average whenever fresh, regardless of built-in participation. Without it,
-  reconstruction needs the active setting and its complete configured room
-  list, with every required room discovered and its temperature fresh. The
+  "Thermostat (Ecobee average)" for compatibility) is the thermostat-reported
+  comfort reading, not a room or a separate reading of the physical sensor.
+  Placement uses it as the effective comfort reference whenever fresh, regardless
+  of built-in participation. The aggregate must be the unique temperature
+  entity associated with the selected primary climate device; other thermostat
+  sensors are never treated as rooms and their summaries don't claim they are
+  the selected reading. Missing or ambiguous device/temperature associations
+  leave this reference unknown. Temperature sensors that cannot
+  safely be distinguished from thermostat readings are omitted from placement
+  analysis. An unreadable or classless indoor-looking discovered sensor can
+  also be an unclassified temperature candidate. These prevent membership
+  fitting and cause a degraded response; the indoor snapshot is unchanged.
+  Without the reported reading, approximation needs the active setting and its complete
+  configured room list, with every required room discovered and its temperature
+  fresh. The
   built-in sensor must be explicitly excluded, or be known unoccupied with
   Follow Me on and at least one configured room known occupied. Where Follow
-  Me might change the average, the required occupancies must also be known.
+  Me might change the mean, the required occupancies must also be known.
   If the built-in sensor might count, its independent temperature is unavailable,
-  so a room-only mean isn't presented as the actual comfort average.
+  so an incomplete room-only mean isn't presented as the comfort reading.
   Follow Me off doesn't require occupancy; when the built-in sensor is
-  explicitly excluded, a single configured room supplies the average even
+  explicitly excluded, a single configured room supplies the approximation even
   without occupancy history. Missing required members or evidence makes the
-  average unknown rather than partial. The thermostat is never judged as an
+  reference unknown rather than partial. The thermostat is never judged as an
   outlier, and rooms are compared with each other without it. Which rooms each
-  setting averages can be estimated from the aggregate only where the physical
-  thermostat sensor is explicitly excluded: every subset of rooms is scored over the times
-  all its members have readings (so a sparse or missing room doesn't block the
-  others), provided configured participants have the required temperature
-  and occupancy evidence. Rooms in every subset within 0.1 °C of the best fit
+  setting may use can be estimated under the simple mean approximation only
+  where the physical thermostat sensor is explicitly excluded: every plausible
+  subset is scored over the same samples with temperatures from all discovered
+  rooms and the reported reading, a stable setting, and stable known occupancy
+  when Follow Me might apply. An absent room or too few complete comparable
+  samples leaves membership unknown; intermittent rooms can still be fitted
+  when at least 24 complete samples remain. With Follow Me omitted, mixed
+  occupancy samples aren't comparable and are skipped. Rooms in every subset
+  within 0.1 °C of the best fit
   (itself within 0.2 °C) count as in. The estimate shapes the wording ("The
   thermostat's readings suggest it's in your Home comfort setting") when
   participation isn't configured (estimated separately from the cooling data
   for cooling tips), and when it contradicts the configured
-  participation a `participation-mismatch-<setting>` recommendation says so.
+  participation a `participation-mismatch-<setting>` recommendation suggests
+  checking the setting, subject to the model approximation.
   Membership isn't estimated when Follow Me is on or omitted and there's no
   occupancy history.
   - A *morning warm-up* is a reported heating start (`hvac_action` changing
@@ -603,8 +630,9 @@ about 10 days:
   60% of at least 3 days) and also stands out from the median room, so one
   outlier pulling the house average doesn't make every other room look skewed.
   `periodOffsets` (`sleep`, `wake`, `home`, `heatingRuns`, `cooling`) are mean
-  offsets from the effective comfort average (or `null` when it can't be
-  established). `wakeOffset` and `coolingOffset` repeat the corresponding wake
+  offsets from the thermostat-reported comfort reading, or from the complete
+  room-only approximation where safe (otherwise `null`). `wakeOffset` and
+  `coolingOffset` repeat the corresponding wake
   and cooling values. `wakeOvershoot` is how far
   the room peaked over the Home set point in the 2 hours after waking (against
   the set point at the start, ending early at a set point, mode or preset
@@ -654,7 +682,8 @@ about 10 days:
     (different sets of rooms can share the same mean). The exception is a
     single configured room with the physical thermostat sensor explicitly
     excluded: it counts and can supply the average even without occupancy.
-    A fresh thermostat aggregate is always usable. Send `followMe=false`
+    A fresh primary thermostat reading is usable regardless of built-in
+    membership. Send `followMe=false`
     to have every member of a setting count. The
     same applies to other heat-ups (over Home) and cooling (over that
     setting's cooling runs, from the cooling data).
@@ -710,7 +739,7 @@ about 10 days:
     "recommendationIds": ["wake-bedroom"]}],
   "recommendations": [{"id": "wake-bedroom", "severity": "medium", "sensorId": "bedroom_temperature",
     "action": "move", "title": "Bedroom is holding the morning warm-up on",
-    "detail": "In 13 of 14 wake-ups (Sleep → Home), Bedroom read 1.5 °C below the comfort average Ecobee heats to. Because it's in your Home comfort setting, Ecobee keeps heating until it warms up, so Living, Kitchen and Office ended up 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after waking. Move it to an interior wall at about chest height, away from windows, doors and vents, or remove it from Home. …",
+    "detail": "In 13 of 14 wake-ups (Sleep → Home), Bedroom read 1.5 °C below the reported or approximated comfort reading. Because it's in your Home comfort setting, Ecobee keeps heating until it warms up, so Living, Kitchen and Office ended up 0.5, 0.5 and 0.5 °C over the Home set point on average in the 2 hours after waking. Move it to an interior wall at about chest height, away from windows, doors and vents, or remove it from Home. …",
     "mode": "heating", "period": "wake", "comfortSetting": "home",
     "affectedSensorIds": ["living_temperature", "kitchen_temperature", "office_temperature"],
     "likelyCauses": ["near a window or exterior wall"]}]

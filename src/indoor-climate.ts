@@ -92,6 +92,17 @@ export interface IndoorClimateStatus {
   unit: string | null;
 }
 
+// Internal placement metadata; kept separate from the public indoor snapshot.
+export interface PlacementDiscovery {
+  climateEntityId: string | null;
+  thermostatTemperatureEntityId: string | null;
+  // Only an unambiguous occupancy-class entity on the same device is used.
+  // Whether HomeKit's occupancy represents the physical sensor is an assumption.
+  occupancyByTemperature: ReadonlyMap<string, string>;
+  // Includes discovered sensors whose device or sensor class is unresolved.
+  unclassifiedTemperatureIds: ReadonlySet<string>;
+}
+
 // Returned by thermostat controls. `confirmed` is false when Home Assistant
 // accepted the change but the thermostat had not reported it by the last read,
 // so the snapshot may still show the previous values.
@@ -488,6 +499,13 @@ export default class IndoorClimate {
 
   private discovered: DiscoveredEntity[] = [];
 
+  private placement: PlacementDiscovery = {
+    climateEntityId: null,
+    thermostatTemperatureEntityId: null,
+    occupancyByTemperature: new Map(),
+    unclassifiedTemperatureIds: new Set(),
+  };
+
   private lastDiscoveryAttempt = 0;
 
   private discoveryFailing = false;
@@ -550,6 +568,10 @@ export default class IndoorClimate {
     return this.cachedStatus.sensors
       .map((sensor) => objectId(sensor.entityId))
       .filter((id) => SAFE_NAME.test(id));
+  }
+
+  public placementDiscovery(): PlacementDiscovery {
+    return this.placement;
   }
 
   public setTemperature(request: ThermostatTemperatureRequest): Promise<ThermostatControlResult> {
@@ -1078,6 +1100,7 @@ export default class IndoorClimate {
         .filter(({ entity }) => entity.entityId.startsWith('climate.'))
         .sort((a, b) => a.entity.entityId.localeCompare(b.entity.entityId));
       const climate = climates[0];
+      const primaryDeviceId = climate?.entity.deviceId ?? null;
       const climateDeviceIds = new Set(climates
         .map(({ entity }) => entity.deviceId)
         .filter((id): id is string => !!id));
@@ -1101,7 +1124,6 @@ export default class IndoorClimate {
 
       // Readings from sensors on the primary thermostat's own device, used when
       // the climate entity omits current_temperature / current_humidity.
-      const primaryDeviceId = climate?.entity.deviceId ?? null;
       const primaryState = (deviceClass: string): HaState | null => {
         if (!primaryDeviceId) return null;
         const match = entries.find(({ entity, state }) => (
@@ -1132,6 +1154,45 @@ export default class IndoorClimate {
         this.markReported(this.unsettled);
       }
 
+      const devices = new Map(entities.map((entity) => [entity.entityId, entity.deviceId]));
+      const unresolvedClimate = climates.length === 0 || climates.some(({ entity }) => !entity.deviceId);
+      const primarySensors = sensors.filter((sensor) => primaryDeviceId && devices.get(sensor.entityId) === primaryDeviceId);
+      const primaryClimates = climates.filter(({ entity }) => primaryDeviceId && entity.deviceId === primaryDeviceId);
+      const occupancyEntities = new Map<string, Set<string>>();
+      const unclassifiedBinaryDevices = new Set<string>();
+      entries.forEach(({ entity, state }) => {
+        if (!entity.deviceId || !entity.entityId.startsWith('binary_sensor.')) return;
+        const deviceClass = toStringOrNull(state?.attributes?.device_class);
+        if (!deviceClass) unclassifiedBinaryDevices.add(entity.deviceId);
+        if (deviceClass !== 'occupancy') return;
+        const ids = occupancyEntities.get(entity.deviceId) ?? new Set<string>();
+        ids.add(entity.entityId);
+        occupancyEntities.set(entity.deviceId, ids);
+      });
+      const occupancyByTemperature = new Map<string, string>();
+      // An unreadable or classless discovered sensor might be a temperature
+      // sensor; it must not disappear as a plausible room in subset fitting.
+      const temperatureIds = new Set(sensors.map((sensor) => sensor.entityId));
+      const unclassifiedTemperatureIds = new Set(entries
+        .filter(({ entity, state }) => entity.entityId.startsWith('sensor.')
+          && !temperatureIds.has(entity.entityId) && !toStringOrNull(state?.attributes?.device_class))
+        .map(({ entity }) => entity.entityId));
+      sensors.forEach((sensor) => {
+        const device = devices.get(sensor.entityId);
+        if (!sensor.isThermostat && (unresolvedClimate || !device)) unclassifiedTemperatureIds.add(sensor.entityId);
+        const ids = device ? occupancyEntities.get(device) : undefined;
+        if (device && ids?.size === 1 && !unclassifiedBinaryDevices.has(device)) {
+          occupancyByTemperature.set(sensor.entityId, [...ids][0]);
+        }
+      });
+      this.placement = {
+        climateEntityId: climate?.entity.entityId ?? null,
+        thermostatTemperatureEntityId: !unresolvedClimate && primaryClimates.length === 1 && primarySensors.length === 1
+          && ![...unclassifiedTemperatureIds].some((id) => !devices.get(id) || devices.get(id) === primaryDeviceId)
+          ? primarySensors[0].entityId : null,
+        occupancyByTemperature,
+        unclassifiedTemperatureIds,
+      };
       this.knownTemperatureIds = new Set(sensors.map((sensor) => sensor.entityId));
       this.thermostatReadSeq = readSeq;
       this.cachedStatus = {

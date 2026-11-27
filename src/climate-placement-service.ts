@@ -6,7 +6,7 @@
 // than an error.
 import type { InfluxDBClient } from './clients/influxdb';
 import { fluxBucketLiteral } from './clients/safe-params';
-import type { IndoorClimateStatus } from './indoor-climate';
+import type { IndoorClimateStatus, PlacementDiscovery } from './indoor-climate';
 import {
   analyzePlacement,
   BUCKET_MS,
@@ -124,6 +124,7 @@ function configKey(days: number, config: ParticipationConfig | null): string {
 export interface PlacementIndoorClimate {
   cachedStatus: IndoorClimateStatus;
   refresh(): Promise<void>;
+  placementDiscovery(): PlacementDiscovery;
 }
 
 export interface ClimatePlacementDeps {
@@ -139,6 +140,7 @@ export interface IndoorSensor {
   id: string;
   name: string;
   isThermostat: boolean;
+  occupancyId?: string;
 }
 
 function objectId(entityId: string): string {
@@ -222,9 +224,7 @@ function plausibleSetpoint(value: number | null): number | null {
   return value !== null && value >= MIN_PLAUSIBLE_SETPOINT_C && value <= MAX_PLAUSIBLE_SETPOINT_C ? value : null;
 }
 
-// The occupancy entity for a temperature sensor: Ecobee names both after the
-// room (`bedroom_temperature` / `bedroom_occupancy`; the thermostat's
-// `home_current_temperature` / `home_occupancy`).
+// Conventional Ecobee entity naming; not reliable evidence of a device match.
 export function occupancyId(sensorId: string): string {
   return `${sensorId.replace(/(_current)?_temperature$/, '')}_occupancy`;
 }
@@ -505,9 +505,27 @@ export class ClimatePlacementService {
       await indoorClimate.refresh().catch(() => {});
     }
     const status = indoorClimate.cachedStatus;
+    const discovery = indoorClimate.placementDiscovery();
+    const matchingClimate = !!status.thermostat && discovery.climateEntityId === status.thermostat.entityId;
+    const incompleteSensorInventory = [...discovery.unclassifiedTemperatureIds].some((entityId) => {
+      const sensor = status.sensors.find((s) => s.entityId === entityId);
+      return SAFE_OBJECT_ID.test(objectId(entityId)) && !OUTDOOR_PATTERN.test(entityId)
+        && (!sensor || !OUTDOOR_PATTERN.test(sensor.name));
+    });
     const sensors: IndoorSensor[] = status.sensors
-      .map((s) => ({ id: objectId(s.entityId), name: s.name, isThermostat: s.isThermostat }))
+      .filter((s) => !discovery.unclassifiedTemperatureIds.has(s.entityId))
+      .map((s) => {
+        const occupancy = matchingClimate ? discovery.occupancyByTemperature.get(s.entityId) : undefined;
+        const id = occupancy?.startsWith('binary_sensor.') ? objectId(occupancy) : undefined;
+        return {
+          id: objectId(s.entityId), name: s.name, isThermostat: s.isThermostat,
+          occupancyId: id && SAFE_OBJECT_ID.test(id) ? id : undefined,
+        };
+      })
       .filter((s) => SAFE_OBJECT_ID.test(s.id) && !OUTDOOR_PATTERN.test(s.id) && !OUTDOOR_PATTERN.test(s.name));
+    const primaryId = matchingClimate && discovery.thermostatTemperatureEntityId
+      ? objectId(discovery.thermostatTemperatureEntityId) : null;
+    const primaryThermostatId = sensors.some((s) => s.isThermostat && s.id === primaryId) ? primaryId : null;
     if (config) {
       const selected = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []);
       const thermostatIds = new Set(sensors.filter((s) => s.isThermostat).map((s) => s.id));
@@ -525,12 +543,16 @@ export class ClimatePlacementService {
 
     const climateId = status.thermostat ? objectId(status.thermostat.entityId) : null;
     const entities: StateEntities | null = climateId && SAFE_OBJECT_ID.test(climateId)
-      ? { climate: climateId, comfort: `${climateId}_current_mode`, occupancy: sensors.map((s) => occupancyId(s.id)) }
+      ? {
+        climate: climateId,
+        comfort: `${climateId}_current_mode`,
+        occupancy: [...new Set(sensors.map((s) => s.occupancyId).filter((id): id is string => !!id))],
+      }
       : null;
     const unit = status.thermostat?.temperatureUnit;
 
-    // Missing room discovery or thermostat counts as degraded so it is retried soon.
-    let degraded = sensors.every((s) => s.isThermostat) || !status.thermostat;
+    // Missing or unclassifiable discovery is retried soon.
+    let degraded = sensors.every((s) => s.isThermostat) || !status.thermostat || !primaryThermostatId || incompleteSensorInventory;
     const [heat, lastCooling] = await Promise.all([
       this.fetchWindow(sensors, entities, unit, start, end),
       entities ? this.fetchLastCooling(entities.climate, end).catch((err) => {
@@ -570,6 +592,8 @@ export class ClimatePlacementService {
       windowDays: days,
       timeZone: resolveTimeZone(this.deps.timeZone),
       sensors: series,
+      primaryThermostatId,
+      incompleteSensorInventory,
       hvac,
       comfort: states?.comfort ?? null,
       participation: config,
@@ -609,7 +633,8 @@ export class ClimatePlacementService {
       }) : Promise.resolve(null),
     ]);
     const withOccupancy = series.map((s) => {
-      const occupancy = states?.occupancy.get(occupancyId(s.id));
+      const id = sensors.find((sensor) => sensor.id === s.id)?.occupancyId;
+      const occupancy = id ? states?.occupancy.get(id) : undefined;
       return occupancy ? { ...s, occupancy } : s;
     });
     if (unknownUnitWindows > 0 || series.some((s) => s.points.length === 0)) degraded = true;

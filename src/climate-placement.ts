@@ -1,10 +1,8 @@
-// Pure analysis behind GET /climate/placement-insights. An Ecobee heats and
-// cools to the average of the sensors in the active comfort setting (with
-// Follow Me, only the occupied ones), which the thermostat reports as its
-// current temperature. This finds the room sensors that skew that average —
-// above all during the Sleep → Home warm-up (Smart Recovery), but also while
-// cooling and during other heat-ups — says when rooms are warm (or cool)
-// without the system running, and suggests what to change. No I/O here — see
+// Pure analysis behind GET /climate/placement-insights. The thermostat-reported
+// comfort reading is preferred; a simple mean of participating sensors is an
+// approximation, not a proven description of HomeKit's reading. The analysis
+// looks for room sensors that may skew it during warm-ups and cooling, and for
+// warmth or coolness without the system running. No I/O here — see
 // climate-placement-service.ts for data fetching and caching.
 
 // Local hours (server time zone) in which a heat-up counts as a morning warm-up.
@@ -83,9 +81,9 @@ export const PASSIVE_SHARE = 0.5;
 export const PASSIVE_MIN_SAMPLES = 96;
 // Heating running for less than this share of the window counts as rare.
 export const RARE_RUNTIME_SHARE = 0.1;
-// Which room sensors Ecobee averages is estimated from the thermostat's
-// reading: subsets of rooms within FIT_MARGIN of the best fit, which must be
-// within FIT_TOLERANCE on average over at least FIT_MIN_SAMPLES points.
+// Possible room participation is estimated using a simple mean approximation:
+// subsets within FIT_MARGIN of the best fit, itself within FIT_TOLERANCE over
+// at least FIT_MIN_SAMPLES comparable points.
 export const FIT_TOLERANCE = 0.2;
 export const FIT_MARGIN = 0.1;
 export const FIT_MIN_SAMPLES = 24;
@@ -118,8 +116,8 @@ export interface ComfortSample {
 export interface SensorSeriesInput {
   id: string;
   name: string;
-  // The thermostat's current temperature: Ecobee's average of the sensors in
-  // the comfort setting, not a room of its own.
+  // The thermostat-reported comfort reading, not a room or a separately
+  // measured physical thermostat sensor.
   isThermostat: boolean;
   // °C averages over [t, t + BUCKET_MS), t in epoch milliseconds.
   points: { t: number; v: number }[];
@@ -172,6 +170,12 @@ export interface PlacementInput {
   windowDays: number;
   timeZone: string;
   sensors: SensorSeriesInput[];
+  // The aggregate sensor associated with the selected climate device; null
+  // or omitted when that association isn't known.
+  primaryThermostatId?: string | null;
+  // Discovery found temperature entities it could not classify as rooms or
+  // thermostats, so unmodeled room subsets may still be plausible.
+  incompleteSensorInventory?: boolean;
   // null when thermostat history could not be read.
   hvac: HvacSample[] | null;
   // Comfort setting history; where known it takes precedence over the samples' presetMode.
@@ -222,8 +226,8 @@ export interface PlacementSensor {
   overshoot: number | null;
   sampleCount: number;
   classification: SensorClassification;
-  // Offsets from the effective comfort average (the thermostat's reading,
-  // else the participating / occupied sensors' mean).
+  // Offsets from the thermostat's reported comfort reading, or an approximate
+  // mean of participating / occupied sensors when that reading is unavailable.
   wakeOffset: number | null;
   coolingOffset: number | null;
   participation: Participation;
@@ -769,6 +773,12 @@ function settingAt(timeline: SettingChange[], t: number): ComfortSetting | null 
   return index >= 0 ? timeline[index].setting : null;
 }
 
+function settingDuring(timeline: SettingChange[], window: Run): ComfortSetting | null {
+  const setting = settingAt(timeline, window.from);
+  const next = firstIndexAfter(timeline, window.from, timeOf, true);
+  return setting !== null && (timeline[next]?.t ?? Number.POSITIVE_INFINITY) >= window.to ? setting : null;
+}
+
 function homeOvershootWindow(timeline: SettingChange[], window: OvershootWindow): OvershootWindow | null {
   if (timeline.length === 0) return window;
   if (settingAt(timeline, window.from) !== 'home') return null;
@@ -942,6 +952,36 @@ function occupiedAt(occupancy: OccupancySample[] | undefined, t: number): boolea
   return index >= 0 ? occupancy[index].occupied : null;
 }
 
+// Occupancy must be known and unchanged throughout the source interval, not
+// merely at the later grid time. A change exactly at the end is not inside it.
+function occupiedDuring(occupancy: OccupancySample[] | undefined, window: Run): boolean | null {
+  const initial = occupiedAt(occupancy, window.from);
+  if (initial === null || !occupancy) return null;
+  for (let i = firstIndexAfter(occupancy, window.from, timeOf, true);
+    i < occupancy.length && occupancy[i].t < window.to; i += 1) {
+    if (occupancy[i].occupied !== initial) return null;
+  }
+  return initial;
+}
+
+// The combined extent of the actual 15-minute source buckets, including any
+// gap between carried-forward and newer readings.
+function sourceWindow(grid: Grid, t: number, ids: string[]): Run | null {
+  let from = Number.POSITIVE_INFINITY;
+  let to = Number.NEGATIVE_INFINITY;
+  for (const id of ids) {
+    const source = grid.sources.get(id)?.get(t);
+    if (source === undefined) return null;
+    from = Math.min(from, source);
+    to = Math.max(to, source + BUCKET_MS);
+  }
+  return from < to ? { from, to } : null;
+}
+
+function containsWindow(outer: Run, inner: Run): boolean {
+  return inner.from >= outer.from && inner.to <= outer.to;
+}
+
 // Occupied and known milliseconds in [from, to), holding each value until the
 // next; unknown spells (and time before the first value) aren't known.
 function occupiedTime(occupancy: OccupancySample[], from: number, to: number): { occupied: number; known: number } {
@@ -976,12 +1016,13 @@ function occupiedShare(occupancy: OccupancySample[] | undefined, windows: Run[])
 }
 
 // ---------------------------------------------------------------------------
-// The effective comfort average Ecobee heats or cools to.
+// The reported or approximated comfort reading.
 
 interface Model {
   rooms: string[];
   roomSet: Set<string>;
   thermostatId: string | null;
+  incompleteSensorInventory: boolean;
   config: ParticipationConfig | null;
   occupancy: Map<string, OccupancySample[]>;
   timeline: SettingChange[];
@@ -989,42 +1030,55 @@ interface Model {
   estimated: Map<string, Participation> | null;
 }
 
-// An occupancy stream can be missing, not yet reported, or in an outage.
-function occupancyUnknown(model: Model, id: string, t: number): boolean {
-  return occupiedAt(model.occupancy.get(id), t) === null;
-}
-
 // An empty room list and an excluded thermostat cannot describe a sensor-free
 // Ecobee setting: its thermostat sensor is used when the last sensor is removed.
-function thermostatMemberIn(model: Model, setting: ComfortSetting): boolean | null {
-  const member = model.config?.thermostat?.[setting] ?? null;
-  return member === false && model.config?.[setting]?.length === 0 ? null : member;
+function contradictorySetting(config: ParticipationConfig | null, setting: ComfortSetting): boolean {
+  return config?.[setting]?.length === 0 && config.thermostat?.[setting] === false;
 }
 
-// The thermostat's reading when fresh (it is Ecobee's average); otherwise the
-// mean of the fully configured participating rooms when the physical
-// thermostat sensor is excluded, or provably left out by Follow Me. Never
-// reconstruct from an incomplete membership, temperature or occupancy set.
-function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSetting | null): number | null {
+function thermostatMemberIn(model: Model, setting: ComfortSetting): boolean | null {
+  const member = model.config?.thermostat?.[setting] ?? null;
+  return contradictorySetting(model.config, setting) ? null : member;
+}
+
+// Prefer the fresh thermostat-reported reading; otherwise approximate it with
+// the complete participating rooms only when the built-in sensor cannot
+// count. Occupancy must be stable across all source buckets used.
+function effectiveAt(
+  model: Model,
+  grid: Grid,
+  t: number,
+  setting: ComfortSetting | null,
+  referenceId?: string,
+  bounds?: Run,
+): number | null {
   const own = model.thermostatId === null ? undefined : grid.values.get(model.thermostatId)?.get(t);
-  if (own !== undefined) return own;
+  if (own !== undefined) {
+    const window = sourceWindow(grid, t, [model.thermostatId!, ...(referenceId ? [referenceId] : [])]);
+    if (!window || (bounds && !containsWindow(bounds, window))) return null;
+    if (setting && settingDuring(model.timeline, window) !== setting) return null;
+    return own;
+  }
   const configured = setting ? model.config?.[setting] : null;
   if (!setting || !configured?.length || configured.some((id) => !model.roomSet.has(id))) return null;
   const fresh = (id: string) => grid.values.get(id)?.has(t) === true;
+  const window = sourceWindow(grid, t, [...(referenceId ? [referenceId] : []), ...configured.filter(fresh)]);
+  if (!window || (bounds && !containsWindow(bounds, window)) || settingDuring(model.timeline, window) !== setting) return null;
+  const occupied = (id: string) => occupiedDuring(model.occupancy.get(id), window);
   let members = configured;
   const followMe = model.config?.followMe ?? null;
   const thermostat = thermostatMemberIn(model, setting);
   if (thermostat !== false && (followMe !== true || model.thermostatId === null
-    || occupiedAt(model.occupancy.get(model.thermostatId), t) !== false)) return null;
+    || occupied(model.thermostatId) !== false)) return null;
   // The only participant counts regardless of occupancy or Follow Me.
   if (followMe !== false && !(thermostat === false && members.length === 1)) {
-    if (members.some((id) => occupancyUnknown(model, id, t))) return null;
-    const occupied = members.filter((id) => occupiedAt(model.occupancy.get(id), t) === true);
+    if (members.some((id) => occupied(id) === null)) return null;
+    const occupiedRooms = members.filter((id) => occupied(id) === true);
     // With no occupied room, Follow Me also averages the thermostat if it participates.
-    if (thermostat !== false && occupied.length === 0) return null;
-    if (occupied.length > 0 && occupied.length < members.length) {
+    if (thermostat !== false && occupiedRooms.length === 0) return null;
+    if (occupiedRooms.length > 0 && occupiedRooms.length < members.length) {
       if (followMe === null) return null;
-      members = occupied;
+      members = occupiedRooms;
     }
   }
   if (!members.every(fresh)) return null;
@@ -1033,31 +1087,35 @@ function effectiveAt(model: Model, grid: Grid, t: number, setting: ComfortSettin
 
 // Whether a room is in a setting: configured, else estimated (null: unknown).
 function memberIn(model: Model, id: string, setting: ComfortSetting): boolean | null {
+  if (contradictorySetting(model.config, setting)) return null;
   const configured = model.config?.[setting];
   if (configured !== null && configured !== undefined) return configured.includes(id);
   return model.estimated?.get(id)?.[setting] ?? null;
 }
 
-// With Follow Me on, whether a room (taken as in the setting) counted at t.
-function followMeCounts(model: Model, id: string, t: number, setting: ComfortSetting): boolean | null {
+// With Follow Me on, whether a room (taken as in the setting) counted during
+// the source interval.
+function followMeCounts(model: Model, id: string, window: Run, setting: ComfortSetting): boolean | null {
   const configured = model.config?.[setting];
   if (thermostatMemberIn(model, setting) === false && configured?.length === 1 && configured[0] === id) return true;
-  if (occupancyUnknown(model, id, t)) return null;
-  if (occupiedAt(model.occupancy.get(id), t)) return true;
+  const occupied = (sensorId: string) => occupiedDuring(model.occupancy.get(sensorId), window);
+  const roomOccupied = occupied(id);
+  if (roomOccupied === null) return null;
+  if (roomOccupied) return true;
   // Without a room list, discovery may not include every participant.
-  let unknown = configured === null || configured === undefined;
+  let unknown = configured === null || configured === undefined || contradictorySetting(model.config, setting);
   const others = new Set([...model.rooms, ...(configured ?? [])]);
   for (const other of others) {
     if (other === id) continue;
     const otherMember = memberIn(model, other, setting);
-    const occupied = occupiedAt(model.occupancy.get(other), t);
-    if (otherMember !== false && occupied !== false) {
-      if (otherMember === true && occupied === true) return false;
+    const otherOccupied = occupied(other);
+    if (otherMember !== false && otherOccupied !== false) {
+      if (otherMember === true && otherOccupied === true) return false;
       unknown = true;
     }
   }
   const thermostat = thermostatMemberIn(model, setting);
-  const thermostatOccupied = model.thermostatId === null ? null : occupiedAt(model.occupancy.get(model.thermostatId), t);
+  const thermostatOccupied = model.thermostatId === null ? null : occupied(model.thermostatId);
   if (thermostat !== false && thermostatOccupied !== false) {
     if (thermostat === true && thermostatOccupied === true) return false;
     unknown = true;
@@ -1065,17 +1123,17 @@ function followMeCounts(model: Model, id: string, t: number, setting: ComfortSet
   return unknown ? null : true;
 }
 
-// Whether a room counted toward Ecobee's average at t, if it's in the setting
-// in force (membership is reported separately; a known non-member never
+// Whether a room counted in the approximation during the source interval, if
+// it's in the setting in force (a known non-member never
 // counts): always without Follow Me; with it, while occupied — or unoccupied
 // while no member was (Ecobee then averages all of them). When Follow Me isn't
 // given, only where it would count either way. Null when that can't be told.
-function contributesAt(model: Model, id: string, t: number, setting: ComfortSetting | null): boolean | null {
+function contributesAt(model: Model, id: string, window: Run, setting: ComfortSetting | null): boolean | null {
   if (setting === null) return null;
   if (memberIn(model, id, setting) === false) return false;
   const followMe = model.config?.followMe ?? null;
   if (followMe === false) return true;
-  const counts = followMeCounts(model, id, t, setting);
+  const counts = followMeCounts(model, id, window, setting);
   return followMe === true || counts === true ? counts : null;
 }
 
@@ -1089,14 +1147,23 @@ interface Contribution {
   coverage: number;
 }
 
-function contributionShare(model: Model, grid: Grid, windows: Run[], id: string): Contribution | null {
+function contributionShare(model: Model, grid: Grid, windows: Run[], id: string, activeRuns?: Run[]): Contribution | null {
   let total = 0;
   let known = 0;
   let counted = 0;
   windows.forEach((w) => {
     for (let i = firstIndexAfter(grid.times, w.from, itself, true); i < grid.times.length && grid.times[i] <= w.to; i += 1) {
       const t = grid.times[i];
-      const c = contributesAt(model, id, t, settingAt(model.timeline, t));
+      const roomWindow = sourceWindow(grid, t, [id]);
+      const setting = roomWindow ? settingDuring(model.timeline, roomWindow) : null;
+      const candidates = [
+        id, ...(model.thermostatId ? [model.thermostatId] : []), ...(setting ? model.config?.[setting] ?? [] : []),
+      ].filter((sensorId) => grid.sources.get(sensorId)?.has(t));
+      const window = roomWindow ? sourceWindow(grid, t, candidates) : null;
+      const comparable = window && containsWindow(w, window)
+        && (!activeRuns || activeRuns.some((run) => containsWindow(run, window)))
+        && setting !== null && settingDuring(model.timeline, window) === setting;
+      const c = comparable ? contributesAt(model, id, window, setting) : null;
       total += 1;
       if (c !== null) known += 1;
       if (c === true) counted += 1;
@@ -1152,6 +1219,8 @@ interface ScanSpec {
   // Heating (cooling) runs: idle time within OVERSHOOT_WINDOW_MS after one
   // still holds its heat (coolness), so it isn't passive warmth (coolness).
   runs: Run[];
+  // Actual active intervals, without merging intervening idle time.
+  activeRuns: Run[];
 }
 
 // One pass over the grid times in (from, to]: room offsets (overall, daily
@@ -1188,12 +1257,17 @@ function scan(spec: ScanSpec): { rooms: Map<string, RoomScan>; passive: PassiveA
     // cooling); without history they all count.
     const counts = mode === 'heating' ? !(known && rulesOutHeating(state)) : inRuns(spec.windows, t);
     if (counts) {
-      const fresh = model.rooms.filter((id) => grid.values.get(id)!.has(t));
+      const fresh = model.rooms.filter((id) => {
+        if (!grid.values.get(id)!.has(t)) return false;
+        if (mode === 'heating') return true;
+        const source = sourceWindow(grid, t, [id]);
+        return !!source && spec.windows.some((window) => containsWindow(window, source))
+          && spec.activeRuns.some((run) => containsWindow(run, source));
+      });
       // Heating offsets from the house average are Home's evidence: only Home
       // times (all, when no comfort setting is known) count.
       const evidence = mode === 'cooling' || model.timeline.length === 0 || setting === 'home';
       const house = evidence && fresh.length >= MIN_SENSORS_FOR_MEAN ? cohortMean(grid, fresh, t) : null;
-      const waking = mode === 'heating' && inRuns(spec.windows, t);
       const day = house === null ? '' : spec.clock(t).day;
       fresh.forEach((id) => {
         const room = rooms.get(id)!;
@@ -1205,15 +1279,31 @@ function scan(spec: ScanSpec): { rooms: Map<string, RoomScan>; passive: PassiveA
           addTo(daily, value - house);
           room.daily.set(day, daily);
         }
-        if (effective === null) return;
-        const offset = value - effective;
+        const source = sourceWindow(grid, t, [id])!;
+        const sourceSetting = settingDuring(model.timeline, source);
+        const ownEffective = effectiveAt(model, grid, t, sourceSetting, id, { from: spec.from, to: spec.to });
+        if (ownEffective === null) return;
+        const offset = value - ownEffective;
+        const active = spec.activeRuns.find((run) => containsWindow(run, source));
         if (mode === 'cooling') {
-          addTo(room.periods.cooling, offset);
+          const window = spec.windows.find((w) => containsWindow(w, source));
+          if (window && active) {
+            const bounds = { from: Math.max(window.from, active.from), to: Math.min(window.to, active.to) };
+            const average = effectiveAt(model, grid, t, sourceSetting, id, bounds);
+            if (average !== null) addTo(room.periods.cooling, value - average);
+          }
           return;
         }
-        if (setting === 'sleep' || setting === 'home') addTo(room.periods[setting], offset);
-        if (waking) addTo(room.periods.wake, offset);
-        if (running) addTo(room.periods.heatingRuns, offset);
+        if (sourceSetting === 'sleep' || sourceSetting === 'home') addTo(room.periods[sourceSetting], offset);
+        const waking = spec.windows.find((window) => containsWindow(window, source));
+        if (waking) {
+          const average = effectiveAt(model, grid, t, sourceSetting, id, waking);
+          if (average !== null) addTo(room.periods.wake, value - average);
+        }
+        if (active) {
+          const average = effectiveAt(model, grid, t, sourceSetting, id, active);
+          if (average !== null) addTo(room.periods.heatingRuns, value - average);
+        }
       });
     }
     if (!known || running || effective === null || state.hvacAction === null || inRuns(recent, t)) return;
@@ -1242,18 +1332,13 @@ function unknownParticipation(): Participation {
   return { home: null, sleep: null, away: null };
 }
 
-// Which rooms Ecobee averages in each setting, estimated only where the physical
-// thermostat sensor is explicitly excluded: every subset of rooms is scored by
-// its mean absolute error against the aggregate over times all its members have
-// readings and every configured participant has evidence (with Follow Me, only a
-// subset's occupied rooms count when any are; times a member's occupancy is
-// unknown are skipped), so a sparse room only limits the subsets containing
-// it. A room in every near-best subset is in; one in none (when subsets with
-// it could be scored) is out; otherwise unknown.
+// Fit every plausible room subset over the same complete, comparable samples,
+// only when the physical thermostat sensor is explicitly excluded. Otherwise
+// an unscored subset containing a missing room could hide an equally good fit.
 function estimateParticipation(grid: Grid, model: Model, from: number, to: number): Map<string, Participation> {
   const result = new Map(model.rooms.map((id) => [id, unknownParticipation()]));
   const n = model.rooms.length;
-  if (model.thermostatId === null || n === 0 || n > MAX_FIT_ROOMS) return result;
+  if (model.incompleteSensorInventory || model.thermostatId === null || n === 0 || n > MAX_FIT_ROOMS) return result;
   // Follow Me on or not given, with no occupancy history: any subset could
   // have been averaged at any time, and different subsets can share a mean
   // (18/20/22 averages 20 like the 20 room alone), so membership is unknown.
@@ -1268,8 +1353,6 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
     errors: new Float64Array(size), counts: new Uint32Array(size),
   }]));
   const sums = new Float64Array(size);
-  // Follow Me not given (null): times where it would change a subset's average
-  // aren't scored for that subset.
   const tracked = followMe !== false;
   const times = grid.times.slice(
     firstIndexAfter(grid.times, from, itself, true),
@@ -1277,37 +1360,36 @@ function estimateParticipation(grid: Grid, model: Model, from: number, to: numbe
   );
   times.forEach((t) => {
     const target = own.get(t);
-    const setting = settingAt(model.timeline, t);
-    if (target === undefined || setting === null) return;
+    const window = sourceWindow(grid, t, [model.thermostatId!, ...model.rooms]);
+    if (target === undefined || !window || window.from < from || window.to > to) return;
+    const setting = settingDuring(model.timeline, window);
+    if (setting === null) return;
     if (thermostatMemberIn(model, setting) !== false) return;
     const configured = model.config?.[setting];
-    if (configured?.some((id) => !model.roomSet.has(id) || !grid.values.get(id)?.has(t)
-      || (tracked && occupancyUnknown(model, id, t)))) return;
-    let available = 0;
+    if (configured?.some((id) => !model.roomSet.has(id))) return;
     let occupiedMask = 0;
-    let unknownMask = 0;
     const values = model.rooms.map((id, i) => {
       const value = grid.values.get(id)!.get(t);
-      if (value !== undefined) available |= 1 << i;
       if (tracked) {
-        const occupied = occupiedAt(model.occupancy.get(id), t);
+        const occupied = occupiedDuring(model.occupancy.get(id), window);
         if (occupied === true) occupiedMask |= 1 << i;
-        else if (occupancyUnknown(model, id, t)) unknownMask |= 1 << i;
+        if (occupied === null) return null;
       }
-      return value ?? 0;
+      return value ?? null;
     });
-    if (available === 0) return;
+    if (values.some((value) => value === null)) return;
+    // When Follow Me is unknown, all subsets must have the same average
+    // whether it is on or off, so mixed occupancy isn't comparable.
+    if (followMe === null && occupiedMask !== 0 && occupiedMask !== size - 1) return;
     for (let mask = 1; mask < size; mask += 1) {
       const low = mask & -mask;
-      sums[mask] = sums[mask ^ low] + values[31 - Math.clz32(low)];
+      sums[mask] = sums[mask ^ low] + values[31 - Math.clz32(low)]!;
     }
     const fit = fits[setting];
     for (let mask = 1; mask < size; mask += 1) {
-      const used = (mask & occupiedMask) || mask;
-      if ((mask & ~available) === 0 && (mask & unknownMask) === 0 && (followMe !== null || used === mask)) {
-        fit.errors[mask] += Math.abs(sums[used] / sizes[used] - target);
-        fit.counts[mask] += 1;
-      }
+      const used = followMe === true ? (mask & occupiedMask) || mask : mask;
+      fit.errors[mask] += Math.abs(sums[used] / sizes[used] - target);
+      fit.counts[mask] += 1;
     }
   });
   COMFORT_SETTINGS.forEach((setting) => {
@@ -1460,7 +1542,8 @@ function measure(
         const effective = times
           .filter((t) => inActiveRuns(runs, sources.get(t)))
           .map((t) => {
-            const average = effectiveAt(ctx.model, ctx.grid, t, setting);
+            const run = runs.find((part) => inActiveRuns([part], sources.get(t)))!;
+            const average = effectiveAt(ctx.model, ctx.grid, t, setting, id, run);
             return average === null ? null : filled.get(t)! - average;
           })
           .filter((o): o is number => o !== null);
@@ -1587,7 +1670,7 @@ interface Env {
   followMe: boolean | null;
   // Whether any sensor has occupancy history.
   occupancy: boolean;
-  // Whether the thermostat's averaged reading is available.
+  // Whether a primary thermostat temperature entity was identified.
   hasAverage: boolean;
   heatingRuntimeMs: number | null;
   windowDays: number;
@@ -2013,7 +2096,7 @@ function wakeRec(a: Analyzed, env: Env, rooms: Analyzed[]): Ranked | null {
       action: 'move',
       title: `${a.out.name} ${known.value === true && !unknown ? 'is' : 'may be'} holding the morning warm-up on`,
       detail: `In ${cold} of ${offsets.length} wake-ups (Sleep → Home), ${a.out.name} read ${fmt(offset)} °C below `
-        + `the comfort average Ecobee heats to${setting === 'home' ? '' : ` while heating in ${label} before Home`}. `
+        + `the reported or approximated comfort reading${setting === 'home' ? '' : ` while heating in ${label} before Home`}. `
         + `${withLead(countingLead(known, setting, unknown, env), 'Ecobee keeps heating until it warms up, ')}`
         + `so ${listOf(affected.map((o) => o.out.name))} ended up `
         + `${listOf(affected.map((o) => fmt(o.out.wakeOvershoot!)))} °C over the Home set point on average in the 2 hours after waking. `
@@ -2115,7 +2198,7 @@ const PASSIVE_WARM_CAUSES = [
 
 function passiveRecs(env: Env, rooms: Analyzed[]): Ranked[] {
   const recs: Ranked[] = [];
-  const average = env.hasAverage ? 'the Ecobee average' : 'the rooms';
+  const average = env.hasAverage ? 'the reported or approximated comfort reading' : 'the approximated comfort reading';
   const warmth = env.passiveWarmth;
   if (warmth && env.passiveHeat) {
     const runtime = env.heatingRuntimeMs === null
@@ -2175,7 +2258,7 @@ function passiveRecs(env: Env, rooms: Analyzed[]): Ranked[] {
 }
 
 // Configured participation that disagrees with what the thermostat's reading
-// suggests Ecobee actually averages.
+// suggests under the simple averaging approximation.
 function mismatchRecs(rooms: Analyzed[], config: ParticipationConfig | null): Ranked[] {
   if (!config) return [];
   return COMFORT_SETTINGS.flatMap((setting) => {
@@ -2201,7 +2284,8 @@ function mismatchRecs(rooms: Analyzed[], config: ParticipationConfig | null): Ra
         severity: 'medium' as RecommendationSeverity,
         action: 'none' as RecommendationAction,
         title: `Check which sensors your ${label} setting uses`,
-        detail: `During ${label}, the thermostat's reading doesn't match the sensors you listed: ${parts.join('; ')}. `
+        detail: `During ${label}, the thermostat's reading may not match the listed sensors under a simple averaging `
+          + `approximation: ${parts.join('; ')}. `
           + `Check the ${label} comfort setting (and Follow Me) in the Ecobee app; these tips assume your list.`,
         mode: null,
         period: null,
@@ -2331,8 +2415,10 @@ function verdictSummaryOf(a: Analyzed, skew: Skew | null, env: Env): string {
   return `${skew.brief}${consequence}${note}.`;
 }
 
-const COMFORT_AVERAGE_SUMMARY = 'This is Ecobee\'s average of the sensors in the active comfort setting (what it heats '
-  + 'and cools to), not a room, so it isn\'t judged as an outlier.';
+const COMFORT_AVERAGE_SUMMARY = 'This is the thermostat-reported comfort reading, not a room, so it isn\'t judged as an '
+  + 'outlier. Sensor averaging is an approximation; the HomeKit reading\'s exact semantics are unverified.';
+const UNSELECTED_THERMOSTAT_SUMMARY = 'This thermostat-associated temperature sensor is not known to be the selected '
+  + 'thermostat\'s comfort reading, so it isn\'t judged as a room.';
 
 // ---------------------------------------------------------------------------
 // Assembly.
@@ -2351,6 +2437,8 @@ function dataset(
   hvac: HvacSample[] | null | undefined,
   comfort: ComfortSample[] | null | undefined,
   config: ParticipationConfig | null,
+  primaryThermostatId: string | null,
+  incompleteSensorInventory: boolean,
 ): Dataset {
   const raw = [...(hvac ?? [])].sort((a, b) => a.t - b.t);
   // The Ecobee comfort setting takes precedence over the thermostat's preset,
@@ -2361,6 +2449,7 @@ function dataset(
   const occupancy = new Map(sensors
     .filter((s) => s.occupancy && s.occupancy.length > 0)
     .map((s) => [s.id, [...s.occupancy!].sort((a, b) => a.t - b.t)]));
+  const primary = sensors.filter((s) => s.isThermostat && s.id === primaryThermostatId);
   return {
     raw,
     samples: mergeComfort(raw, timeline, known),
@@ -2368,7 +2457,8 @@ function dataset(
     model: {
       rooms,
       roomSet: new Set(rooms),
-      thermostatId: sensors.find((s) => s.isThermostat)?.id ?? null,
+      thermostatId: primary.length === 1 ? primary[0].id : null,
+      incompleteSensorInventory,
       config,
       occupancy,
       timeline,
@@ -2380,9 +2470,13 @@ function dataset(
 }
 
 function participationOf(id: string, config: ParticipationConfig | null): Participation {
-  const of = (ids: string[] | null | undefined) => (ids === null || ids === undefined ? null : ids.includes(id));
+  const of = (setting: ComfortSetting) => {
+    if (!config || contradictorySetting(config, setting)) return null;
+    const ids = config[setting];
+    return ids === null ? null : ids.includes(id);
+  };
   return config
-    ? { home: of(config.home), sleep: of(config.sleep), away: of(config.away) }
+    ? { home: of('home'), sleep: of('sleep'), away: of('away') }
     : unknownParticipation();
 }
 
@@ -2395,7 +2489,9 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const endMs = input.end.getTime();
   const config = input.participation ?? null;
   const clock = localClock(input.timeZone);
-  const heat = dataset(input.sensors, input.hvac, input.comfort, config);
+  const heat = dataset(
+    input.sensors, input.hvac, input.comfort, config, input.primaryThermostatId ?? null, input.incompleteSensorInventory ?? false,
+  );
   const { samples, model } = heat;
   const recorded = heat.raw.filter((s) => !s.gap);
   const latestBeforeWindow = [...heat.raw].reverse().find((s) => s.t < startMs);
@@ -2433,6 +2529,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const heatRuns = runsWithin(samples, startMs - OVERSHOOT_WINDOW_MS, endMs, heatingNow, 0);
   const heatScan = scan({
     grid: heat.grid, from: startMs, to: endMs, model, samples, clock, mode: 'heating', windows: wakeWindows, runs: heatRuns,
+    activeRuns: heatRuns,
   });
   const estimates = estimateParticipation(heat.grid, model, startMs, endMs);
   model.estimated = estimates;
@@ -2442,6 +2539,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const cooling = input.cooling ?? null;
   let cool: Dataset | null = null;
   let coolRuns: Run[] = [];
+  let activeCoolRuns: Run[] = [];
   let coolGroups: { setting: ComfortSetting; runs: SettingRun[]; contexts: EventContext[] }[] = [];
   let coolContexts: EventContext[] = [];
   let coolScan: ReturnType<typeof scan> | null = null;
@@ -2453,11 +2551,14 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       cooling.hvac === undefined ? input.hvac : cooling.hvac,
       cooling.comfort === undefined ? input.comfort : cooling.comfort,
       config,
+      input.primaryThermostatId ?? null,
+      input.incompleteSensorInventory ?? false,
     );
     const from = cooling.start.getTime();
     const to = cooling.end.getTime();
     data.model.estimated = estimateParticipation(data.grid, data.model, from, to);
     coolRuns = runsWithin(data.samples, from, to, coolingNow, COOL_RUN_MERGE_MS);
+    activeCoolRuns = runsWithin(data.samples, from, to, coolingNow, 0);
     // Each run is split where the comfort setting changes: membership (and so
     // the advice) is per setting.
     const parts = splitBySetting(data.timeline, coolRuns);
@@ -2475,6 +2576,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
     coolGroups = coolingGroups(parts).map((g) => ({ ...g, contexts: g.runs.map((run) => byPart.get(run)!) }));
     coolScan = scan({
       grid: data.grid, from, to, model: data.model, samples: data.samples, clock, mode: 'cooling', windows: coolRuns, runs: coolRuns,
+      activeRuns: activeCoolRuns,
     });
     cool = data;
   }
@@ -2615,6 +2717,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
       mode: 'cooling',
       windows: group.runs,
       runs: coolRuns,
+      activeRuns: activeCoolRuns,
     });
     const views = rooms.map((a) => {
       const m = measure(a.out.id, heat.points.get(a.out.id)!, group.contexts);
@@ -2623,7 +2726,9 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
         measured: { ...a.measured, cool: m.cool, coolSamples: m.coolSamples },
         coolClass: classify(m.cool, m.coolSamples),
         coolScan: groupScan.rooms.get(a.out.id),
-        contribution: { ...a.contribution, cooling: contributionShare(cool!.model, cool!.grid, group.runs, a.out.id) },
+        contribution: {
+          ...a.contribution, cooling: contributionShare(cool!.model, cool!.grid, group.runs, a.out.id, activeCoolRuns),
+        },
       };
     });
     const typical = typicalOf(views, (v) => v.coolScan);
@@ -2640,7 +2745,7 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   });
   analyzed.forEach((a) => {
     if (!a.room) {
-      a.out.verdictSummary = COMFORT_AVERAGE_SUMMARY;
+      a.out.verdictSummary = a.out.id === model.thermostatId ? COMFORT_AVERAGE_SUMMARY : UNSELECTED_THERMOSTAT_SUMMARY;
       return;
     }
     // Home's heating evidence only: heat-ups (and wake-ups) during Home.
