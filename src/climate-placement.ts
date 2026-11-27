@@ -2348,9 +2348,10 @@ export function analyzePlacement(input: PlacementInput): PlacementInsights {
   const clock = localClock(input.timeZone);
   const heat = dataset(input.sensors, input.hvac, input.comfort, config);
   const { samples, model } = heat;
-  // History with only unavailable/unknown rows says nothing about the thermostat.
   const recorded = heat.raw.filter((s) => !s.gap);
-  const hvacAvailable = recorded.length > 0;
+  const latestBeforeWindow = [...heat.raw].reverse().find((s) => s.t < startMs);
+  const hvacAvailable = recorded.some((s) => s.t >= startMs && s.t <= endMs)
+    || (!!latestBeforeWindow && !latestBeforeWindow.gap);
   const inWindow = (e: PlacementEvent) => e.t >= startMs && e.t <= endMs;
 
   // Every Sleep → Home change is a wake-up; those with a heating run are

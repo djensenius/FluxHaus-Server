@@ -1106,6 +1106,15 @@ describe('analyzePlacement', () => {
     });
   });
 
+  it('does not treat a prior known state as available after an outage', () => {
+    const result = analyzePlacement(input({
+      hvac: [state(START - DAY, 'idle'), gap(START - HOUR)],
+    }));
+    expect(result.coverage).toMatchObject({
+      hvacHistoryAvailable: false, hvacEarliestStateAt: null,
+    });
+  });
+
   it('reports the earliest recorded state as returned, even before the window', () => {
     const early = state(START - 3 * HOUR, 'idle', { presetMode: 'sleep', setpoint: 17 });
     const result = analyzePlacement(input({ hvac: [gap(START - 4 * HOUR), early, ...hvac(5)] }));

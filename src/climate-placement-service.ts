@@ -34,6 +34,7 @@ export const PLACEMENT_CACHE_MAX_ENTRIES = 32;
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Cooling tips use the most recent cooling within the past year.
 export const COOLING_LOOKBACK_DAYS = 365;
+const PRIOR_STATE_DAYS = 30;
 const COOLING_TAIL_MS = 2 * 60 * 60 * 1000;
 // Temperature sensors that aren't indoor rooms.
 const OUTDOOR_PATTERN = /outdoor|outside|patio|exterior|environment_canada/i;
@@ -246,13 +247,13 @@ export function buildStatesQuery(bucket: string, entities: StateEntities, start:
     throw new Error('Unsafe entity id');
   }
   const predicate = statePredicate(entities);
-  const epoch = new Date(0).toISOString();
+  const prior = new Date(start.getTime() - PRIOR_STATE_DAYS * DAY_MS);
   return `prior = from(bucket: ${fluxBucketLiteral(bucket)})
-  |> range(start: time(v: "${epoch}"), stop: time(v: "${start.toISOString()}"))
+  |> range(start: time(v: "${prior.toISOString()}"), stop: time(v: "${start.toISOString()}"))
   |> filter(fn: (r) => ${predicate})
   |> last()
 priorStateHistory = from(bucket: ${fluxBucketLiteral(bucket)})
-  |> range(start: time(v: "${epoch}"), stop: time(v: "${start.toISOString()}"))
+  |> range(start: time(v: "${prior.toISOString()}"), stop: time(v: "${start.toISOString()}"))
   |> filter(fn: (r) => r.domain == "climate" and r.entity_id == "${entities.climate}" and r._field == "state")
 changes = from(bucket: ${fluxBucketLiteral(bucket)})
   |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
@@ -534,7 +535,7 @@ export class ClimatePlacementService {
 
     const { series, states } = heat;
     const hvac = states?.hvac ?? null;
-    if (series.every((sensor) => sensor.points.length === 0) || !hvac || hvac.every((sample) => sample.gap)) degraded = true;
+    if (series.every((sensor) => sensor.points.length === 0)) degraded = true;
 
     const insights = analyzePlacement({
       start,
@@ -549,6 +550,7 @@ export class ClimatePlacementService {
       unknownUnitWindows: heat.unknownUnitWindows,
       generatedAt: end,
     });
+    if (!insights.coverage.hvacHistoryAvailable) degraded = true;
     return { insights, degraded };
   }
 

@@ -650,6 +650,19 @@ describe('ClimatePlacementService', () => {
     expect(calls('states')).toHaveLength(2);
   });
 
+  it('treats a prior outage after a valid state as degraded', async () => {
+    const { service, rows, calls, advance } = makeDeps();
+    rows.states = [
+      climateRow('2026-01-10T06:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-12T06:00:00Z', 'state', 'unavailable'),
+    ];
+    const result = await service.getInsights('7');
+    expect(result.coverage).toMatchObject({ hvacHistoryAvailable: false, hvacEarliestStateAt: null });
+    advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await service.getInsights('7');
+    expect(calls('states')).toHaveLength(2);
+  });
+
   it('degrades to empty analysis when InfluxDB fails', async () => {
     const { service, rows } = makeDeps();
     rows.temperatures = new Error('influx down');
