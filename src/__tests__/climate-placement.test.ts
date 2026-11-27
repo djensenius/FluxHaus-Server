@@ -775,6 +775,31 @@ describe('analyzePlacement', () => {
     expect(work(20, true) / work(10, true)).toBeLessThan(2.3);
   });
 
+  it('does not infer a warm-up while the thermostat reports cooling in heat_cool mode', () => {
+    // heat_cool can heat, but an explicit cooling action shows it wasn't.
+    const samples = Array.from({ length: 5 }, (_unused, d) => [
+      state(at(d, 0), 'idle', { presetMode: null, setpoint: 20, hvacMode: 'heat_cool' }),
+      state(at(d, 3), 'cooling', { presetMode: null, setpoint: 20, hvacMode: 'heat_cool' }),
+      state(at(d, 8), 'cooling', { presetMode: null, setpoint: 20, hvacMode: 'heat_cool' }),
+      state(at(d, 12), 'idle', { presetMode: null, setpoint: 20, hvacMode: 'heat_cool' }),
+    ]).flat();
+    const sensors = series({ living_temperature: 0, bedroom_temperature: 0 }, 5);
+    expect(inferMorningEvents(sensors, 'UTC', samples)).toEqual([]);
+    // Control: with idle instead of cooling the same rise is inferred.
+    const idle = samples.map((s) => ({ ...s, hvacAction: 'idle' }));
+    expect(inferMorningEvents(sensors, 'UTC', idle)).toHaveLength(5);
+  });
+
+  it('does not infer a warm-up inside a gap at the start of history', () => {
+    // The first returned row is unavailable until 09:30 on the first day: no
+    // inferred warm-up may start inside it. Later days still infer one.
+    const samples = [gap(START), state(at(0, 9.5), 'idle', { presetMode: null, setpoint: 20 })];
+    const sensors = series({ living_temperature: 0, bedroom_temperature: 0 }, 5);
+    const events = inferMorningEvents(sensors, 'UTC', samples);
+    expect(events.some((e) => e.t < at(0, 9.5))).toBe(false);
+    expect(events).toHaveLength(4);
+  });
+
   it('infers mornings when the thermostat reports idle through a set point increase', () => {
     // As with an ecobee through homekit_controller: the 06:00 set point rise
     // is reported with hvac_action idle throughout, yet the rooms warm. Reported

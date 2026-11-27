@@ -439,10 +439,11 @@ alone ("the thermostat may keep heating to satisfy it").
     (so sparse or staggered sensors count; at least two sensors with two
     readings each are needed), using only readings taken from the candidate
     start until the first off/cool state or gap (so the rise happens while
-    heating is possible), unless the recorded thermostat mode couldn't heat then (off, cool). It
-    never starts while an off/cool state or a gap is in force (the last
-    recorded state at or before its start); it can start later, once a
-    heat-capable state is. A
+    heating is possible), unless the recorded thermostat mode couldn't heat then (off, cool)
+    or it reported a `cooling` action (e.g. in `heat_cool`/`auto`). It
+    never starts while such a state or a gap is in force (the last
+    recorded state at or before its start, including a gap in the first
+    returned row); it can start later, once a heat-capable state is. A
     reported `idle` action doesn't rule heating out: some integrations (e.g. an
     ecobee through `homekit_controller`) report idle for hours after a morning
     set point increase while the rooms warm. The earliest

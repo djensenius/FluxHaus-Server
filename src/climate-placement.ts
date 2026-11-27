@@ -381,11 +381,12 @@ function stateIndexAt(samples: HvacSample[], t: number): number {
   return firstIndexAfter(samples, t, timeOf, true) - 1;
 }
 
-// Only a recorded mode that can't heat (off, cool, …) rules heating out. A
-// reported idle action doesn't: some integrations (e.g. an ecobee through
-// homekit_controller) report idle for hours after a set point increase.
+// A recorded mode that can't heat (off, cool, …), or a reported cooling action
+// (e.g. in heat_cool/auto), rules heating out. A reported idle action doesn't:
+// some integrations (e.g. an ecobee through homekit_controller) report idle for
+// hours after a set point increase.
 function rulesOutHeating(sample: HvacSample): boolean {
-  return !sample.gap && !!sample.hvacMode && !canHeat(sample);
+  return !sample.gap && ((!!sample.hvacMode && !canHeat(sample)) || /cool/i.test(sample.hvacAction ?? ''));
 }
 
 // For each index i of the time-sorted samples, the time of the first state at
@@ -412,13 +413,16 @@ function heatingRuledOut(samples: HvacSample[], from: number, to: number): boole
 }
 
 // Whether the recorded state in force at `t` (the last at or before it) is a
-// gap or a mode that can't heat, so an inferred warm-up can't start there; a
-// later grid time, once a heat-capable state is in force, still can. As in
-// heatingRuledOut, the earliest returned state is a possible snapshot from
-// before the recorder's retention, so it is never evidence on its own.
+// gap, a mode that can't heat or a cooling action, so an inferred warm-up
+// can't start there; a later grid time, once a heat-capable state is in force,
+// still can. A gap blocks at any index, including the first row. As in
+// heatingRuledOut, an earliest returned state that isn't a gap is a possible
+// snapshot from before the recorder's retention, so its mode is never
+// evidence on its own.
 function cannotStartAt(samples: HvacSample[], t: number): boolean {
   const index = stateIndexAt(samples, t);
-  return index > 0 && (samples[index].gap || rulesOutHeating(samples[index]));
+  if (index < 0) return false;
+  return samples[index].gap || (index > 0 && rulesOutHeating(samples[index]));
 }
 
 // Rise of one sensor from its first to its last reading taken within
