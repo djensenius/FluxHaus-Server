@@ -315,11 +315,11 @@ describe('thermostat, comfort and occupancy history', () => {
   });
 
   it('builds a safe Flux query with the state in force at the start', () => {
-    const flux = buildStatesQuery('home_assistant', { ...entities, occupancy: ['bedroom_occupancy', 'bad"id'] }, new Date(30 * 86_400_000), new Date(31 * 86_400_000));
+    const flux = buildStatesQuery('home_assistant', { ...entities, occupancy: ['bedroom_occupancy', 'bad"id'] }, new Date(60 * 86_400_000), new Date(61 * 86_400_000));
     expect(flux).toContain('from(bucket: "home_assistant")');
-    expect(flux).toContain('range(start: time(v: "1970-01-01T00:00:00.000Z"), stop: time(v: "1970-01-31T00:00:00.000Z"))\n  |> filter');
+    expect(flux).toContain('prior = from(bucket: "home_assistant")\n  |> range(start: time(v: "1970-01-31T00:00:00.000Z"), stop: time(v: "1970-03-02T00:00:00.000Z"))');
+    expect(flux).toContain('priorStateHistory = from(bucket: "home_assistant")\n  |> range(start: time(v: "1970-01-31T00:00:00.000Z"), stop: time(v: "1970-03-02T00:00:00.000Z"))');
     expect(flux).toContain('|> last()');
-    expect(flux).toContain('priorStateHistory = from(bucket: "home_assistant")');
     expect(flux).toContain('r.domain == "climate" and r.entity_id == "home" and r._field == "state"');
     expect(flux).toContain('r.domain == "climate" and r.entity_id == "home"');
     expect(flux).toContain('r.domain == "select" and r.entity_id == "home_current_mode" and r._field == "state"');
