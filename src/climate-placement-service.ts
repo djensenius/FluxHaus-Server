@@ -254,6 +254,7 @@ export function buildStatesQuery(bucket: string, entities: StateEntities, start:
   |> range(start: time(v: "${prior.toISOString()}"), stop: time(v: "${start.toISOString()}"))
   |> filter(fn: (r) => ${predicate})
   |> last()
+  |> map(fn: (r) => ({r with _time: time(v: "${start.toISOString()}")}))
 changes = from(bucket: ${fluxBucketLiteral(bucket)})
   |> range(start: time(v: "${start.toISOString()}"), stop: time(v: "${end.toISOString()}"))
   |> filter(fn: (r) => ${predicate})

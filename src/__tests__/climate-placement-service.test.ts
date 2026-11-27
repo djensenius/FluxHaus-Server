@@ -307,6 +307,7 @@ describe('thermostat, comfort and occupancy history', () => {
     expect(flux).toContain('from(bucket: "home_assistant")');
     expect(flux).toContain('range(start: time(v: "1970-01-01T00:00:00.000Z"), stop: time(v: "1970-01-31T00:00:00.000Z"))\n  |> filter');
     expect(flux).toContain('|> last()');
+    expect(flux).toContain('|> last()\n  |> map(fn: (r) => ({r with _time: time(v: "1970-01-31T00:00:00.000Z")}))\nchanges =');
     expect(flux).toContain('r.domain == "climate" and r.entity_id == "home"');
     expect(flux).toContain('r.domain == "select" and r.entity_id == "home_current_mode" and r._field == "state"');
     expect(flux).toContain('contains(value: r.entity_id, set: ["bedroom_occupancy"])');
