@@ -299,7 +299,8 @@ describe('IndoorClimate', () => {
 
     const placement = indoorClimate.placementDiscovery();
     expect(placement.climateEntityId).toBe('climate.home');
-    expect(placement.thermostatTemperatureEntityId).toBe('sensor.renamed_temperature');
+    expect(placement.thermostatTemperatureEntityId).toBeNull();
+    expect(placement.thermostatOccupancyEntityId).toBe('binary_sensor.hall_motion');
     expect(placement.occupancyByTemperature.get('sensor.renamed_temperature')).toBe('binary_sensor.hall_motion');
     // Two occupancy entities on the Kitchen device are ambiguous, including
     // one whose name resembles the thermostat's renamed temperature.
@@ -307,6 +308,36 @@ describe('IndoorClimate', () => {
     expect(placement.occupancyByTemperature.get('sensor.upstairs_temperature')).toBe('binary_sensor.upstairs_occupancy');
     expect(indoorClimate.cachedStatus.sensors.find((s) => s.entityId === 'sensor.upstairs_temperature')!.isThermostat)
       .toBe(true);
+  });
+
+  it('does not identify a sole thermostat-device temperature as the reported comfort reading', async () => {
+    mockStates({
+      ...STATES,
+      'climate.home': { state: 'heat', attributes: { current_temperature: 20 } },
+      'sensor.home_current_temperature': {
+        state: '24', attributes: { device_class: 'temperature', unit_of_measurement: '°C' },
+      },
+    });
+    indoorClimate = new IndoorClimate({ client: mockClient });
+    await indoorClimate.refresh();
+
+    expect(indoorClimate.cachedStatus.thermostat?.currentTemperature).toBe(20);
+    expect(indoorClimate.cachedStatus.sensors.find((s) => s.entityId === 'sensor.home_current_temperature'))
+      .toMatchObject({ temperature: 24, isThermostat: true });
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+    expect(indoorClimate.placementDiscovery().thermostatOccupancyEntityId).toBe('binary_sensor.home_occupancy');
+
+    // A matching snapshot also doesn't establish what the sensor measured
+    // throughout its historical series.
+    mockStates({
+      ...STATES,
+      'climate.home': { state: 'heat', attributes: { current_temperature: 20 } },
+      'sensor.home_current_temperature': {
+        state: '20', attributes: { device_class: 'temperature', unit_of_measurement: '°C' },
+      },
+    });
+    await indoorClimate.refresh();
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
   });
 
   it('leaves placement identities unknown when devices or matches are ambiguous', async () => {
@@ -331,6 +362,7 @@ describe('IndoorClimate', () => {
     await indoorClimate.refresh();
     const placement = indoorClimate.placementDiscovery();
     expect(placement.thermostatTemperatureEntityId).toBeNull();
+    expect(placement.thermostatOccupancyEntityId).toBeNull();
     // Without the climate's device, no unflagged temperature can safely be
     // distinguished from a thermostat reading for placement analysis.
     expect(placement.unclassifiedTemperatureIds).toEqual(new Set([
@@ -365,7 +397,8 @@ describe('IndoorClimate', () => {
     await indoorClimate.refresh();
     expect(indoorClimate.cachedStatus.sensors.map((s) => s.entityId)).not.toContain('sensor.mystery');
     expect(indoorClimate.placementDiscovery().unclassifiedTemperatureIds).toEqual(new Set(['sensor.mystery']));
-    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBe('sensor.home_current_temperature');
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+    expect(indoorClimate.placementDiscovery().thermostatOccupancyEntityId).toBe('binary_sensor.home_occupancy');
 
     mockClient.renderTemplate = vi.fn().mockResolvedValue(JSON.stringify([
       ...DISCOVERY, { ...mystery, device_id: 'dev_home' },
@@ -381,7 +414,8 @@ describe('IndoorClimate', () => {
     ]));
     indoorClimate = new IndoorClimate({ client: mockClient });
     await indoorClimate.refresh();
-    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBe('sensor.home_current_temperature');
+    expect(indoorClimate.placementDiscovery().thermostatTemperatureEntityId).toBeNull();
+    expect(indoorClimate.placementDiscovery().thermostatOccupancyEntityId).toBeNull();
     expect(indoorClimate.placementDiscovery().occupancyByTemperature.has('sensor.home_current_temperature')).toBe(false);
     expect(indoorClimate.placementDiscovery().occupancyByTemperature.get('sensor.bedroom_temperature'))
       .toBe('binary_sensor.bedroom_occupancy');

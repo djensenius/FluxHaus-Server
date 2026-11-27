@@ -545,6 +545,94 @@ describe('ClimatePlacementService', () => {
     expect(result.coverage.occupancyAvailable).toBe(true);
   });
 
+  it('uses thermostat occupancy independently of an unverified thermostat temperature', async () => {
+    const run = async (thermostatHome: string | undefined, followMe: string, occupancy: string) => {
+      const { service, deps, rows, calls } = makeDeps();
+      deps.indoorClimate.placementDiscovery.mockReturnValue({
+        climateEntityId: 'climate.home',
+        thermostatTemperatureEntityId: null,
+        thermostatOccupancyEntityId: 'binary_sensor.home_occupancy',
+        occupancyByTemperature: new Map([
+          ['sensor.office_temperature', 'binary_sensor.office_occupancy'],
+          ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+        ]),
+        unclassifiedTemperatureIds: new Set<string>(),
+      });
+      rows.temperatures = rows.temperatures.map((row) => (
+        row.entity_id === 'home_current_temperature' ? { ...row, _value: '24' } : row
+      ));
+      (rows.states as Rows).push(
+        { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: occupancy, domain: 'binary_sensor', entity_id: 'home_occupancy' },
+        { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'office_occupancy' },
+        { _time: '2026-01-19T06:00:00Z', _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'kitchen_occupancy' },
+      );
+      const result = await service.getInsights('7', {
+        home: 'office_temperature,kitchen_temperature', thermostatHome, followMe,
+      });
+      expect(calls('states')[0]).toContain('r.entity_id == "home_occupancy"');
+      expect(result.sensors.find((s) => s.id === 'home_current_temperature')).toMatchObject({
+        name: 'Home',
+        isThermostat: true,
+        verdictSummary: expect.stringContaining('not known to be the selected thermostat\'s comfort reading'),
+      });
+      return result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home;
+    };
+
+    expect(await run('false', 'false', '1')).toBe(-1);
+    expect(await run(undefined, 'false', '0')).toBeNull();
+    expect(await run('true', 'true', '0')).toBe(-2);
+    expect(await run('true', 'true', '1')).toBeNull();
+  });
+
+  it.each([
+    ['0', -2],
+    ['1', null],
+  ])('uses the separate cooling history for physical thermostat occupancy %s', async (value, offset) => {
+    const { service, deps, rows, calls } = makeDeps();
+    deps.indoorClimate.cachedStatus.sensors = deps.indoorClimate.cachedStatus.sensors.filter((s) => !s.isThermostat);
+    deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: null,
+      thermostatOccupancyEntityId: 'binary_sensor.home_occupancy',
+      occupancyByTemperature: new Map([
+        ['sensor.office_temperature', 'binary_sensor.office_occupancy'],
+        ['sensor.kitchen_temperature', 'binary_sensor.kitchen_occupancy'],
+      ]),
+      unclassifiedTemperatureIds: new Set<string>(),
+    });
+    rows.cooling = [{ _time: '2025-10-15T12:00:00Z' }];
+    (rows.states as Rows).push({
+      _time: '2026-01-19T06:00:00Z', _field: 'value', _value: value === '0' ? '1' : '0',
+      domain: 'binary_sensor', entity_id: 'home_occupancy',
+    });
+    const coolingTime = '2025-10-15T12:00:00Z';
+    const coolingTemperatures = [
+      { _time: coolingTime, _value: '18.5', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: coolingTime, _value: '20.5', _measurement: '°C', entity_id: 'kitchen_temperature' },
+    ];
+    const coolingStates = [
+      climateRow(coolingTime, 'state', 'cool'),
+      climateRow(coolingTime, 'hvac_action_str', 'cooling'),
+      { _time: coolingTime, _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
+      { _time: coolingTime, _field: 'value', _value: value, domain: 'binary_sensor', entity_id: 'home_occupancy' },
+      { _time: coolingTime, _field: 'value', _value: '0', domain: 'binary_sensor', entity_id: 'office_occupancy' },
+      { _time: coolingTime, _field: 'value', _value: '1', domain: 'binary_sensor', entity_id: 'kitchen_occupancy' },
+    ];
+    const queryCurrentWindow = deps.influxdb.query.getMockImplementation()!;
+    deps.influxdb.query.mockImplementation(async (flux: string) => {
+      if (flux.includes('2025-10-08T14:00:00.000Z')) {
+        return queryKind(flux) === 'temperatures' ? coolingTemperatures : coolingStates;
+      }
+      return queryCurrentWindow(flux);
+    });
+    const result = await service.getInsights('7', {
+      home: 'office_temperature,kitchen_temperature', thermostatHome: 'true', followMe: 'true',
+    });
+    expect(calls('states')).toHaveLength(2);
+    expect(calls('states')[1]).toContain('r.entity_id == "home_occupancy"');
+    expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.cooling).toBe(offset);
+  });
+
   it.each([
     ['0', -2],
     ['1', null],
@@ -633,6 +721,7 @@ describe('ClimatePlacementService', () => {
     expect(selected.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBe(-1.5);
     const secondary = selected.sensors.find((s) => s.id === 'second_temperature')!;
     expect(secondary.isThermostat).toBe(true);
+    expect(secondary.name).toBe('Second thermostat');
     expect(secondary.verdictSummary).toContain('not known to be the selected thermostat\'s comfort reading');
     for (const result of [await run(null), await run('sensor.home_current_temperature', 'climate.other')]) {
       expect(result.sensors.find((s) => s.id === 'office_temperature')!.periodOffsets.home).toBeNull();
@@ -750,6 +839,7 @@ describe('ClimatePlacementService', () => {
     rows.cooling = new Error('influx down');
     const result = await service.getInsights('7');
     expect(result.coverage.coolingFrom).toBeNull();
+    expect(result.recommendations.map((rec) => rec.detail).join(' ')).not.toContain('No cooling was found');
     advance(PLACEMENT_DEGRADED_TTL_MS + 1);
     await service.getInsights('7');
     expect(calls('cooling')).toHaveLength(2);

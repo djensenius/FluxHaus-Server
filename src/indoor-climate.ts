@@ -95,7 +95,10 @@ export interface IndoorClimateStatus {
 // Internal placement metadata; kept separate from the public indoor snapshot.
 export interface PlacementDiscovery {
   climateEntityId: string | null;
+  // Only an entity positively identified as the reported comfort reading.
   thermostatTemperatureEntityId: string | null;
+  // Independent of whether a reported-temperature entity can be identified.
+  thermostatOccupancyEntityId?: string | null;
   // Only an unambiguous occupancy-class entity on the same device is used.
   // Whether HomeKit's occupancy represents the physical sensor is an assumption.
   occupancyByTemperature: ReadonlyMap<string, string>;
@@ -502,6 +505,7 @@ export default class IndoorClimate {
   private placement: PlacementDiscovery = {
     climateEntityId: null,
     thermostatTemperatureEntityId: null,
+    thermostatOccupancyEntityId: null,
     occupancyByTemperature: new Map(),
     unclassifiedTemperatureIds: new Set(),
   };
@@ -1156,7 +1160,6 @@ export default class IndoorClimate {
 
       const devices = new Map(entities.map((entity) => [entity.entityId, entity.deviceId]));
       const unresolvedClimate = climates.length === 0 || climates.some(({ entity }) => !entity.deviceId);
-      const primarySensors = sensors.filter((sensor) => primaryDeviceId && devices.get(sensor.entityId) === primaryDeviceId);
       const primaryClimates = climates.filter(({ entity }) => primaryDeviceId && entity.deviceId === primaryDeviceId);
       const occupancyEntities = new Map<string, Set<string>>();
       const unclassifiedBinaryDevices = new Set<string>();
@@ -1170,6 +1173,10 @@ export default class IndoorClimate {
         occupancyEntities.set(entity.deviceId, ids);
       });
       const occupancyByTemperature = new Map<string, string>();
+      const uniqueOccupancy = (device: string | null | undefined): string | null => {
+        const ids = device ? occupancyEntities.get(device) : undefined;
+        return device && ids?.size === 1 && !unclassifiedBinaryDevices.has(device) ? [...ids][0] : null;
+      };
       // An unreadable or classless discovered sensor might be a temperature
       // sensor; it must not disappear as a plausible room in subset fitting.
       const temperatureIds = new Set(sensors.map((sensor) => sensor.entityId));
@@ -1180,16 +1187,17 @@ export default class IndoorClimate {
       sensors.forEach((sensor) => {
         const device = devices.get(sensor.entityId);
         if (!sensor.isThermostat && (unresolvedClimate || !device)) unclassifiedTemperatureIds.add(sensor.entityId);
-        const ids = device ? occupancyEntities.get(device) : undefined;
-        if (device && ids?.size === 1 && !unclassifiedBinaryDevices.has(device)) {
-          occupancyByTemperature.set(sensor.entityId, [...ids][0]);
-        }
+        const occupancy = uniqueOccupancy(device);
+        if (occupancy) occupancyByTemperature.set(sensor.entityId, occupancy);
       });
       this.placement = {
         climateEntityId: climate?.entity.entityId ?? null,
-        thermostatTemperatureEntityId: !unresolvedClimate && primaryClimates.length === 1 && primarySensors.length === 1
-          && ![...unclassifiedTemperatureIds].some((id) => !devices.get(id) || devices.get(id) === primaryDeviceId)
-          ? primarySensors[0].entityId : null,
+        // A shared device, a name, or even a matching current value cannot
+        // establish that an entity's historical series is the climate
+        // entity's reported reading rather than a physical temperature.
+        thermostatTemperatureEntityId: null,
+        thermostatOccupancyEntityId: !unresolvedClimate && primaryClimates.length === 1
+          ? uniqueOccupancy(primaryDeviceId) : null,
         occupancyByTemperature,
         unclassifiedTemperatureIds,
       };

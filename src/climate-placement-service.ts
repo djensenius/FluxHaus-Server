@@ -526,6 +526,15 @@ export class ClimatePlacementService {
     const primaryId = matchingClimate && discovery.thermostatTemperatureEntityId
       ? objectId(discovery.thermostatTemperatureEntityId) : null;
     const primaryThermostatId = sensors.some((s) => s.isThermostat && s.id === primaryId) ? primaryId : null;
+    const thermostatOccupancyEntity = matchingClimate
+      ? discovery.thermostatOccupancyEntityId === undefined && primaryThermostatId && discovery.thermostatTemperatureEntityId
+        ? discovery.occupancyByTemperature.get(discovery.thermostatTemperatureEntityId)
+        : discovery.thermostatOccupancyEntityId
+      : null;
+    const thermostatOccupancyId = thermostatOccupancyEntity?.startsWith('binary_sensor.')
+      ? objectId(thermostatOccupancyEntity) : null;
+    const physicalOccupancy = thermostatOccupancyId && SAFE_OBJECT_ID.test(thermostatOccupancyId)
+      ? thermostatOccupancyId : null;
     if (config) {
       const selected = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []);
       const thermostatIds = new Set(sensors.filter((s) => s.isThermostat).map((s) => s.id));
@@ -546,7 +555,7 @@ export class ClimatePlacementService {
       ? {
         climate: climateId,
         comfort: `${climateId}_current_mode`,
-        occupancy: [...new Set(sensors.map((s) => s.occupancyId).filter((id): id is string => !!id))],
+        occupancy: [...new Set([...sensors.map((s) => s.occupancyId), physicalOccupancy].filter((id): id is string => !!id))],
       }
       : null;
     const unit = status.thermostat?.temperatureUnit;
@@ -578,6 +587,7 @@ export class ClimatePlacementService {
         if (data.degraded) degraded = true;
         cooling = {
           start: coolStart, end: coolEnd, sensors: data.series, hvac: data.states?.hvac ?? null, comfort: data.states?.comfort ?? null,
+          thermostatOccupancy: physicalOccupancy ? data.states?.occupancy.get(physicalOccupancy) ?? null : null,
         };
       }
     }
@@ -593,6 +603,7 @@ export class ClimatePlacementService {
       timeZone: resolveTimeZone(this.deps.timeZone),
       sensors: series,
       primaryThermostatId,
+      thermostatOccupancy: physicalOccupancy ? states?.occupancy.get(physicalOccupancy) ?? null : null,
       incompleteSensorInventory,
       hvac,
       comfort: states?.comfort ?? null,
@@ -667,7 +678,7 @@ export class ClimatePlacementService {
     return parseStates(rows, entities, unit);
   }
 
-  // Epoch ms of the last cooling in the past year, null when there was none.
+  // Epoch ms of the last cooling found in available history, else null.
   private async fetchLastCooling(climate: string, end: Date): Promise<number | null> {
     const start = new Date(end.getTime() - COOLING_LOOKBACK_DAYS * DAY_MS);
     const rows: Record<string, string>[] = await this.deps.influxdb.query(
