@@ -1290,6 +1290,23 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(coolingEvents((t) => ({ ...idle(t), hvacAction: 'fan' }))).toBe(10);
   });
 
+  it('splits a heating run interrupted by cooling, as cooling runs are', () => {
+    // Heating from Home (06:00) to 08:00 with a 10-minute spell at 07:00.
+    const ramp = (between: string, mode: string) => analyzePlacement(wakeInput({
+      hvac: Array.from({ length: 5 }, (_, d) => [
+        state(at(d, 0), 'idle', { presetMode: null, setpoint: 17 }),
+        state(at(d, 6), 'heating', { presetMode: null, setpoint: 21, hvacMode: mode }),
+        state(at(d, 7), between, { presetMode: null, setpoint: 21, hvacMode: mode }),
+        state(at(d, 7 + 1 / 6), 'heating', { presetMode: null, setpoint: 21, hvacMode: mode }),
+        state(at(d, 8), 'idle', { presetMode: null, setpoint: 21 }),
+        state(at(d, 22), 'idle', { presetMode: null, setpoint: 17 }),
+      ]).flat(),
+    })).recommendations.find((r) => r.id === 'wake-bedroom')!.detail;
+    // Merged across idle: one 120-minute warm-up; split by cooling: the first run.
+    expect(ramp('idle', 'heat')).toContain('the warm-up ran 120 minutes on average');
+    expect(ramp('cooling', 'heat_cool')).toContain('the warm-up ran 60 minutes on average');
+  });
+
   it('gives cooling advice for the comfort setting cooling ran in', () => {
     // Cooling only ran in Sleep; the Kitchen is only in Sleep.
     const flat = { living_temperature: 0, kitchen_temperature: 0, bedroom_temperature: 0 };
@@ -1506,6 +1523,32 @@ describe('analyzePlacement (Ecobee comfort average)', () => {
     expect(withBedroom([{ t: START - DAY, occupied: null }])).toMatchObject({
       occupiedShare: { wake: null, home: null }, wakeOffset: null,
     });
+  });
+
+  it('doesn\'t infer a room without an occupancy stream is out when fitting Follow Me', () => {
+    // The thermostat reads the Bedroom and Living Room's mean (-1). Read as
+    // unoccupied, the Bedroom would drop out and the unoccupied Kitchen (-1)
+    // alone would fit, estimating the Bedroom out of Home.
+    const biases = {
+      home_current_temperature: -1,
+      bedroom_temperature: -2,
+      living_temperature: 0,
+      kitchen_temperature: -1,
+      office_temperature: 0.8,
+    };
+    const result = analyzePlacement(wakeInput({
+      sensors: rooms(biases, wakeBase).map((r) => {
+        if (r.id === 'living_temperature') return { ...r, occupancy: occupied(true) };
+        if (r.id === 'kitchen_temperature' || r.id === 'office_temperature') return { ...r, occupancy: occupied(false) };
+        return r;
+      }),
+      participation: config(null, true),
+    }));
+    const bedroom = result.sensors.find((s) => s.id === 'bedroom_temperature')!;
+    expect(bedroom.occupiedShare).toEqual({ wake: null, home: null });
+    expect(bedroom.verdictSummary).not.toContain('isn\'t in');
+    const wake = result.recommendations.find((r) => r.id === 'wake-bedroom')!;
+    expect(wake.detail).toContain('If it\'s in your Home comfort setting');
   });
 
   it('doesn\'t report an occupied share from mostly unknown occupancy', () => {
