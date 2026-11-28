@@ -2148,15 +2148,22 @@ describe('ClimatePlacementService', () => {
   it('does not convert cooling targets with today’s unit when reported history contradicts it', async () => {
     const fixture = makeDeps();
     useClimateReference(fixture);
-    fixture.rows.reported = [{ ...reportedRow('2026-01-19T06:00:00Z', '68'), unit_tag: '°F' }];
+    fixture.rows.reported = [
+      { ...reportedRow('2026-01-19T06:00:00Z', '68'), unit_tag: '°F' },
+      { ...reportedRow('2026-01-19T06:15:00Z', '20'), unit_tag: '°C' },
+    ];
     fixture.rows.cooling = coolingRows('2026-01-19T06:00:00Z');
     fixture.rows.temperatures = fixture.rows.temperatures.map((row) => (
       row.entity_id === 'office_temperature' ? { ...row, _value: '18' } : row
     ));
+    (fixture.rows.temperatures as Rows).push(
+      { _time: '2026-01-19T06:15:00Z', _value: '18', _measurement: '°C', entity_id: 'office_temperature' },
+      { _time: '2026-01-19T06:15:00Z', _value: '20.5', _measurement: '°C', entity_id: 'kitchen_temperature' },
+    );
     fixture.rows.states = [
-      climateRow('2026-01-19T06:00:00Z', 'state', 'cool'),
-      climateRow('2026-01-19T06:00:00Z', 'hvac_action_str', 'cooling'),
-      climateRow('2026-01-19T06:00:00Z', 'temperature', '35'),
+      climateRow('2026-01-19T06:00:00.000100Z', 'state', 'cool'),
+      climateRow('2026-01-19T06:00:00.000300Z', 'hvac_action_str', 'cooling'),
+      climateRow('2026-01-19T06:00:00.000500Z', 'temperature', '35'),
       climateRow('2026-01-19T06:30:00Z', 'hvac_action_str', 'idle'),
       { _time: '2026-01-19T06:00:00Z', _field: 'state', _value: 'home', domain: 'select', entity_id: 'home_current_mode' },
     ];

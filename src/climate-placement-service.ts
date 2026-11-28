@@ -951,7 +951,17 @@ export class ClimatePlacementService {
     // and untagged references, but keep explicitly unit-tagged reference rows.
     const stateHistory = states && reference?.unitConflict ? {
       ...states,
-      hvac: states.hvac?.map((sample) => ({ ...sample, setpoint: null, coolSetpoint: null })) ?? null,
+      hvac: states.hvac?.map((sample) => ({
+        ...sample,
+        setpoint: null,
+        coolSetpoint: null,
+        ...(sample.orderedUpdates ? {
+          orderedUpdates: sample.orderedUpdates.map((update) => ({
+            ...update,
+            sample: { ...update.sample, setpoint: null, coolSetpoint: null },
+          })),
+        } : {}),
+      })) ?? null,
       unitConflict: true,
       targetUnitAssumed: false,
     } : states;
