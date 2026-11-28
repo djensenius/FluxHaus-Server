@@ -110,7 +110,9 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   };
   let now = NOW.getTime();
   const deps = {
-    influxdb, indoorClimate, bucket: 'fluxhaus', timeZone: 'UTC', now: () => new Date(now), ...overrides,
+    influxdb, indoorClimate,
+    homeAssistantConfig: { getConfig: vi.fn(async () => ({ time_zone: 'UTC' })) },
+    bucket: 'fluxhaus', timeZone: 'UTC', now: () => new Date(now), ...overrides,
   };
   const calls = (kind: string) => influxdb.query.mock.calls.filter(([flux]) => queryKind(flux) === kind).map(([flux]) => flux);
   return {
@@ -1534,6 +1536,227 @@ describe('ClimatePlacementService', () => {
       row.entity_id === 'home_current_temperature' ? { ...row, _value: '24' } : row
     ));
   }
+
+  it('resolves yesterday in the HA zone, rejects invalid house zones and validates explicit dates strictly', async () => {
+    const fixture = makeDeps();
+    fixture.advance(Date.parse('2026-01-20T12:00:00Z') - NOW.getTime());
+    const yesterday = await fixture.service.getDayInsights(undefined);
+    expect(yesterday).toMatchObject({ date: '2026-01-19', timeZone: 'UTC' });
+    await expect(fixture.service.getDayInsights('2026-02-29')).rejects.toThrow('valid YYYY-MM-DD');
+    await expect(fixture.service.getDayInsights('2026-01-21')).rejects.toThrow('today or within');
+    await expect(fixture.service.getDayInsights('2025-01-20')).rejects.toThrow('today or within');
+    fixture.deps.homeAssistantConfig.getConfig.mockResolvedValue({ time_zone: 'Invalid/HouseZone' });
+    await expect(fixture.service.getDayInsights('2026-01-19')).rejects.toThrow('unavailable or invalid');
+  });
+
+  it('queries one day plus 14 house-calendar baseline dates and passes participation through', async () => {
+    const fixture = makeDeps();
+    const response = await fixture.service.getDayInsights('2026-01-19', {
+      home: 'office_temperature,kitchen_temperature',
+      followMe: 'false',
+      thermostatHome: 'true',
+      thermostatSleep: 'false',
+    }) as {
+      timeline: { average: number | null; rooms: Record<string, number | null> }[];
+      date: string;
+      sensors: { id: string; isThermostat?: boolean; dayOffset: number | null; unusual: boolean | null }[];
+    };
+    expect(response.date).toBe('2026-01-19');
+    expect(response.timeline).toHaveLength(96);
+    expect(response.timeline[24].average).toBeCloseTo(59 / 3);
+    expect(response.timeline[24].rooms).not.toHaveProperty('home_current_temperature');
+    expect(response.sensors.find((sensor) => sensor.id === 'home_current_temperature'))
+      .toMatchObject({ isThermostat: true, dayOffset: null, unusual: null });
+    expect(response.sensors.find((sensor) => sensor.id === 'office_temperature')).toMatchObject({
+      dayOffset: null, unusual: null,
+    });
+    const temperatureQuery = fixture.calls('temperatures')[0];
+    expect(temperatureQuery).toContain('2026-01-05T00:00:00.000Z');
+    expect(temperatureQuery).toContain('2026-01-20T00:00:00.000Z');
+    expect(temperatureQuery).not.toContain('2026-01-04T');
+    const stateQuery = fixture.calls('states')[0];
+    expect(stateQuery).toContain('2026-01-05T00:00:00.000Z');
+    expect(stateQuery).toContain('office_occupancy');
+    expect(stateQuery).toContain('kitchen_occupancy');
+  });
+
+  it('marks incomplete sensor discovery and withholds daily outlier conclusions', async () => {
+    const fixture = makeDeps();
+    fixture.deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map(),
+      unclassifiedTemperatureIds: new Set(['sensor.mystery_temperature']),
+    });
+    const result = await fixture.service.getDayInsights('2026-01-19') as {
+      sensors: { isThermostat: boolean; dayOffset: number | null; baselineOffset: number | null; deviation: number | null; unusual: boolean | null }[];
+      findings: unknown[];
+      coverage: { incompleteSensorInventory: boolean };
+    };
+    expect(result.coverage.incompleteSensorInventory).toBe(true);
+    expect(result.sensors.filter((sensor) => !sensor.isThermostat).every((sensor) => (
+      sensor.dayOffset === null && sensor.baselineOffset === null
+      && sensor.deviation === null && sensor.unusual === null
+    ))).toBe(true);
+    expect(result.findings).toEqual([]);
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(2);
+  });
+
+  it('caches completed past-day analysis longer than the 14-day endpoint', async () => {
+    const fixture = makeDeps();
+    const response = await fixture.service.getDayInsights('2026-01-19') as { wake: unknown };
+    expect(response.wake).toBeNull();
+    const temperatureQueries = fixture.calls('temperatures').length;
+    fixture.advance(16 * 60 * 1000);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries);
+  });
+
+  it('retries past-day analysis while a recorded wake context is incomplete', async () => {
+    const fixture = makeDeps();
+    fixture.advance(Date.parse('2026-01-20T00:30:00Z') - NOW.getTime());
+    const temperatures: Rows = [];
+    for (let t = Date.parse('2026-01-19T21:30:00Z'); t <= Date.parse('2026-01-20T01:15:00Z'); t += 15 * 60_000) {
+      ['home_current_temperature', 'office_temperature', 'kitchen_temperature'].forEach((entityId) => temperatures.push({
+        _time: new Date(t).toISOString(),
+        _value: '20',
+        _measurement: '°C',
+        entity_id: entityId,
+      }));
+    }
+    fixture.rows.temperatures = temperatures;
+    fixture.rows.states = [
+      climateRow('2026-01-19T21:30:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T21:30:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T21:30:00Z', 'temperature', '17'),
+      climateRow('2026-01-19T21:30:00Z', 'preset_mode_str', 'sleep'),
+      {
+        _time: '2026-01-19T21:30:00Z', _field: 'state', _value: 'sleep',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-19T23:30:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T23:30:00Z', 'temperature', '21'),
+      climateRow('2026-01-19T23:30:00Z', 'preset_mode_str', 'home'),
+      {
+        _time: '2026-01-19T23:30:00Z', _field: 'state', _value: 'home',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-20T00:00:00Z', 'hvac_action_str', 'idle'),
+    ];
+
+    const before = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { contextComplete: boolean; contextRetryable: boolean } | null;
+    };
+    expect(before.wake).toMatchObject({ contextComplete: false, contextRetryable: true });
+    const temperatureQueries = fixture.calls('temperatures').length;
+
+    fixture.advance(60 * 60 * 1000);
+    const after = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { contextComplete: boolean; contextRetryable: boolean } | null;
+    };
+    expect(after.wake).toMatchObject({ contextComplete: true, contextRetryable: false });
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries + 1);
+  });
+
+  it('preserves fractional Sleep-to-Home ordering from parsed climate history', async () => {
+    const fixture = makeDeps();
+    fixture.rows.states = [
+      climateRow('2026-01-19T04:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T04:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T04:00:00Z', 'temperature', '17'),
+      climateRow('2026-01-19T04:00:00Z', 'preset_mode_str', 'sleep'),
+      {
+        _time: '2026-01-19T04:00:00Z', _field: 'state', _value: 'sleep',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-19T06:00:00.123100Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T06:00:00.123100Z', 'temperature', '20'),
+      climateRow('2026-01-19T06:00:00.123789Z', 'preset_mode_str', 'home'),
+      {
+        _time: '2026-01-19T06:00:00.123456Z', _field: 'state', _value: 'home',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+    ];
+
+    const result = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { at: string; setpointBefore: number | null; setpointAfter: number | null; rooms: { atSwitch: number | null }[] } | null;
+      timeline: { t: string; comfortSetting: string | null; hvacAction: string | null; average: number | null }[];
+    };
+    expect(result.wake).toMatchObject({
+      at: '2026-01-19T06:00:00.123456Z',
+      setpointBefore: 20,
+      setpointAfter: 20,
+    });
+    expect(result.wake?.rooms.every((room) => room.atSwitch === null)).toBe(true);
+    expect(result.timeline[24]).toMatchObject({
+      comfortSetting: null,
+      hvacAction: null,
+      average: null,
+    });
+  });
+
+  it('does not retry a past day when a complete wake context is inherently unaligned', async () => {
+    const fixture = makeDeps();
+    const temperatures: Rows = [];
+    for (let t = Date.parse('2026-01-19T04:15:00Z'); t <= Date.parse('2026-01-19T07:45:00Z'); t += 15 * 60_000) {
+      ['home_current_temperature', 'office_temperature', 'kitchen_temperature'].forEach((entityId) => temperatures.push({
+        _time: new Date(t).toISOString(),
+        _value: '20',
+        _measurement: '°C',
+        entity_id: entityId,
+      }));
+    }
+    fixture.rows.temperatures = temperatures;
+    fixture.rows.states = [
+      climateRow('2026-01-19T04:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T04:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T04:00:00Z', 'temperature', '21'),
+      climateRow('2026-01-19T04:00:00Z', 'preset_mode_str', 'sleep'),
+      {
+        _time: '2026-01-19T04:00:00Z', _field: 'state', _value: 'sleep',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-19T06:05:00Z', 'preset_mode_str', 'home'),
+      {
+        _time: '2026-01-19T06:05:00Z', _field: 'state', _value: 'home',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+    ];
+
+    const before = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { contextComplete: boolean; contextRetryable: boolean; rooms: { peak: number | null }[] } | null;
+    };
+    expect(before.wake).toMatchObject({
+      contextComplete: false, contextRetryable: false,
+      context: { from: '2026-01-19T04:05:00.000Z', to: '2026-01-19T08:05:00.000Z' },
+    });
+    expect(before.wake?.rooms.every((room) => room.peak === null)).toBe(true);
+    expect(fixture.rows.temperatures).toHaveLength(45);
+    const temperatureQueries = fixture.calls('temperatures').length;
+    fixture.advance(16 * 60 * 1000);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries);
+  });
+
+  it('retries past-day analysis when the successful HVAC history query is empty', async () => {
+    const fixture = makeDeps();
+    fixture.rows.states = [];
+    const before = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: unknown;
+      timeline: { rooms: Record<string, number | null> }[];
+      coverage: { hvacHistoryAvailable: boolean };
+    };
+    expect(before.wake).toBeNull();
+    expect(before.coverage.hvacHistoryAvailable).toBe(false);
+    expect(before.timeline[24].rooms.office_temperature).not.toBeNull();
+    const temperatureQueries = fixture.calls('temperatures').length;
+
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries + 1);
+  });
 
   it('queries the selected climate attribute without identifying a physical temperature entity', async () => {
     const fixture = makeDeps();
@@ -3795,6 +4018,52 @@ describe('GET /climate/placement-insights', () => {
     });
     expect(Array.isArray(response.body.sensors)).toBe(true);
     expect(Array.isArray(response.body.recommendations)).toBe(true);
+  });
+
+  it('serves the day endpoint to admin/demo and validates dates and house-zone availability', async () => {
+    const fixture = makeDeps();
+    const response = await request(buildApp(fixture.service, 'demo'))
+      .get('/climate/placement-insights/day?date=2026-01-19&thermostatHome=true')
+      .expect(200);
+    expect(response.body).toMatchObject({
+      date: '2026-01-19', timeZone: 'UTC', unit: '°C',
+    });
+    expect(response.body.timeline).toHaveLength(96);
+    await request(buildApp(fixture.service, 'user'))
+      .get('/climate/placement-insights/day').expect(403);
+    await request(buildApp(fixture.service))
+      .get('/climate/placement-insights/day?date=2026-02-30').expect(400);
+    fixture.deps.homeAssistantConfig.getConfig.mockRejectedValue(new Error('unavailable'));
+    await request(buildApp(fixture.service))
+      .get('/climate/placement-insights/day').expect(503);
+  });
+
+  it('returns retryable 503 for an unavailable room inventory but keeps invalid IDs at 400', async () => {
+    const unavailable = makeDeps();
+    unavailable.deps.indoorClimate.cachedStatus = {
+      ...unavailable.deps.indoorClimate.cachedStatus,
+      sensors: [],
+    } as never;
+    const unavailableResponse = await request(buildApp(unavailable.service))
+      .get('/climate/placement-insights/day?date=2026-01-19&home=office_temperature')
+      .expect(503);
+    expect(unavailableResponse.body.error).toBe('Room sensor inventory is unavailable');
+    expect(unavailable.deps.indoorClimate.refresh).toHaveBeenCalledOnce();
+    expect(unavailable.deps.indoorClimate.placementDiscovery).toHaveBeenCalledOnce();
+
+    unavailable.deps.indoorClimate.cachedStatus = {
+      ...unavailable.deps.indoorClimate.cachedStatus,
+      sensors: [sensor('sensor.office_temperature', 'Office')],
+    } as never;
+    await request(buildApp(unavailable.service))
+      .get('/climate/placement-insights/day?date=2026-01-19&home=office_temperature')
+      .expect(200);
+
+    const available = makeDeps();
+    const invalidResponse = await request(buildApp(available.service))
+      .get('/climate/placement-insights/day?date=2026-01-19&home=den_temperature')
+      .expect(400);
+    expect(invalidResponse.body.error).toBe('Unknown sensor ids: den_temperature');
   });
 
   it('returns reference provenance over HTTP even when a single room yields no recommendations', async () => {

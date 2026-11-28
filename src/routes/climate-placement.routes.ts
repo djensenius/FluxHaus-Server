@@ -40,5 +40,28 @@ export default function createClimatePlacementRouter(
     }
   });
 
+  router.options('/climate/placement-insights/day', cors);
+
+  router.get('/climate/placement-insights/day', cors, async (req, res) => {
+    if (!req.user || !ALLOWED_ROLES.has(req.user.role)) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    try {
+      res.json(await service.getDayInsights(req.query.date, req.query));
+    } catch (error) {
+      if (isPlacementInputError(error)) {
+        res.status(400).json({ error: (error as Error).message });
+        return;
+      }
+      if (isPlacementUnavailableError(error)) {
+        res.status(503).json({ error: (error as Error).message });
+        return;
+      }
+      placementLogger.error({ error }, 'Failed to calculate daily sensor placement insights');
+      res.status(502).json({ error: 'Failed to calculate daily sensor placement insights' });
+    }
+  });
+
   return router;
 }
