@@ -308,6 +308,25 @@ describe('daily placement analysis', () => {
     expect(result.timeline[24].rooms).not.toHaveProperty('secondary_thermostat_temperature');
   });
 
+  it('keeps known participants when Follow Me has no occupied rooms', () => {
+    const participation: ParticipationConfig = {
+      home: ['living_temperature', 'bedroom_temperature'],
+      sleep: [],
+      away: [],
+      followMe: true,
+      thermostat: { home: false, sleep: false, away: false },
+    };
+    const unoccupied = dayInput({ participation, roomOccupancy: false, selectedShift: 0 });
+    expect(unoccupied.timeline[24].average).toBe(21);
+    expect(unoccupied.coverage.approximatedAverageBuckets).toBe(96);
+
+    const soleParticipant = dayInput({
+      participation: { ...participation, home: ['living_temperature'] },
+      selectedShift: 0,
+    });
+    expect(soleParticipant.timeline[24].average).toBe(20);
+  });
+
   it('rejects reported averages across HVAC outages and until a complete recovery anchor exists', () => {
     const result = dayInput({ reportedOutage: true });
     expect(result.timeline[24].average).toBe(24);

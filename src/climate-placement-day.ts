@@ -232,8 +232,8 @@ function availableAverage(
   config: ParticipationConfig | null,
   thermostatValues: Record<string, number | null>,
 ): number | null {
-  if (!setting || config?.followMe === null || config?.followMe === undefined) return null;
-  const selected = config?.[setting as 'home' | 'sleep' | 'away'];
+  if (!setting || config === null) return null;
+  const selected = config[setting as 'home' | 'sleep' | 'away'];
   if (selected === null || selected === undefined) return null;
   let ids = selected;
   const thermostatParticipation = config.thermostat?.[setting as 'home' | 'sleep' | 'away'];
@@ -243,9 +243,15 @@ function availableAverage(
     if (thermostatIds.length === 0) return null;
     ids = [...ids, ...thermostatIds];
   }
-  if (config.followMe) {
+  const followMe = config.followMe ?? null;
+  if (followMe !== false && !(thermostatParticipation === false && ids.length === 1)) {
     if (ids.some((id) => occupied[id] === null || occupied[id] === undefined)) return null;
-    ids = ids.filter((id) => occupied[id] === true);
+    const occupiedIds = ids.filter((id) => occupied[id] === true);
+    if (thermostatParticipation !== false && occupiedIds.length === 0) return null;
+    if (occupiedIds.length > 0 && occupiedIds.length < ids.length) {
+      if (followMe === null) return null;
+      ids = occupiedIds;
+    }
   }
   const values = ids.map((id) => (rooms[id] !== undefined ? rooms[id] : thermostatValues[id]))
     .filter((value): value is number => value !== null && value !== undefined);
