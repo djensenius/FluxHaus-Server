@@ -1,4 +1,4 @@
-import { analyzePlacementDay, resolvePlacementDay } from '../climate-placement-day';
+import { analyzePlacementDay, placementDateBounds, resolvePlacementDay } from '../climate-placement-day';
 import type { HvacSample, SensorSeriesInput } from '../climate-placement';
 
 const QUARTER = 15 * 60_000;
@@ -57,6 +57,31 @@ describe('house-calendar day resolution', () => {
       unitAssumptions: { setpoints: false, reportedTemperature: false },
     });
     expect(result.timeline).toHaveLength(96);
+  });
+
+  it('uses the earliest date occurrence when a timezone rolls back across midnight', () => {
+    const bounds = placementDateBounds('2010-03-05', 'Antarctica/Casey');
+    expect(bounds.start.toISOString()).toBe('2010-03-04T13:00:00.000Z');
+    expect(bounds.end.toISOString()).toBe('2010-03-05T16:00:00.000Z');
+    expect(bounds.end.getTime() - bounds.start.getTime()).toBe(27 * 60 * 60_000);
+
+    const selected = placementDateBounds('2010-03-06', 'Antarctica/Casey');
+    const result = analyzePlacementDay({
+      date: '2010-03-06',
+      timeZone: 'Antarctica/Casey',
+      start: selected.start.getTime(),
+      end: selected.end.getTime(),
+      historyEnd: selected.end.getTime(),
+      now: selected.end.getTime(),
+      sensors: [],
+      hvac: null,
+      comfort: null,
+      reportedTemperature: null,
+      participation: null,
+      unknownUnitWindows: 0,
+      unitAssumptions: { setpoints: false, reportedTemperature: false },
+    });
+    expect(result.coverage.baselineDays).toBe(14);
   });
 
   it.each(['2026-2-01', '2026-02-29', '2026-01-01junk', ['2026-01-01']])(

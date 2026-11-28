@@ -47,6 +47,14 @@ interface DayBucket extends PlacementDayTimelinePoint {
   sourceComplete: boolean;
 }
 
+interface TemporalDateApi {
+  PlainDate: {
+    from(value: string): {
+      toZonedDateTime(timeZone: string): { epochMilliseconds: number };
+    };
+  };
+}
+
 function localParts(timeZone: string, time: number): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
   let formatter = LOCAL_FORMATTERS.get(timeZone);
   if (!formatter) {
@@ -88,28 +96,13 @@ function calendarDate(value: string, offset: number): string {
   return dateString({ year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() });
 }
 
-// Find the first instant whose house-local calendar date is `date`. Searching
-// the date boundary rather than solving for 00:00 handles skipped and repeated
-// midnights: a gap starts at the first valid wall time, and an overlap uses
-// the earlier occurrence. Calendar-day lengths therefore retain DST changes.
+// Temporal's start-of-day semantics handle skipped and repeated midnights and
+// local-date rollbacks without assuming local dates are monotonic in UTC.
 function localDayStart(date: string, timeZone: string): number {
-  const parsed = parseDate(date);
-  if (!parsed) throw new Error('Invalid local calendar date');
-  const target = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
-  let low = target - 36 * 60 * 60 * 1000;
-  let high = target + 36 * 60 * 60 * 1000;
-  if (dateString(localParts(timeZone, low)) >= date || dateString(localParts(timeZone, high)) < date) {
-    throw new Error(`Could not bound local date ${date} in ${timeZone}`);
-  }
-  while (low < high) {
-    const middle = Math.floor((low + high) / 2);
-    if (dateString(localParts(timeZone, middle)) >= date) high = middle;
-    else low = middle + 1;
-  }
-  if (dateString(localParts(timeZone, low)) !== date) {
-    throw new Error(`Local calendar date ${date} does not exist in ${timeZone}`);
-  }
-  return low;
+  if (!parseDate(date)) throw new Error('Invalid local calendar date');
+  const temporal = (globalThis as typeof globalThis & { Temporal?: TemporalDateApi }).Temporal;
+  if (!temporal) throw new Error('Temporal is unavailable for house-local day boundaries');
+  return temporal.PlainDate.from(date).toZonedDateTime(timeZone).epochMilliseconds;
 }
 
 export function isValidTimeZone(value: unknown): value is string {
