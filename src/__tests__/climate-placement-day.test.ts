@@ -108,6 +108,7 @@ function dayInput({
   intermediateReversal = false,
   unknownSetpoint = false,
   thermostatSensors = false,
+  reportedOutage = false,
 }: {
   baselineDays?: number;
   selectedSamples?: number;
@@ -122,6 +123,7 @@ function dayInput({
   intermediateReversal?: boolean;
   unknownSetpoint?: boolean;
   thermostatSensors?: boolean;
+  reportedOutage?: boolean;
 } = {}) {
   const firstDay = START - 14 * DAY;
   const sensors: SensorSeriesInput[] = [
@@ -203,9 +205,25 @@ function dayInput({
           setpoint: 21, coolSetpoint: 24, presetMode: 'home',
         });
       }
+      if (reportedOutage && day === 14 && quarter === 25) {
+        hvac.push({
+          t, gap: true, hvacMode: null, hvacAction: null, setpoint: null, coolSetpoint: null, presetMode: null,
+        });
+      } else if (reportedOutage && day === 14 && quarter === 26) {
+        hvac.push({
+          t, gap: false, hvacMode: 'heat', hvacAction: 'heating',
+          setpoint: 21, coolSetpoint: 24, presetMode: 'home',
+        });
+      }
     }
   }
   const comfort = Array.from({ length: 15 }, (_, day) => ({ t: firstDay + day * DAY, setting: 'home' }));
+  const reportedTemperature = reportedOutage ? {
+    points: Array.from({ length: 96 }, (_, quarter) => ({
+      t: START + quarter * QUARTER,
+      v: 24,
+    })),
+  } : null;
   const result = analyzePlacementDay({
     date: DATE,
     timeZone: 'UTC',
@@ -216,7 +234,7 @@ function dayInput({
     sensors,
     hvac,
     comfort,
-    reportedTemperature: null,
+    reportedTemperature,
     participation,
     unknownUnitWindows: 0,
     unitAssumptions: { setpoints: false, reportedTemperature: false },
@@ -290,6 +308,18 @@ describe('daily placement analysis', () => {
     expect(result.timeline[24].rooms).not.toHaveProperty('secondary_thermostat_temperature');
   });
 
+  it('rejects reported averages across HVAC outages and until a complete recovery anchor exists', () => {
+    const result = dayInput({ reportedOutage: true });
+    expect(result.timeline[24].average).toBe(24);
+    expect(result.timeline[25].average).toBeNull();
+    expect(result.timeline[26].average).toBeNull();
+    expect(result.timeline[27].average).toBe(24);
+    expect(result.coverage).toMatchObject({
+      reportedAverageBuckets: 94,
+      approximatedAverageBuckets: 0,
+    });
+  });
+
   it('keeps state changes inside a source window from labeling the whole bucket', () => {
     const result = dayInput({ insideChange: true, occupancyEdge: true });
     const point = result.timeline.find((entry) => entry.t === '2026-01-15T06:00:00.000Z');
@@ -338,7 +368,7 @@ describe('daily placement analysis', () => {
       { t: time(6), gap: false, hvacMode: 'heat', hvacAction: 'heating', setpoint: 21, presetMode: 'home' },
       { t: time(6, 30), gap: false, hvacMode: 'heat', hvacAction: 'idle', setpoint: 21, presetMode: 'home' },
     ];
-    const result = analyzePlacementDay({
+    const input = {
       date: DATE,
       timeZone: 'UTC',
       start: START,
@@ -353,7 +383,8 @@ describe('daily placement analysis', () => {
       unknownUnitWindows: 0,
       unitAssumptions: { setpoints: false, reportedTemperature: false },
       incompleteSensorInventory: false,
-    });
+    };
+    const result = analyzePlacementDay(input);
     expect(result.wake).toMatchObject({
       at: new Date(time(6)).toISOString(),
       setpointBefore: 17,
@@ -365,5 +396,99 @@ describe('daily placement analysis', () => {
     });
     expect((result.wake as { rooms: { sensorId: string; atSwitch: number | null; peak: number | null; overSetpoint: number | null }[] })
       .rooms[0]).toMatchObject({ atSwitch: 22, peak: 22, overSetpoint: 1 });
+    const ambiguous = analyzePlacementDay({
+      ...input,
+      comfort: [
+        { t: time(0), setting: 'sleep', ambiguous: true },
+        { t: time(6), setting: 'home', ambiguous: true },
+      ],
+    });
+    expect(ambiguous.wake).toBeNull();
+  });
+
+  it('integrates known wake HVAC intervals while limiting gaps to their own duration', () => {
+    const time = (hour: number, minute = 0) => START + hour * 60 * 60_000 + minute * 60_000;
+    const sensors: SensorSeriesInput[] = ['living_temperature', 'bedroom_temperature'].map((id) => ({
+      id,
+      name: id,
+      isThermostat: false,
+      points: Array.from({ length: 96 }, (_, quarter) => ({ t: START + quarter * QUARTER, v: 22 })),
+    }));
+    const result = analyzePlacementDay({
+      date: DATE,
+      timeZone: 'UTC',
+      start: START,
+      end: START + DAY,
+      historyEnd: START + DAY,
+      now: START + DAY,
+      sensors,
+      hvac: [
+        { t: time(4), gap: false, hvacMode: 'heat', hvacAction: 'idle', setpoint: 17, presetMode: 'sleep' },
+        { t: time(6), gap: false, hvacMode: 'heat', hvacAction: 'heating', setpoint: 21, presetMode: 'home' },
+        { t: time(6, 7), gap: true, hvacMode: null, hvacAction: null, setpoint: null, presetMode: null },
+        { t: time(6, 20), gap: false, hvacMode: 'heat', hvacAction: 'idle', setpoint: 21, presetMode: 'home' },
+      ],
+      comfort: [{ t: time(0), setting: 'sleep' }, { t: time(6), setting: 'home' }],
+      reportedTemperature: null,
+      participation: null,
+      unknownUnitWindows: 0,
+      unitAssumptions: { setpoints: false, reportedTemperature: false },
+      incompleteSensorInventory: false,
+    });
+    expect(result.wake).toMatchObject({
+      heatingMinutes: 7,
+      coolingMinutes: 0,
+      unknownMinutes: 13,
+      contextComplete: false,
+    });
+    expect(result.timeline.find((entry) => entry.t === new Date(time(6)).toISOString()))
+      .toMatchObject({ hvacAction: null, setpoint: null });
+    expect((result.wake as { rooms: { peak: number | null }[] }).rooms[0].peak).toBe(22);
+  });
+
+  it('uses cooling targets for wake setpoints in dual-target modes', () => {
+    const time = (hour: number, minute = 0) => START + hour * 60 * 60_000 + minute * 60_000;
+    const sensors: SensorSeriesInput[] = ['living_temperature', 'bedroom_temperature'].map((id) => ({
+      id,
+      name: id,
+      isThermostat: false,
+      points: Array.from({ length: 96 }, (_, quarter) => ({ t: START + quarter * QUARTER, v: 22 })),
+    }));
+    const result = analyzePlacementDay({
+      date: DATE,
+      timeZone: 'UTC',
+      start: START,
+      end: START + DAY,
+      historyEnd: START + DAY,
+      now: START + DAY,
+      sensors,
+      hvac: [
+        {
+          t: time(4), gap: false, hvacMode: 'heat_cool', hvacAction: 'cooling',
+          setpoint: 19, coolSetpoint: 25, presetMode: 'sleep',
+        },
+        {
+          t: time(6), gap: false, hvacMode: 'heat_cool', hvacAction: 'cooling',
+          setpoint: 20, coolSetpoint: 27, presetMode: 'home',
+        },
+        {
+          t: time(6, 30), gap: false, hvacMode: 'heat_cool', hvacAction: 'idle',
+          setpoint: 20, coolSetpoint: 27, presetMode: 'home',
+        },
+      ],
+      comfort: [{ t: time(0), setting: 'sleep' }, { t: time(6), setting: 'home' }],
+      reportedTemperature: null,
+      participation: null,
+      unknownUnitWindows: 0,
+      unitAssumptions: { setpoints: false, reportedTemperature: false },
+      incompleteSensorInventory: false,
+    });
+    expect(result.wake).toMatchObject({
+      setpointBefore: 25,
+      setpointAfter: 27,
+      coolingMinutes: 150,
+    });
+    expect(result.timeline.find((entry) => entry.t === new Date(time(6)).toISOString()))
+      .toMatchObject({ setpoint: 27 });
   });
 });

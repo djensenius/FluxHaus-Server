@@ -772,6 +772,17 @@ export function reportedHasUsableHistory(reference: ReportedTemperatureInput, sa
   return evidence.points.some((point) => referenceAvailable(evidence, point.t, point.t + BUCKET_MS));
 }
 
+// Reuse the same outage and post-recovery anchor rules for consumers that
+// analyze source windows without building the placement endpoint's full grid.
+export function reportedTemperatureAvailability(
+  reference: ReportedTemperatureInput,
+  samples: HvacSample[],
+): (from: number, to: number) => boolean {
+  const sorted = [...samples].sort((a, b) => a.t - b.t);
+  const evidence = referenceEvidence(reference, sorted);
+  return (from, to) => referenceAvailable(evidence, from, to);
+}
+
 // Do not apply a later grid-time state to a source bucket, or compare sources
 // across a state change. Before the first observation, retain the legacy
 // temperature-only inference if no state arrives inside the source window.

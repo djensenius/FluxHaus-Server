@@ -16,6 +16,8 @@ unit/history are usable. Otherwise an approximation is emitted only when room
 participation is explicitly known; it is an average of room sensors, not the
 thermostat's physical sensor. The physical thermostat-associated sensor is
 excluded from `rooms`; it remains in `sensors` with null room-relative metrics.
+Reported daily averages and their coverage counts use the same HVAC outage and
+post-recovery anchor checks as the placement endpoint.
 
 Daily `dayOffset` and `baselineOffset` compare each room sensor with the
 contemporaneous mean of the same complete, discovered indoor-room cohort while
@@ -39,3 +41,9 @@ through the full two-hour-before/two-hour-after context. A recorded wake's
 mode/action and complete readings for every discovered room sensor. An
 incomplete recorded-wake context is retried using the short degraded-cache
 interval; a day with no recorded wake is not degraded for that reason.
+Wake `heatingMinutes` and `coolingMinutes` integrate known HVAC change intervals;
+`unknownMinutes` reports periods covered by an HVAC gap or missing action.
+Timeline buckets remain unknown if an HVAC change crosses their boundary.
+Recorded select history is authoritative for wake detection, including when its
+observations are ambiguous; climate presets are used only when select history
+is absent.

@@ -1,4 +1,5 @@
 import {
+  reportedTemperatureAvailability,
   BUCKET_MS,
   type ComfortSample,
   type HvacSample,
@@ -208,9 +209,16 @@ function pointAt(points: { t: number; v: number }[], time: number): number | nul
   return point?.v ?? null;
 }
 
-function reportedAt(input: ReportedTemperatureInput | null, time: number): number | null {
+type ReportedAvailable = (from: number, to: number) => boolean;
+
+function reportedAt(
+  input: ReportedTemperatureInput | null,
+  time: number,
+  available: ReportedAvailable | null,
+): number | null {
   if (!input || input.invalidWindows?.includes(time)
-    || input.invalidations?.some((t) => t >= time && t < time + BUCKET_MS)) {
+    || input.invalidations?.some((t) => t >= time && t < time + BUCKET_MS)
+    || !available?.(time, time + BUCKET_MS)) {
     return null;
   }
   return pointAt(input.points, time);
@@ -259,7 +267,7 @@ function comfortSetting(
   return preset && ['home', 'sleep', 'away'].includes(preset) ? preset : null;
 }
 
-function makeBucket(input: PlacementDayInput, start: number): DayBucket {
+function makeBucket(input: PlacementDayInput, start: number, reportedAvailable: ReportedAvailable | null): DayBucket {
   const end = start + BUCKET_MS;
   const roomSensors = input.sensors.filter((sensor) => !sensor.isThermostat);
   const sourceComplete = end <= (input.historyEnd ?? input.end) && end <= input.now;
@@ -270,7 +278,7 @@ function makeBucket(input: PlacementDayInput, start: number): DayBucket {
   const rooms = Object.fromEntries(roomSensors.map((sensor) => [sensor.id, sensorValues[sensor.id]]));
   const climate = sourceComplete ? climateAt(input.hvac, start, end) : null;
   const setting = sourceComplete ? comfortSetting(input.comfort, climate, start, end) : null;
-  const reported = sourceComplete ? reportedAt(input.reportedTemperature, start) : null;
+  const reported = sourceComplete ? reportedAt(input.reportedTemperature, start, reportedAvailable) : null;
   const occupied = Object.fromEntries(input.sensors.map((sensor) => [
     sensor.id,
     sourceComplete ? occupancyAt(sensor.occupancy, start, end) : null,
@@ -297,10 +305,10 @@ function makeBucket(input: PlacementDayInput, start: number): DayBucket {
   };
 }
 
-function makeBuckets(input: PlacementDayInput): DayBucket[] {
+function makeBuckets(input: PlacementDayInput, reportedAvailable: ReportedAvailable | null): DayBucket[] {
   const buckets: DayBucket[] = [];
   for (let start = input.start; start < input.end; start += BUCKET_MS) {
-    buckets.push(makeBucket(input, start));
+    buckets.push(makeBucket(input, start, reportedAvailable));
   }
   return buckets;
 }
@@ -336,10 +344,58 @@ function cohortOffsets(
   ]));
 }
 
-function makeWake(input: PlacementDayInput, buckets: DayBucket[]): Record<string, unknown> | null {
-  const hasComfortSettingHistory = input.comfort?.some((sample) => (
-    sample.setting !== null && !sample.ambiguous
-  )) ?? false;
+function activeSetpoint(sample: HvacSample | null): number | null {
+  if (!sample || sample.gap) return null;
+  return sample.hvacAction?.toLowerCase() === 'cooling'
+    ? sample.coolSetpoint ?? null
+    : sample.setpoint;
+}
+
+function wakeHvacActivity(
+  input: PlacementDayInput,
+  from: number,
+  to: number,
+): { heatingMinutes: number | null; coolingMinutes: number | null; unknownMinutes: number } {
+  const availableEnd = Math.max(from, Math.min(to, input.historyEnd ?? input.end, input.now));
+  const samples = [...(input.hvac ?? [])].sort((a, b) => a.t - b.t);
+  let state = lastAt(samples, from);
+  let cursor = from;
+  let heating = 0;
+  let cooling = 0;
+  let known = 0;
+  let unknown = 0;
+  const addInterval = (end: number) => {
+    const duration = Math.max(0, end - cursor);
+    if (!state || state.gap || !/^(off|heating|cooling|drying|fan|idle)$/i.test(state.hvacAction ?? '')) {
+      unknown += duration;
+    } else {
+      known += duration;
+      if (state.hvacAction?.toLowerCase() === 'heating') heating += duration;
+      if (state.hvacAction?.toLowerCase() === 'cooling') cooling += duration;
+    }
+    cursor = end;
+  };
+  samples.forEach((sample) => {
+    if (sample.t <= from || sample.t >= availableEnd) return;
+    addInterval(sample.t);
+    state = sample;
+  });
+  addInterval(availableEnd);
+  unknown += Math.max(0, to - availableEnd);
+  const minutes = (duration: number) => Math.round((duration / 60_000) * 10) / 10;
+  return {
+    heatingMinutes: known > 0 ? minutes(heating) : null,
+    coolingMinutes: known > 0 ? minutes(cooling) : null,
+    unknownMinutes: minutes(unknown),
+  };
+}
+
+function makeWake(
+  input: PlacementDayInput,
+  buckets: DayBucket[],
+  reportedAvailable: ReportedAvailable | null,
+): Record<string, unknown> | null {
+  const hasComfortSettingHistory = (input.comfort?.length ?? 0) > 0;
   const settingHistory: ComfortSample[] = hasComfortSettingHistory
     ? input.comfort ?? []
     : (input.hvac ?? []).map((sample) => ({
@@ -368,7 +424,7 @@ function makeWake(input: PlacementDayInput, buckets: DayBucket[]): Record<string
   const firstContextBucket = Math.ceil(contextStart / BUCKET_MS) * BUCKET_MS;
   const lastContextBucket = Math.floor((contextEnd - BUCKET_MS) / BUCKET_MS) * BUCKET_MS;
   for (let start = firstContextBucket; start <= lastContextBucket; start += BUCKET_MS) {
-    if (!knownStarts.has(start)) context.push(makeBucket(input, start));
+    if (!knownStarts.has(start)) context.push(makeBucket(input, start, reportedAvailable));
   }
   context.sort((a, b) => a.start - b.start);
   const roomSensors = input.sensors.filter((sensor) => !sensor.isThermostat);
@@ -402,14 +458,14 @@ function makeWake(input: PlacementDayInput, buckets: DayBucket[]): Record<string
       overSetpoint,
     };
   });
-  const minutes = (action: string) => completeContext
-    ? context.filter((bucket) => bucket.hvacAction?.toLowerCase() === action).length * 15 : null;
+  const activity = wakeHvacActivity(input, contextStart, contextEnd);
   return {
     at: new Date(selected.t).toISOString(),
-    setpointBefore: before && !before.gap ? before.setpoint : null,
-    setpointAfter: after && !after.gap && !afterAmbiguous ? after.setpoint : null,
-    heatingMinutes: minutes('heating'),
-    coolingMinutes: minutes('cooling'),
+    setpointBefore: activeSetpoint(before),
+    setpointAfter: afterAmbiguous ? null : activeSetpoint(after),
+    heatingMinutes: activity.heatingMinutes,
+    coolingMinutes: activity.coolingMinutes,
+    unknownMinutes: activity.unknownMinutes,
     contextComplete: completeContext,
     rooms,
     context: { from: new Date(contextStart).toISOString(), to: new Date(contextEnd).toISOString() },
@@ -417,7 +473,10 @@ function makeWake(input: PlacementDayInput, buckets: DayBucket[]): Record<string
 }
 
 export function analyzePlacementDay(input: PlacementDayInput) {
-  const buckets = makeBuckets(input);
+  const reportedAvailable = input.reportedTemperature
+    ? reportedTemperatureAvailability(input.reportedTemperature, input.hvac ?? [])
+    : null;
+  const buckets = makeBuckets(input, reportedAvailable);
   const roomSensors = input.sensors.filter((sensor) => !sensor.isThermostat);
   const baselineByMode = new Map<string, Map<string, DayOffset[]>>();
   (['heating', 'cooling'] as const).forEach((mode) => {
@@ -514,7 +573,7 @@ export function analyzePlacementDay(input: PlacementDayInput) {
     timeZone: input.timeZone,
     unit: '°C' as const,
     timeline: buckets.map(({ start: _start, end: _end, sourceComplete: _complete, ...point }) => point),
-    wake: makeWake(input, buckets),
+    wake: makeWake(input, buckets, reportedAvailable),
     sensors,
     findings,
     coverage: {
@@ -529,9 +588,9 @@ export function analyzePlacementDay(input: PlacementDayInput) {
       )).length,
       missingAverageBuckets: buckets.filter((bucket) => bucket.sourceComplete && bucket.average === null).length,
       reportedAverageBuckets: buckets.filter((bucket) => bucket.sourceComplete && bucket.average !== null
-        && reportedAt(input.reportedTemperature, bucket.start) !== null).length,
+        && reportedAt(input.reportedTemperature, bucket.start, reportedAvailable) !== null).length,
       approximatedAverageBuckets: buckets.filter((bucket) => bucket.sourceComplete && bucket.average !== null
-        && reportedAt(input.reportedTemperature, bucket.start) === null).length,
+        && reportedAt(input.reportedTemperature, bucket.start, reportedAvailable) === null).length,
       unknownUnitWindowsScope: 'selected date, baseline and wake-context query',
       hvacHistoryAvailable: input.hvac !== null && input.hvac.length > 0,
       occupancyKnownReadings: occupancyKnown,

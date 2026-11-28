@@ -943,6 +943,7 @@ export class ClimatePlacementService {
       insights,
       degraded: data.degraded || incompleteSensorInventory
         || (insights.wake !== null && insights.wake.contextComplete !== true)
+        || !insights.coverage.hvacHistoryAvailable
         || sensors.length === 0
         || data.series.every((sensor) => sensor.points.length === 0),
     };

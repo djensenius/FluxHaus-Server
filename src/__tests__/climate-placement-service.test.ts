@@ -1660,6 +1660,24 @@ describe('ClimatePlacementService', () => {
     expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries + 1);
   });
 
+  it('retries past-day analysis when the successful HVAC history query is empty', async () => {
+    const fixture = makeDeps();
+    fixture.rows.states = [];
+    const before = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: unknown;
+      timeline: { rooms: Record<string, number | null> }[];
+      coverage: { hvacHistoryAvailable: boolean };
+    };
+    expect(before.wake).toBeNull();
+    expect(before.coverage.hvacHistoryAvailable).toBe(false);
+    expect(before.timeline[24].rooms.office_temperature).not.toBeNull();
+    const temperatureQueries = fixture.calls('temperatures').length;
+
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries + 1);
+  });
+
   it('queries the selected climate attribute without identifying a physical temperature entity', async () => {
     const fixture = makeDeps();
     useClimateReference(fixture);
