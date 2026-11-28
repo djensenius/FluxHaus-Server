@@ -433,7 +433,7 @@ describe('daily placement analysis', () => {
     const afterSwitch: HvacSample = {
       t: selected, gap: false, hvacMode: 'heat', hvacAction: 'idle', setpoint: 22, presetMode: 'home',
     };
-    const result = analyzePlacementDay({
+    const input = {
       date: DATE,
       timeZone: 'UTC',
       start: START,
@@ -461,7 +461,8 @@ describe('daily placement analysis', () => {
       unknownUnitWindows: 0,
       unitAssumptions: { setpoints: false, reportedTemperature: false },
       incompleteSensorInventory: false,
-    });
+    };
+    const result = analyzePlacementDay(input);
     expect(result.wake).toMatchObject({
       at: '2026-01-15T06:00:00.123456Z',
       setpointBefore: 20,
@@ -473,6 +474,26 @@ describe('daily placement analysis', () => {
     wakeRooms.forEach((room) => expect(room).toMatchObject({ atSwitch: null, peak: null }));
     expect(result.timeline.find((entry) => entry.t === '2026-01-15T06:00:00.000Z'))
       .toMatchObject({ hvacAction: null, setpoint: null });
+
+    const boundaryEvent = Date.parse('2026-01-15T06:00:00.000123456Z');
+    const boundaryResult = analyzePlacementDay({
+      ...input,
+      hvac: [prior],
+      comfort: [
+        { t: time(4), setting: 'sleep' },
+        { t: boundaryEvent, setting: 'home', subMillisecond: '123456' },
+      ],
+    });
+    expect(boundaryResult.wake).toMatchObject({
+      at: '2026-01-15T06:00:00.000123456Z',
+      setpointBefore: 17,
+      setpointAfter: 17,
+    });
+    const boundaryRooms = (boundaryResult.wake as {
+      rooms: { atSwitch: number | null; peak: number | null }[];
+    }).rooms;
+    expect(boundaryRooms).toHaveLength(2);
+    boundaryRooms.forEach((room) => expect(room).toMatchObject({ atSwitch: null, peak: 22 }));
   });
 
   it('integrates known wake HVAC intervals while limiting gaps to their own duration', () => {

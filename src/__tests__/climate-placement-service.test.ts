@@ -1660,6 +1660,43 @@ describe('ClimatePlacementService', () => {
     expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries + 1);
   });
 
+  it('preserves fractional Sleep-to-Home ordering from parsed climate history', async () => {
+    const fixture = makeDeps();
+    fixture.rows.states = [
+      climateRow('2026-01-19T04:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T04:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T04:00:00Z', 'temperature', '17'),
+      climateRow('2026-01-19T04:00:00Z', 'preset_mode_str', 'sleep'),
+      {
+        _time: '2026-01-19T04:00:00Z', _field: 'state', _value: 'sleep',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-19T06:00:00.123100Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T06:00:00.123100Z', 'temperature', '20'),
+      climateRow('2026-01-19T06:00:00.123789Z', 'preset_mode_str', 'home'),
+      {
+        _time: '2026-01-19T06:00:00.123456Z', _field: 'state', _value: 'home',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+    ];
+
+    const result = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { at: string; setpointBefore: number | null; setpointAfter: number | null; rooms: { atSwitch: number | null }[] } | null;
+      timeline: { t: string; comfortSetting: string | null; hvacAction: string | null; average: number | null }[];
+    };
+    expect(result.wake).toMatchObject({
+      at: '2026-01-19T06:00:00.123456Z',
+      setpointBefore: 20,
+      setpointAfter: 20,
+    });
+    expect(result.wake?.rooms.every((room) => room.atSwitch === null)).toBe(true);
+    expect(result.timeline[24]).toMatchObject({
+      comfortSetting: null,
+      hvacAction: null,
+      average: null,
+    });
+  });
+
   it('does not retry a past day when a complete wake context is inherently unaligned', async () => {
     const fixture = makeDeps();
     const temperatures: Rows = [];
@@ -1693,8 +1730,10 @@ describe('ClimatePlacementService', () => {
     };
     expect(before.wake).toMatchObject({
       contextComplete: false, contextRetryable: false,
+      context: { from: '2026-01-19T04:05:00.000Z', to: '2026-01-19T08:05:00.000Z' },
     });
     expect(before.wake?.rooms.every((room) => room.peak === null)).toBe(true);
+    expect(fixture.rows.temperatures).toHaveLength(45);
     const temperatureQueries = fixture.calls('temperatures').length;
     fixture.advance(16 * 60 * 1000);
     await fixture.service.getDayInsights('2026-01-19');
@@ -4009,6 +4048,16 @@ describe('GET /climate/placement-insights', () => {
       .get('/climate/placement-insights/day?date=2026-01-19&home=office_temperature')
       .expect(503);
     expect(unavailableResponse.body.error).toBe('Room sensor inventory is unavailable');
+    expect(unavailable.deps.indoorClimate.refresh).toHaveBeenCalledOnce();
+    expect(unavailable.deps.indoorClimate.placementDiscovery).toHaveBeenCalledOnce();
+
+    unavailable.deps.indoorClimate.cachedStatus = {
+      ...unavailable.deps.indoorClimate.cachedStatus,
+      sensors: [sensor('sensor.office_temperature', 'Office')],
+    } as never;
+    await request(buildApp(unavailable.service))
+      .get('/climate/placement-insights/day?date=2026-01-19&home=office_temperature')
+      .expect(200);
 
     const available = makeDeps();
     const invalidResponse = await request(buildApp(available.service))
