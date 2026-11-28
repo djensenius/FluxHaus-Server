@@ -1647,17 +1647,58 @@ describe('ClimatePlacementService', () => {
     ];
 
     const before = await fixture.service.getDayInsights('2026-01-19') as {
-      wake: { contextComplete: boolean } | null;
+      wake: { contextComplete: boolean; contextRetryable: boolean } | null;
     };
-    expect(before.wake).toMatchObject({ contextComplete: false });
+    expect(before.wake).toMatchObject({ contextComplete: false, contextRetryable: true });
     const temperatureQueries = fixture.calls('temperatures').length;
 
     fixture.advance(60 * 60 * 1000);
     const after = await fixture.service.getDayInsights('2026-01-19') as {
-      wake: { contextComplete: boolean } | null;
+      wake: { contextComplete: boolean; contextRetryable: boolean } | null;
     };
-    expect(after.wake).toMatchObject({ contextComplete: true });
+    expect(after.wake).toMatchObject({ contextComplete: true, contextRetryable: false });
     expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries + 1);
+  });
+
+  it('does not retry a past day when a complete wake context is inherently unaligned', async () => {
+    const fixture = makeDeps();
+    const temperatures: Rows = [];
+    for (let t = Date.parse('2026-01-19T04:15:00Z'); t <= Date.parse('2026-01-19T07:45:00Z'); t += 15 * 60_000) {
+      ['home_current_temperature', 'office_temperature', 'kitchen_temperature'].forEach((entityId) => temperatures.push({
+        _time: new Date(t).toISOString(),
+        _value: '20',
+        _measurement: '°C',
+        entity_id: entityId,
+      }));
+    }
+    fixture.rows.temperatures = temperatures;
+    fixture.rows.states = [
+      climateRow('2026-01-19T04:00:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T04:00:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T04:00:00Z', 'temperature', '21'),
+      climateRow('2026-01-19T04:00:00Z', 'preset_mode_str', 'sleep'),
+      {
+        _time: '2026-01-19T04:00:00Z', _field: 'state', _value: 'sleep',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-19T06:05:00Z', 'preset_mode_str', 'home'),
+      {
+        _time: '2026-01-19T06:05:00Z', _field: 'state', _value: 'home',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+    ];
+
+    const before = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { contextComplete: boolean; contextRetryable: boolean; rooms: { peak: number | null }[] } | null;
+    };
+    expect(before.wake).toMatchObject({
+      contextComplete: false, contextRetryable: false,
+    });
+    expect(before.wake?.rooms.every((room) => room.peak === null)).toBe(true);
+    const temperatureQueries = fixture.calls('temperatures').length;
+    fixture.advance(16 * 60 * 1000);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries);
   });
 
   it('retries past-day analysis when the successful HVAC history query is empty', async () => {
@@ -3956,6 +3997,24 @@ describe('GET /climate/placement-insights', () => {
     fixture.deps.homeAssistantConfig.getConfig.mockRejectedValue(new Error('unavailable'));
     await request(buildApp(fixture.service))
       .get('/climate/placement-insights/day').expect(503);
+  });
+
+  it('returns retryable 503 for an unavailable room inventory but keeps invalid IDs at 400', async () => {
+    const unavailable = makeDeps();
+    unavailable.deps.indoorClimate.cachedStatus = {
+      ...unavailable.deps.indoorClimate.cachedStatus,
+      sensors: [],
+    } as never;
+    const unavailableResponse = await request(buildApp(unavailable.service))
+      .get('/climate/placement-insights/day?date=2026-01-19&home=office_temperature')
+      .expect(503);
+    expect(unavailableResponse.body.error).toBe('Room sensor inventory is unavailable');
+
+    const available = makeDeps();
+    const invalidResponse = await request(buildApp(available.service))
+      .get('/climate/placement-insights/day?date=2026-01-19&home=den_temperature')
+      .expect(400);
+    expect(invalidResponse.body.error).toBe('Unknown sensor ids: den_temperature');
   });
 
   it('returns reference provenance over HTTP even when a single room yields no recommendations', async () => {

@@ -895,6 +895,10 @@ export class ClimatePlacementService {
       })
       .filter((sensor) => SAFE_OBJECT_ID.test(sensor.id)
         && !OUTDOOR_PATTERN.test(sensor.id) && !OUTDOOR_PATTERN.test(sensor.name));
+    const roomSensors = sensors.filter((sensor) => !sensor.isThermostat);
+    if (roomSensors.length === 0) {
+      throw namedError('PlacementUnavailableError', 'Room sensor inventory is unavailable');
+    }
     if (config) {
       const selected = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []);
       const thermostatIds = new Set(sensors.filter((sensor) => sensor.isThermostat).map((sensor) => sensor.id));
@@ -903,7 +907,7 @@ export class ClimatePlacementService {
         throw inputError(`Thermostat-associated sensors cannot be listed as rooms: ${[...new Set(thermostatMembers)].join(', ')}. `
           + 'Use thermostatHome, thermostatSleep or thermostatAway to configure the built-in sensor.');
       }
-      const known = new Set(sensors.filter((sensor) => !sensor.isThermostat).map((sensor) => sensor.id));
+      const known = new Set(roomSensors.map((sensor) => sensor.id));
       const unknown = selected.filter((id) => !known.has(id));
       if (unknown.length > 0) throw inputError(`Unknown sensor ids: ${[...new Set(unknown)].join(', ')}`);
     }
@@ -942,7 +946,7 @@ export class ClimatePlacementService {
     return {
       insights,
       degraded: data.degraded || incompleteSensorInventory
-        || (insights.wake !== null && insights.wake.contextComplete !== true)
+        || (insights.wake !== null && insights.wake.contextRetryable === true)
         || !insights.coverage.hvacHistoryAvailable
         || sensors.length === 0
         || data.series.every((sensor) => sensor.points.length === 0),

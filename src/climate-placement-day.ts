@@ -1,4 +1,5 @@
 import {
+  compareSubMillisecond,
   reportedTemperatureAvailability,
   BUCKET_MS,
   type ComfortSample,
@@ -351,6 +352,54 @@ function activeSetpoint(sample: HvacSample | null): number | null {
     : sample.setpoint;
 }
 
+function hvacStateAtTransition(
+  samples: HvacSample[] | null,
+  time: number,
+  fraction: string,
+): HvacSample | null {
+  if (!samples) return null;
+  const previous = lastAt(samples, time - 1);
+  const current = lastAt(samples, time);
+  if (!current || current.t !== time) return previous;
+  if (current.orderedUpdates?.length) {
+    let selected = previous;
+    for (const update of current.orderedUpdates) {
+      const order = compareSubMillisecond(update.subMillisecond, fraction);
+      if (order === 0) return null;
+      if (order < 0) selected = update.sample;
+    }
+    return selected;
+  }
+  const fractions = [
+    ...Object.values(current.subMillisecondFields ?? {}),
+    ...((current.setpointObservedAt === undefined || current.setpointObservedAt === current.t)
+      ? [current.setpointObservedSubMillisecond ?? ''] : []),
+    current.actionObservedLastSubMillisecond ?? '',
+  ].filter(Boolean);
+  const uniqueFractions = [...new Set(fractions)];
+  if (uniqueFractions.length > 1) return null;
+  const order = compareSubMillisecond(uniqueFractions[0] ?? '', fraction);
+  if (order === 0) return null;
+  return order < 0 ? current : previous;
+}
+
+function preciseISOString(time: number, fraction?: string): string {
+  const timestamp = new Date(time).toISOString();
+  return fraction ? timestamp.replace(/Z$/, `${fraction}Z`) : timestamp;
+}
+
+function hvacWindowEvidenceComplete(input: PlacementDayInput, start: number, end: number): boolean {
+  const known = (sample: HvacSample) => !sample.gap
+    && sample.hvacMode !== null && sample.hvacAction !== null;
+  const state = lastAt(input.hvac, start);
+  if (!state || !known(state)) return false;
+  return inWindow(input.hvac, start, end).every((sample) => (
+    sample.orderedUpdates?.length
+      ? sample.orderedUpdates.every((update) => known(update.sample))
+      : known(sample)
+  ));
+}
+
 function wakeHvacActivity(
   input: PlacementDayInput,
   from: number,
@@ -405,17 +454,26 @@ function makeWake(
         ? { subMillisecond: sample.subMillisecondFields.preset_mode } : {}),
     }));
   const transitions = settingHistory.filter((sample, index, history) => {
-    if (sample.setting?.toLowerCase() !== 'home' || sample.ambiguous || sample.subMillisecond) return false;
+    if (sample.setting?.toLowerCase() !== 'home' || sample.ambiguous) return false;
     const before = history[index - 1];
-    return !!before && !before.ambiguous && before.setting?.toLowerCase() === 'sleep';
+    const orderedBefore = before && (before.t < sample.t || (
+      before.t === sample.t
+        && compareSubMillisecond(before.subMillisecond ?? '', sample.subMillisecond ?? '') < 0
+    ));
+    return !!before && !!orderedBefore && !before.ambiguous && before.setting?.toLowerCase() === 'sleep';
   });
   const selected = transitions.find((sample) => sample.t >= input.start && sample.t < input.end);
   if (!selected) return null;
   const contextStart = selected.t - 2 * 60 * 60 * 1000;
   const contextEnd = selected.t + 2 * 60 * 60 * 1000;
-  const before = lastAt(input.hvac, selected.t - 1);
-  const after = lastAt(input.hvac, selected.t);
-  const afterAmbiguous = after?.t === selected.t && (
+  const fractionalTransition = !!selected.subMillisecond;
+  const before = fractionalTransition
+    ? hvacStateAtTransition(input.hvac, selected.t, selected.subMillisecond!)
+    : lastAt(input.hvac, selected.t - 1);
+  const after = fractionalTransition
+    ? hvacStateAtTransition(input.hvac, selected.t, selected.subMillisecond!)
+    : lastAt(input.hvac, selected.t);
+  const afterAmbiguous = !fractionalTransition && after?.t === selected.t && (
     !!after.subMillisecondFields && Object.keys(after.subMillisecondFields).length > 0
     || !!after.orderedUpdates?.some((update) => update.subMillisecond !== '')
   );
@@ -428,11 +486,16 @@ function makeWake(
   }
   context.sort((a, b) => a.start - b.start);
   const roomSensors = input.sensors.filter((sensor) => !sensor.isThermostat);
-  const completeContext = context.length === 16
-    && context.every((bucket) => (
-      bucket.sourceComplete && bucket.hvacMode !== null && bucket.hvacAction !== null
-        && roomSensors.every((sensor) => bucket.rooms[sensor.id] !== null)
-    ));
+  const contextEvidenceComplete = context.every((bucket) => (
+    bucket.sourceComplete && bucket.hvacMode !== null && bucket.hvacAction !== null
+      && roomSensors.every((sensor) => bucket.rooms[sensor.id] !== null)
+  ));
+  const completeContext = context.length === 16 && contextEvidenceComplete;
+  const contextRetryable = context.some((bucket) => (
+    !bucket.sourceComplete
+      || roomSensors.some((sensor) => bucket.rooms[sensor.id] === null)
+      || !hvacWindowEvidenceComplete(input, bucket.start, bucket.end)
+  ));
   const rooms = roomSensors.map((sensor) => {
     const switchBucket = buckets.find((bucket) => bucket.start <= selected.t && selected.t < bucket.end);
     const afterBuckets = context.filter((bucket) => bucket.start >= selected.t);
@@ -451,7 +514,7 @@ function makeWake(
     })();
     return {
       sensorId: sensor.id,
-      atSwitch: switchBucket?.sourceComplete && switchBucket.start === selected.t
+      atSwitch: !selected.subMillisecond && switchBucket?.sourceComplete && switchBucket.start === selected.t
         ? switchBucket.rooms[sensor.id] ?? null : null,
       peak,
       peakAt: peakAt === null ? null : new Date(peakAt).toISOString(),
@@ -460,15 +523,19 @@ function makeWake(
   });
   const activity = wakeHvacActivity(input, contextStart, contextEnd);
   return {
-    at: new Date(selected.t).toISOString(),
+    at: preciseISOString(selected.t, selected.subMillisecond),
     setpointBefore: activeSetpoint(before),
     setpointAfter: afterAmbiguous ? null : activeSetpoint(after),
     heatingMinutes: activity.heatingMinutes,
     coolingMinutes: activity.coolingMinutes,
     unknownMinutes: activity.unknownMinutes,
     contextComplete: completeContext,
+    contextRetryable,
     rooms,
-    context: { from: new Date(contextStart).toISOString(), to: new Date(contextEnd).toISOString() },
+    context: {
+      from: preciseISOString(contextStart, selected.subMillisecond),
+      to: preciseISOString(contextEnd, selected.subMillisecond),
+    },
   };
 }
 

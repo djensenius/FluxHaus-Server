@@ -392,6 +392,7 @@ describe('daily placement analysis', () => {
       heatingMinutes: 30,
       coolingMinutes: 0,
       contextComplete: true,
+      contextRetryable: false,
       context: { from: new Date(time(4)).toISOString(), to: new Date(time(8)).toISOString() },
     });
     expect((result.wake as { rooms: { sensorId: string; atSwitch: number | null; peak: number | null; overSetpoint: number | null }[] })
@@ -412,6 +413,66 @@ describe('daily placement analysis', () => {
     });
     expect(ambiguous.wake).toBeNull();
     expect(ambiguous.timeline.find((entry) => entry.t === new Date(time(6)).toISOString())?.average).toBeNull();
+  });
+
+  it('retains a fractional Sleep-to-Home wake and orders HVAC evidence around the switch', () => {
+    const time = (hour: number) => START + hour * 60 * 60_000;
+    const selected = Date.parse('2026-01-15T06:00:00.123456Z');
+    const sensors: SensorSeriesInput[] = ['living_temperature', 'bedroom_temperature'].map((id) => ({
+      id,
+      name: id,
+      isThermostat: false,
+      points: Array.from({ length: 96 }, (_, quarter) => ({ t: START + quarter * QUARTER, v: 22 })),
+    }));
+    const prior: HvacSample = {
+      t: time(4), gap: false, hvacMode: 'heat', hvacAction: 'idle', setpoint: 17, presetMode: 'sleep',
+    };
+    const beforeSwitch: HvacSample = {
+      t: selected, gap: false, hvacMode: 'heat', hvacAction: 'heating', setpoint: 20, presetMode: 'sleep',
+    };
+    const afterSwitch: HvacSample = {
+      t: selected, gap: false, hvacMode: 'heat', hvacAction: 'idle', setpoint: 22, presetMode: 'home',
+    };
+    const result = analyzePlacementDay({
+      date: DATE,
+      timeZone: 'UTC',
+      start: START,
+      end: START + DAY,
+      historyEnd: START + DAY,
+      now: START + DAY,
+      sensors,
+      hvac: [
+        prior,
+        {
+          ...afterSwitch,
+          subMillisecondFields: { hvac_action: '789', temperature: '789', preset_mode: '789' },
+          orderedUpdates: [
+            { subMillisecond: '100', sample: beforeSwitch },
+            { subMillisecond: '789', sample: afterSwitch },
+          ],
+        },
+      ],
+      comfort: [
+        { t: time(4), setting: 'sleep' },
+        { t: selected, setting: 'home', subMillisecond: '456' },
+      ],
+      reportedTemperature: null,
+      participation: null,
+      unknownUnitWindows: 0,
+      unitAssumptions: { setpoints: false, reportedTemperature: false },
+      incompleteSensorInventory: false,
+    });
+    expect(result.wake).toMatchObject({
+      at: '2026-01-15T06:00:00.123456Z',
+      setpointBefore: 20,
+      setpointAfter: 20,
+      contextRetryable: false,
+    });
+    const wakeRooms = (result.wake as { rooms: { atSwitch: number | null; peak: number | null }[] }).rooms;
+    expect(wakeRooms).toHaveLength(2);
+    wakeRooms.forEach((room) => expect(room).toMatchObject({ atSwitch: null, peak: null }));
+    expect(result.timeline.find((entry) => entry.t === '2026-01-15T06:00:00.000Z'))
+      .toMatchObject({ hvacAction: null, setpoint: null });
   });
 
   it('integrates known wake HVAC intervals while limiting gaps to their own duration', () => {

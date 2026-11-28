@@ -41,6 +41,9 @@ through the full two-hour-before/two-hour-after context. A recorded wake's
 mode/action and complete readings for every discovered room sensor. An
 incomplete recorded-wake context is retried using the short degraded-cache
 interval; a day with no recorded wake is not degraded for that reason.
+`contextRetryable` distinguishes missing or unfinished source evidence from
+source-window alignment alone. A wake between 15-minute boundaries can have
+incomplete context metrics without repeatedly retrying a complete past day.
 Wake `heatingMinutes` and `coolingMinutes` integrate known HVAC change intervals;
 `unknownMinutes` reports periods covered by an HVAC gap or missing action.
 Timeline buckets remain unknown if an HVAC change crosses their boundary.
