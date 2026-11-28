@@ -18,6 +18,47 @@ describe('house-calendar day resolution', () => {
     expect(fall.end.getTime() - fall.start.getTime()).toBe(25 * 60 * 60_000);
   });
 
+  it('uses the first instant of dates with skipped or ambiguous local midnight', () => {
+    const santiago = resolvePlacementDay(
+      '2026-09-06', 'America/Santiago', new Date('2026-09-07T12:00:00Z'),
+    );
+    const havanaSpring = resolvePlacementDay(
+      '2026-03-08', 'America/Havana', new Date('2026-03-09T12:00:00Z'),
+    );
+    const havanaFall = resolvePlacementDay(
+      '2026-11-01', 'America/Havana', new Date('2026-11-02T12:00:00Z'),
+    );
+    expect(santiago.start.toISOString()).toBe('2026-09-06T04:00:00.000Z');
+    expect(santiago.end.getTime() - santiago.start.getTime()).toBe(23 * 60 * 60_000);
+    expect(havanaSpring.start.toISOString()).toBe('2026-03-08T05:00:00.000Z');
+    expect(havanaSpring.end.getTime() - havanaSpring.start.getTime()).toBe(23 * 60 * 60_000);
+    // Havana's midnight occurs twice on the fall-back date; choose the earlier one.
+    expect(havanaFall.start.toISOString()).toBe('2026-11-01T04:00:00.000Z');
+    expect(havanaFall.end.getTime() - havanaFall.start.getTime()).toBe(25 * 60 * 60_000);
+  });
+
+  it('resolves baseline calendar boundaries across a skipped-midnight date', () => {
+    const selected = resolvePlacementDay(
+      '2026-09-07', 'America/Santiago', new Date('2026-09-08T12:00:00Z'),
+    );
+    const result = analyzePlacementDay({
+      date: selected.date,
+      timeZone: 'America/Santiago',
+      start: selected.start.getTime(),
+      end: selected.end.getTime(),
+      historyEnd: selected.end.getTime(),
+      now: selected.end.getTime(),
+      sensors: [],
+      hvac: null,
+      comfort: null,
+      reportedTemperature: null,
+      participation: null,
+      unknownUnitWindows: 0,
+      unitAssumptions: { setpoints: false, reportedTemperature: false },
+    });
+    expect(result.timeline).toHaveLength(96);
+  });
+
   it.each(['2026-2-01', '2026-02-29', '2026-01-01junk', ['2026-01-01']])(
     'rejects malformed or impossible explicit date %j',
     (date) => {

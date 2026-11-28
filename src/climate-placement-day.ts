@@ -12,6 +12,7 @@ const MIN_HEATING_SAMPLES = 8;
 const MIN_COOLING_SAMPLES = 2;
 const MIN_BASELINE_DAYS = 3;
 const UNUSUAL_SHIFT_C = 0.5;
+const LOCAL_FORMATTERS = new Map<string, Intl.DateTimeFormat>();
 
 export interface PlacementDayInput {
   date: string;
@@ -47,16 +48,21 @@ interface DayBucket extends PlacementDayTimelinePoint {
 }
 
 function localParts(timeZone: string, time: number): { year: number; month: number; day: number; hour: number; minute: number; second: number } {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: 'h23',
-  }).formatToParts(new Date(time));
+  let formatter = LOCAL_FORMATTERS.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat('en-CA', {
+      timeZone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23',
+    });
+    LOCAL_FORMATTERS.set(timeZone, formatter);
+  }
+  const parts = formatter.formatToParts(new Date(time));
   const values = Object.fromEntries(parts.map(({ type, value }) => [type, Number(value)]));
   return {
     year: values.year, month: values.month, day: values.day,
@@ -82,26 +88,28 @@ function calendarDate(value: string, offset: number): string {
   return dateString({ year: shifted.getUTCFullYear(), month: shifted.getUTCMonth() + 1, day: shifted.getUTCDate() });
 }
 
-// Convert a house-local midnight to an instant by correcting the UTC guess
-// against Intl's formatted wall time. This uses calendar dates, not 24-hour
-// arithmetic, so days crossing DST are 23 or 25 hours as appropriate.
-function localMidnight(date: string, timeZone: string): number {
+// Find the first instant whose house-local calendar date is `date`. Searching
+// the date boundary rather than solving for 00:00 handles skipped and repeated
+// midnights: a gap starts at the first valid wall time, and an overlap uses
+// the earlier occurrence. Calendar-day lengths therefore retain DST changes.
+function localDayStart(date: string, timeZone: string): number {
   const parsed = parseDate(date);
   if (!parsed) throw new Error('Invalid local calendar date');
   const target = Date.UTC(parsed.year, parsed.month - 1, parsed.day);
-  let instant = target;
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    const local = localParts(timeZone, instant);
-    const represented = Date.UTC(local.year, local.month - 1, local.day, local.hour, local.minute, local.second);
-    const correction = target - represented;
-    if (correction === 0) return instant;
-    instant += correction;
+  let low = target - 36 * 60 * 60 * 1000;
+  let high = target + 36 * 60 * 60 * 1000;
+  if (dateString(localParts(timeZone, low)) >= date || dateString(localParts(timeZone, high)) < date) {
+    throw new Error(`Could not bound local date ${date} in ${timeZone}`);
   }
-  const local = localParts(timeZone, instant);
-  if (dateString(local) !== date || local.hour !== 0 || local.minute !== 0 || local.second !== 0) {
-    throw new Error(`Could not resolve local midnight for ${date} in ${timeZone}`);
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    if (dateString(localParts(timeZone, middle)) >= date) high = middle;
+    else low = middle + 1;
   }
-  return instant;
+  if (dateString(localParts(timeZone, low)) !== date) {
+    throw new Error(`Local calendar date ${date} does not exist in ${timeZone}`);
+  }
+  return low;
 }
 
 export function isValidTimeZone(value: unknown): value is string {
@@ -130,8 +138,8 @@ export function resolvePlacementDay(
   }
   return {
     date: requested,
-    start: new Date(localMidnight(requested, timeZone)),
-    end: new Date(localMidnight(calendarDate(requested, 1), timeZone)),
+    start: new Date(localDayStart(requested, timeZone)),
+    end: new Date(localDayStart(calendarDate(requested, 1), timeZone)),
     today,
   };
 }
@@ -139,8 +147,8 @@ export function resolvePlacementDay(
 export function placementDateBounds(date: string, timeZone: string): { start: Date; end: Date } {
   if (!parseDate(date) || !isValidTimeZone(timeZone)) throw new Error('Invalid house date or time zone');
   return {
-    start: new Date(localMidnight(date, timeZone)),
-    end: new Date(localMidnight(calendarDate(date, 1), timeZone)),
+    start: new Date(localDayStart(date, timeZone)),
+    end: new Date(localDayStart(calendarDate(date, 1), timeZone)),
   };
 }
 
@@ -408,8 +416,8 @@ export function analyzePlacementDay(input: PlacementDayInput) {
     const daily = new Map<string, DayOffset[]>();
     for (let day = 0; day < 14; day += 1) {
       const date = calendarDate(input.date, day - 14);
-      const from = localMidnight(date, input.timeZone);
-      const to = localMidnight(calendarDate(date, 1), input.timeZone);
+      const from = localDayStart(date, input.timeZone);
+      const to = localDayStart(calendarDate(date, 1), input.timeZone);
       const baselineBuckets: DayBucket[] = [];
       for (let start = from; start < to; start += BUCKET_MS) {
         if (start + BUCKET_MS > to) continue;
