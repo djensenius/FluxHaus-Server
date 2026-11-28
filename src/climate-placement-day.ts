@@ -467,6 +467,7 @@ function makeWake(
   const contextStart = selected.t - 2 * 60 * 60 * 1000;
   const contextEnd = selected.t + 2 * 60 * 60 * 1000;
   const fractionalTransition = !!selected.subMillisecond;
+  const fractionalOffset = compareSubMillisecond(selected.subMillisecond ?? '', '') > 0;
   const before = fractionalTransition
     ? hvacStateAtTransition(input.hvac, selected.t, selected.subMillisecond!)
     : lastAt(input.hvac, selected.t - 1);
@@ -477,9 +478,13 @@ function makeWake(
     !!after.subMillisecondFields && Object.keys(after.subMillisecondFields).length > 0
     || !!after.orderedUpdates?.some((update) => update.subMillisecond !== '')
   );
-  const context = buckets.filter((bucket) => bucket.start >= contextStart && bucket.end <= contextEnd);
+  const context = buckets.filter((bucket) => (
+    (bucket.start > contextStart || (bucket.start === contextStart && !fractionalOffset))
+      && bucket.end <= contextEnd
+  ));
   const knownStarts = new Set(context.map((bucket) => bucket.start));
-  const firstContextBucket = Math.ceil(contextStart / BUCKET_MS) * BUCKET_MS;
+  const firstContextBucket = Math.ceil(contextStart / BUCKET_MS) * BUCKET_MS
+    + (fractionalOffset && contextStart % BUCKET_MS === 0 ? BUCKET_MS : 0);
   const lastContextBucket = Math.floor((contextEnd - BUCKET_MS) / BUCKET_MS) * BUCKET_MS;
   for (let start = firstContextBucket; start <= lastContextBucket; start += BUCKET_MS) {
     if (!knownStarts.has(start)) context.push(makeBucket(input, start, reportedAvailable));
@@ -498,7 +503,9 @@ function makeWake(
   ));
   const rooms = roomSensors.map((sensor) => {
     const switchBucket = buckets.find((bucket) => bucket.start <= selected.t && selected.t < bucket.end);
-    const afterBuckets = context.filter((bucket) => bucket.start >= selected.t);
+    const afterBuckets = context.filter((bucket) => (
+      bucket.start > selected.t || (bucket.start === selected.t && !fractionalOffset)
+    ));
     const completeRoomContext = afterBuckets.length === 8 && afterBuckets.every((bucket) => (
       bucket.sourceComplete && bucket.rooms[sensor.id] !== null
     ));

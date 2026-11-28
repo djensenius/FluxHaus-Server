@@ -488,12 +488,18 @@ describe('daily placement analysis', () => {
       at: '2026-01-15T06:00:00.000123456Z',
       setpointBefore: 17,
       setpointAfter: 17,
+      contextComplete: false,
+      contextRetryable: false,
+      context: {
+        from: '2026-01-15T04:00:00.000123456Z',
+        to: '2026-01-15T08:00:00.000123456Z',
+      },
     });
     const boundaryRooms = (boundaryResult.wake as {
       rooms: { atSwitch: number | null; peak: number | null }[];
     }).rooms;
     expect(boundaryRooms).toHaveLength(2);
-    boundaryRooms.forEach((room) => expect(room).toMatchObject({ atSwitch: null, peak: 22 }));
+    boundaryRooms.forEach((room) => expect(room).toMatchObject({ atSwitch: null, peak: null }));
   });
 
   it('integrates known wake HVAC intervals while limiting gaps to their own duration', () => {
