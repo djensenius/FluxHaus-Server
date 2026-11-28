@@ -35,12 +35,13 @@ unusual flags remain `null` rather than treating the known-room cohort as
 complete.
 
 Wake room `overSetpoint` is the peak room reading minus the matching known
-setpoint, in °C. Wake heating/cooling minutes require continuous HVAC evidence
-through the full two-hour-before/two-hour-after context. A recorded wake's
-`contextComplete` is true only when all 16 source windows have known HVAC
-mode/action and complete readings for every discovered room sensor. An
-incomplete recorded-wake context is retried using the short degraded-cache
-interval; a day with no recorded wake is not degraded for that reason.
+setpoint, in °C. Wake heating/cooling minutes sum known HVAC intervals within
+the two-hour-before/two-hour-after context and may be partial when
+`unknownMinutes` is nonzero. A recorded wake's `contextComplete` is true only
+when all 16 source windows have known HVAC mode/action and complete readings
+for every discovered room sensor. An incomplete recorded-wake context is
+retried using the short degraded-cache interval; a day with no recorded wake
+is not degraded for that reason.
 `contextRetryable` distinguishes missing or unfinished source evidence from
 source-window alignment alone. A wake between 15-minute boundaries can have
 incomplete context metrics without repeatedly retrying a complete past day.

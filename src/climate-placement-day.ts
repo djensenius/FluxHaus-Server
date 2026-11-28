@@ -592,9 +592,11 @@ export function analyzePlacementDay(input: PlacementDayInput) {
     baselineByMode.set(mode, daily);
   });
 
+  const heatDayOffsets = cohortOffsets(input.sensors, buckets, 'heating');
+  const coolDayOffsets = cohortOffsets(input.sensors, buckets, 'cooling');
   const roomMetrics = roomSensors.map((sensor) => {
-    const heatDay = cohortOffsets(input.sensors, buckets, 'heating').get(sensor.id)!;
-    const coolDay = cohortOffsets(input.sensors, buckets, 'cooling').get(sensor.id)!;
+    const heatDay = heatDayOffsets.get(sensor.id)!;
+    const coolDay = coolDayOffsets.get(sensor.id)!;
     const options = [
       { mode: 'heating', day: heatDay, minimum: MIN_HEATING_SAMPLES },
       { mode: 'cooling', day: coolDay, minimum: MIN_COOLING_SAMPLES },
