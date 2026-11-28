@@ -105,6 +105,9 @@ function dayInput({
   partialDay = false,
   occupancyEdge = false,
   fractionalState = false,
+  intermediateReversal = false,
+  unknownSetpoint = false,
+  thermostatSensors = false,
 }: {
   baselineDays?: number;
   selectedSamples?: number;
@@ -116,12 +119,21 @@ function dayInput({
   partialDay?: boolean;
   occupancyEdge?: boolean;
   fractionalState?: boolean;
+  intermediateReversal?: boolean;
+  unknownSetpoint?: boolean;
+  thermostatSensors?: boolean;
 } = {}) {
   const firstDay = START - 14 * DAY;
   const sensors: SensorSeriesInput[] = [
     { id: 'living_temperature', name: 'Living', isThermostat: false, points: [] },
     { id: 'bedroom_temperature', name: 'Bedroom', isThermostat: false, points: [] },
   ];
+  if (thermostatSensors) {
+    sensors.push(
+      { id: 'home_current_temperature', name: 'Home', isThermostat: true, points: [] },
+      { id: 'secondary_thermostat_temperature', name: 'Secondary', isThermostat: true, points: [] },
+    );
+  }
   if (roomOccupancy !== undefined) {
     sensors.forEach((sensor) => { sensor.occupancy = [{ t: firstDay, occupied: roomOccupancy }]; });
   }
@@ -136,6 +148,9 @@ function dayInput({
       const shifted = day === 14;
       sensors[0].points.push({ t, v: shifted ? 20 + selectedShift : 20 });
       sensors[1].points.push({ t, v: 22 });
+      sensors.slice(2).forEach((sensor) => sensor.points.push({
+        t, v: sensor.id === 'home_current_temperature' ? 23 : 100,
+      }));
       if (occupancyEdge && day === 14) {
         sensors.forEach((sensor) => {
           sensor.occupancy = [
@@ -150,11 +165,28 @@ function dayInput({
           gap: false,
           hvacMode: mode === 'heating' ? 'heat' : 'cool',
           hvacAction: active ? mode : 'idle',
-          setpoint: 21,
-          coolSetpoint: 24,
+          setpoint: unknownSetpoint ? null : 21,
+          coolSetpoint: unknownSetpoint ? null : 24,
           presetMode: 'home',
           ...(fractionalState && day === 14 ? { subMillisecondFields: { hvacAction: '1' } } : {}),
         });
+        if (intermediateReversal && day === 14) {
+          const heating = {
+            t: t + 5 * 60_000, gap: false,
+            hvacMode: mode === 'heating' ? 'heat' : 'cool',
+            hvacAction: 'heating',
+            setpoint: 21,
+            coolSetpoint: 24,
+            presetMode: 'home',
+          };
+          hvac.push({
+            ...heating,
+            orderedUpdates: [
+              { subMillisecond: '1', sample: { ...heating, hvacAction: 'idle' } },
+              { subMillisecond: '2', sample: heating },
+            ],
+          });
+        }
         if (insideChange && day === 14) {
           hvac.push({
             t: t + 5 * 60_000, gap: false,
@@ -189,6 +221,7 @@ function dayInput({
     unknownUnitWindows: 0,
     unitAssumptions: { setpoints: false, reportedTemperature: false },
     incompleteSensorInventory: false,
+    primaryThermostatId: thermostatSensors ? 'home_current_temperature' : null,
   });
   return result;
 }
@@ -231,6 +264,30 @@ describe('daily placement analysis', () => {
       .toMatchObject({ dayOffset: 1, baselineOffset: -1, unusual: true });
     const belowCoolingMinimum = dayInput({ mode: 'cooling', selectedSamples: 1 });
     expect(belowCoolingMinimum.sensors.every((sensor) => sensor.dayOffset === null && sensor.unusual === null)).toBe(true);
+    expect(dayInput({ unknownSetpoint: true, baselineDays: 3 }).sensors.find((sensor) => sensor.id === 'living_temperature'))
+      .toMatchObject({ dayOffset: 1, baselineOffset: -1, unusual: true });
+  });
+
+  it('uses intermediate same-millisecond HVAC updates to invalidate only the changing bucket', () => {
+    const result = dayInput({ intermediateReversal: true });
+    expect(result.timeline.find((entry) => entry.t === '2026-01-15T06:00:00.000Z'))
+      .toMatchObject({ hvacAction: null, setpoint: null });
+    expect(result.timeline.find((entry) => entry.t === '2026-01-15T06:15:00.000Z'))
+      .toMatchObject({ hvacAction: 'heating', setpoint: 21 });
+  });
+
+  it('uses only the selected thermostat sensor in the fallback average', () => {
+    const participation: ParticipationConfig = {
+      home: ['living_temperature', 'bedroom_temperature'],
+      sleep: [],
+      away: [],
+      followMe: false,
+      thermostat: { home: true, sleep: false, away: false },
+    };
+    const result = dayInput({ participation, thermostatSensors: true });
+    expect(result.timeline[24].average).toBe(23);
+    expect(result.timeline[24].rooms).not.toHaveProperty('home_current_temperature');
+    expect(result.timeline[24].rooms).not.toHaveProperty('secondary_thermostat_temperature');
   });
 
   it('keeps state changes inside a source window from labeling the whole bucket', () => {
@@ -303,6 +360,7 @@ describe('daily placement analysis', () => {
       setpointAfter: 21,
       heatingMinutes: 30,
       coolingMinutes: 0,
+      contextComplete: true,
       context: { from: new Date(time(4)).toISOString(), to: new Date(time(8)).toISOString() },
     });
     expect((result.wake as { rooms: { sensorId: string; atSwitch: number | null; peak: number | null; overSetpoint: number | null }[] })

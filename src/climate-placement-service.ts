@@ -871,6 +871,7 @@ export class ClimatePlacementService {
     });
     const matchingClimate = !!status.thermostat && discovery.climateEntityId === status.thermostat.entityId;
     const primaryTemperatureEntity = matchingClimate ? discovery.thermostatTemperatureEntityId : null;
+    const primaryThermostatId = primaryTemperatureEntity ? objectId(primaryTemperatureEntity) : null;
     const thermostatOccupancyEntity = matchingClimate
       ? discovery.thermostatOccupancyEntityId === undefined && primaryTemperatureEntity
         ? discovery.occupancyByTemperature.get(primaryTemperatureEntity)
@@ -932,6 +933,7 @@ export class ClimatePlacementService {
       participation: config,
       unknownUnitWindows: data.unknownUnitWindows,
       incompleteSensorInventory,
+      primaryThermostatId,
       unitAssumptions: {
         setpoints: state?.targetUnitAssumed ?? false,
         reportedTemperature: data.reported?.assumedUnit ?? false,
@@ -939,7 +941,9 @@ export class ClimatePlacementService {
     });
     return {
       insights,
-      degraded: data.degraded || incompleteSensorInventory || sensors.length === 0
+      degraded: data.degraded || incompleteSensorInventory
+        || (insights.wake !== null && insights.wake.contextComplete !== true)
+        || sensors.length === 0
         || data.series.every((sensor) => sensor.points.length === 0),
     };
   }

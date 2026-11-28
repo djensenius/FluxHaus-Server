@@ -1606,11 +1606,58 @@ describe('ClimatePlacementService', () => {
 
   it('caches completed past-day analysis longer than the 14-day endpoint', async () => {
     const fixture = makeDeps();
-    await fixture.service.getDayInsights('2026-01-19');
+    const response = await fixture.service.getDayInsights('2026-01-19') as { wake: unknown };
+    expect(response.wake).toBeNull();
     const temperatureQueries = fixture.calls('temperatures').length;
     fixture.advance(16 * 60 * 1000);
     await fixture.service.getDayInsights('2026-01-19');
     expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries);
+  });
+
+  it('retries past-day analysis while a recorded wake context is incomplete', async () => {
+    const fixture = makeDeps();
+    fixture.advance(Date.parse('2026-01-20T00:30:00Z') - NOW.getTime());
+    const temperatures: Rows = [];
+    for (let t = Date.parse('2026-01-19T21:30:00Z'); t <= Date.parse('2026-01-20T01:15:00Z'); t += 15 * 60_000) {
+      ['home_current_temperature', 'office_temperature', 'kitchen_temperature'].forEach((entityId) => temperatures.push({
+        _time: new Date(t).toISOString(),
+        _value: '20',
+        _measurement: '°C',
+        entity_id: entityId,
+      }));
+    }
+    fixture.rows.temperatures = temperatures;
+    fixture.rows.states = [
+      climateRow('2026-01-19T21:30:00Z', 'state', 'heat'),
+      climateRow('2026-01-19T21:30:00Z', 'hvac_action_str', 'idle'),
+      climateRow('2026-01-19T21:30:00Z', 'temperature', '17'),
+      climateRow('2026-01-19T21:30:00Z', 'preset_mode_str', 'sleep'),
+      {
+        _time: '2026-01-19T21:30:00Z', _field: 'state', _value: 'sleep',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-19T23:30:00Z', 'hvac_action_str', 'heating'),
+      climateRow('2026-01-19T23:30:00Z', 'temperature', '21'),
+      climateRow('2026-01-19T23:30:00Z', 'preset_mode_str', 'home'),
+      {
+        _time: '2026-01-19T23:30:00Z', _field: 'state', _value: 'home',
+        domain: 'select', entity_id: 'home_current_mode',
+      },
+      climateRow('2026-01-20T00:00:00Z', 'hvac_action_str', 'idle'),
+    ];
+
+    const before = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { contextComplete: boolean } | null;
+    };
+    expect(before.wake).toMatchObject({ contextComplete: false });
+    const temperatureQueries = fixture.calls('temperatures').length;
+
+    fixture.advance(60 * 60 * 1000);
+    const after = await fixture.service.getDayInsights('2026-01-19') as {
+      wake: { contextComplete: boolean } | null;
+    };
+    expect(after.wake).toMatchObject({ contextComplete: true });
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries + 1);
   });
 
   it('queries the selected climate attribute without identifying a physical temperature entity', async () => {

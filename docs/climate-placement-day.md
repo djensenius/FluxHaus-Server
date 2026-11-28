@@ -34,4 +34,8 @@ complete.
 
 Wake room `overSetpoint` is the peak room reading minus the matching known
 setpoint, in °C. Wake heating/cooling minutes require continuous HVAC evidence
-through the full two-hour-before/two-hour-after context.
+through the full two-hour-before/two-hour-after context. A recorded wake's
+`contextComplete` is true only when all 16 source windows have known HVAC
+mode/action and complete readings for every discovered room sensor. An
+incomplete recorded-wake context is retried using the short degraded-cache
+interval; a day with no recorded wake is not degraded for that reason.

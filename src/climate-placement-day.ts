@@ -29,6 +29,7 @@ export interface PlacementDayInput {
   unknownUnitWindows: number;
   unitAssumptions: { setpoints: boolean; reportedTemperature: boolean };
   incompleteSensorInventory: boolean;
+  primaryThermostatId?: string | null;
 }
 
 export interface PlacementDayTimelinePoint {
@@ -170,10 +171,15 @@ function climateAt(samples: HvacSample[] | null, start: number, end: number): Hv
     (change.subMillisecondFields && Object.keys(change.subMillisecondFields).length > 0)
     || (change.orderedUpdates && change.orderedUpdates.some((update) => update.subMillisecond !== ''))
   ))) return null;
+  const differs = (sample: HvacSample) => (
+    sample.gap || sample.hvacMode !== state.hvacMode || sample.hvacAction !== state.hvacAction
+      || sample.setpoint !== state.setpoint || (sample.coolSetpoint ?? null) !== (state.coolSetpoint ?? null)
+      || sample.presetMode !== state.presetMode
+  );
   if (changes.some((change) => change.t > start && (
-    change.gap || change.hvacMode !== state.hvacMode || change.hvacAction !== state.hvacAction
-      || change.setpoint !== state.setpoint || (change.coolSetpoint ?? null) !== (state.coolSetpoint ?? null)
-      || change.presetMode !== state.presetMode
+    change.orderedUpdates?.length
+      ? change.orderedUpdates.some((update) => differs(update.sample))
+      : differs(change)
   ))) return null;
   return state;
 }
@@ -269,7 +275,9 @@ function makeBucket(input: PlacementDayInput, start: number): DayBucket {
     sensor.id,
     sourceComplete ? occupancyAt(sensor.occupancy, start, end) : null,
   ]));
-  const thermostatValues = Object.fromEntries(input.sensors.filter((sensor) => sensor.isThermostat)
+  const thermostatValues = Object.fromEntries(input.sensors.filter((sensor) => (
+    sensor.isThermostat && sensor.id === input.primaryThermostatId
+  ))
     .map((sensor) => [sensor.id, sensorValues[sensor.id]]));
   const average = reported ?? availableAverage(
     rooms, occupied, setting, input.participation, thermostatValues,
@@ -310,8 +318,7 @@ function cohortOffsets(
   const rooms = sensors.filter((sensor) => !sensor.isThermostat);
   const sums = new Map(rooms.map((sensor) => [sensor.id, { sum: 0, count: 0 }]));
   buckets.forEach((bucket) => {
-    if (!bucket.sourceComplete || !bucket.setpoint
-      || bucket.hvacAction?.toLowerCase() !== mode) return;
+    if (!bucket.sourceComplete || bucket.hvacAction?.toLowerCase() !== mode) return;
     const values = rooms.map((sensor) => bucket.rooms[sensor.id]);
     // Keep a fixed room cohort for every compared source window; a missing room
     // is not silently removed from the contemporaneous reference average.
@@ -364,9 +371,13 @@ function makeWake(input: PlacementDayInput, buckets: DayBucket[]): Record<string
     if (!knownStarts.has(start)) context.push(makeBucket(input, start));
   }
   context.sort((a, b) => a.start - b.start);
+  const roomSensors = input.sensors.filter((sensor) => !sensor.isThermostat);
   const completeContext = context.length === 16
-    && context.every((bucket) => bucket.sourceComplete && bucket.hvacMode !== null && bucket.hvacAction !== null);
-  const rooms = input.sensors.filter((sensor) => !sensor.isThermostat).map((sensor) => {
+    && context.every((bucket) => (
+      bucket.sourceComplete && bucket.hvacMode !== null && bucket.hvacAction !== null
+        && roomSensors.every((sensor) => bucket.rooms[sensor.id] !== null)
+    ));
+  const rooms = roomSensors.map((sensor) => {
     const switchBucket = buckets.find((bucket) => bucket.start <= selected.t && selected.t < bucket.end);
     const afterBuckets = context.filter((bucket) => bucket.start >= selected.t);
     const completeRoomContext = afterBuckets.length === 8 && afterBuckets.every((bucket) => (
@@ -399,6 +410,7 @@ function makeWake(input: PlacementDayInput, buckets: DayBucket[]): Record<string
     setpointAfter: after && !after.gap && !afterAmbiguous ? after.setpoint : null,
     heatingMinutes: minutes('heating'),
     coolingMinutes: minutes('cooling'),
+    contextComplete: completeContext,
     rooms,
     context: { from: new Date(contextStart).toISOString(), to: new Date(contextEnd).toISOString() },
   };
