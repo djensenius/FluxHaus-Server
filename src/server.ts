@@ -1798,7 +1798,6 @@ export async function createServer(): Promise<Express> {
   app.use(createClimatePlacementRouter(new ClimatePlacementService({
     influxdb,
     bucket: (process.env.INFLUXDB_BUCKET || 'fluxhaus').trim(),
-    homeAssistant: homeAssistantClient,
     indoorClimate,
   }), cors(corsOptions)));
   app.use('/gt3', gt3Router);
