@@ -398,12 +398,20 @@ describe('daily placement analysis', () => {
       .rooms[0]).toMatchObject({ atSwitch: 22, peak: 22, overSetpoint: 1 });
     const ambiguous = analyzePlacementDay({
       ...input,
+      participation: {
+        home: ['living_temperature', 'bedroom_temperature'],
+        sleep: [],
+        away: [],
+        followMe: false,
+        thermostat: { home: false, sleep: false, away: false },
+      },
       comfort: [
         { t: time(0), setting: 'sleep', ambiguous: true },
         { t: time(6), setting: 'home', ambiguous: true },
       ],
     });
     expect(ambiguous.wake).toBeNull();
+    expect(ambiguous.timeline.find((entry) => entry.t === new Date(time(6)).toISOString())?.average).toBeNull();
   });
 
   it('integrates known wake HVAC intervals while limiting gaps to their own duration', () => {
