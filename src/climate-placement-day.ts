@@ -223,7 +223,11 @@ function availableAverage(
   let ids = selected;
   const thermostatParticipation = config.thermostat?.[setting as 'home' | 'sleep' | 'away'];
   if (thermostatParticipation === null || thermostatParticipation === undefined) return null;
-  if (thermostatParticipation) ids = [...ids, ...Object.keys(thermostatValues)];
+  if (thermostatParticipation) {
+    const thermostatIds = Object.keys(thermostatValues);
+    if (thermostatIds.length === 0) return null;
+    ids = [...ids, ...thermostatIds];
+  }
   if (config.followMe) {
     if (ids.some((id) => occupied[id] === null || occupied[id] === undefined)) return null;
     ids = ids.filter((id) => occupied[id] === true);

@@ -1,5 +1,5 @@
 import { analyzePlacementDay, placementDateBounds, resolvePlacementDay } from '../climate-placement-day';
-import type { HvacSample, SensorSeriesInput } from '../climate-placement';
+import type { HvacSample, ParticipationConfig, SensorSeriesInput } from '../climate-placement';
 
 const QUARTER = 15 * 60_000;
 const DAY = 24 * 60 * 60_000;
@@ -99,6 +99,8 @@ function dayInput({
   selectedSamples = 8,
   selectedShift = 4,
   mode = 'heating',
+  participation = null,
+  roomOccupancy,
   insideChange = false,
   partialDay = false,
   occupancyEdge = false,
@@ -108,6 +110,8 @@ function dayInput({
   selectedSamples?: number;
   selectedShift?: number;
   mode?: 'heating' | 'cooling';
+  participation?: ParticipationConfig | null;
+  roomOccupancy?: boolean;
   insideChange?: boolean;
   partialDay?: boolean;
   occupancyEdge?: boolean;
@@ -118,6 +122,9 @@ function dayInput({
     { id: 'living_temperature', name: 'Living', isThermostat: false, points: [] },
     { id: 'bedroom_temperature', name: 'Bedroom', isThermostat: false, points: [] },
   ];
+  if (roomOccupancy !== undefined) {
+    sensors.forEach((sensor) => { sensor.occupancy = [{ t: firstDay, occupied: roomOccupancy }]; });
+  }
   const hvac: HvacSample[] = [];
   for (let day = 0; day <= 14; day += 1) {
     const dayStart = firstDay + day * DAY;
@@ -178,7 +185,7 @@ function dayInput({
     hvac,
     comfort,
     reportedTemperature: null,
-    participation: null,
+    participation,
     unknownUnitWindows: 0,
     unitAssumptions: { setpoints: false, reportedTemperature: false },
     incompleteSensorInventory: false,
@@ -187,6 +194,21 @@ function dayInput({
 }
 
 describe('daily placement analysis', () => {
+  it.each([false, true])(
+    'keeps the average unknown when the selected thermostat has no discovered sensor (Follow Me: %s)',
+    (followMe) => {
+      const participation: ParticipationConfig = {
+        home: ['living_temperature', 'bedroom_temperature'],
+        sleep: [],
+        away: [],
+        followMe,
+        thermostat: { home: true, sleep: false, away: false },
+      };
+      const result = dayInput({ participation, roomOccupancy: true });
+      expect(result.timeline[24].average).toBeNull();
+    },
+  );
+
   it('marks only a qualifying 0.5°C-or-more room-cohort-relative shift unusual', () => {
     const result = dayInput();
     expect(result.sensors.find((sensor) => sensor.id === 'living_temperature')).toMatchObject({

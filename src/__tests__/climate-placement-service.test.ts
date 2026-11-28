@@ -1599,6 +1599,9 @@ describe('ClimatePlacementService', () => {
       && sensor.deviation === null && sensor.unusual === null
     ))).toBe(true);
     expect(result.findings).toEqual([]);
+    fixture.advance(PLACEMENT_DEGRADED_TTL_MS + 1);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(2);
   });
 
   it('caches completed past-day analysis longer than the 14-day endpoint', async () => {
