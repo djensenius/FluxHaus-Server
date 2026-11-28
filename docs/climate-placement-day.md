@@ -27,6 +27,10 @@ sample minimum, at least three baseline dates meet it, and the absolute
 day-vs-baseline change is at least 0.5°C. Otherwise insufficient evidence is
 `null`, not normal. This temporal comparison is separate from the 14-day
 endpoint's spatial/event guidance and does not imply a cause.
+If Home Assistant discovery leaves possible indoor temperature sensors
+unclassified, coverage marks the inventory incomplete and sensor offsets and
+unusual flags remain `null` rather than treating the known-room cohort as
+complete.
 
 Wake room `overSetpoint` is the peak room reading minus the matching known
 setpoint, in °C. Wake heating/cooling minutes require continuous HVAC evidence

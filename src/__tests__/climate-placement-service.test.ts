@@ -1580,6 +1580,27 @@ describe('ClimatePlacementService', () => {
     expect(stateQuery).toContain('kitchen_occupancy');
   });
 
+  it('marks incomplete sensor discovery and withholds daily outlier conclusions', async () => {
+    const fixture = makeDeps();
+    fixture.deps.indoorClimate.placementDiscovery.mockReturnValue({
+      climateEntityId: 'climate.home',
+      thermostatTemperatureEntityId: 'sensor.home_current_temperature',
+      occupancyByTemperature: new Map(),
+      unclassifiedTemperatureIds: new Set(['sensor.mystery_temperature']),
+    });
+    const result = await fixture.service.getDayInsights('2026-01-19') as {
+      sensors: { isThermostat: boolean; dayOffset: number | null; baselineOffset: number | null; deviation: number | null; unusual: boolean | null }[];
+      findings: unknown[];
+      coverage: { incompleteSensorInventory: boolean };
+    };
+    expect(result.coverage.incompleteSensorInventory).toBe(true);
+    expect(result.sensors.filter((sensor) => !sensor.isThermostat).every((sensor) => (
+      sensor.dayOffset === null && sensor.baselineOffset === null
+      && sensor.deviation === null && sensor.unusual === null
+    ))).toBe(true);
+    expect(result.findings).toEqual([]);
+  });
+
   it('caches completed past-day analysis longer than the 14-day endpoint', async () => {
     const fixture = makeDeps();
     await fixture.service.getDayInsights('2026-01-19');

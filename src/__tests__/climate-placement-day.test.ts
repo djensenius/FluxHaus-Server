@@ -55,6 +55,7 @@ describe('house-calendar day resolution', () => {
       participation: null,
       unknownUnitWindows: 0,
       unitAssumptions: { setpoints: false, reportedTemperature: false },
+      incompleteSensorInventory: false,
     });
     expect(result.timeline).toHaveLength(96);
   });
@@ -80,6 +81,7 @@ describe('house-calendar day resolution', () => {
       participation: null,
       unknownUnitWindows: 0,
       unitAssumptions: { setpoints: false, reportedTemperature: false },
+      incompleteSensorInventory: false,
     });
     expect(result.coverage.baselineDays).toBe(14);
   });
@@ -179,6 +181,7 @@ function dayInput({
     participation: null,
     unknownUnitWindows: 0,
     unitAssumptions: { setpoints: false, reportedTemperature: false },
+    incompleteSensorInventory: false,
   });
   return result;
 }
@@ -270,6 +273,7 @@ describe('daily placement analysis', () => {
       participation: null,
       unknownUnitWindows: 0,
       unitAssumptions: { setpoints: false, reportedTemperature: false },
+      incompleteSensorInventory: false,
     });
     expect(result.wake).toMatchObject({
       at: new Date(time(6)).toISOString(),

@@ -28,6 +28,7 @@ export interface PlacementDayInput {
   participation: ParticipationConfig | null;
   unknownUnitWindows: number;
   unitAssumptions: { setpoints: boolean; reportedTemperature: boolean };
+  incompleteSensorInventory: boolean;
 }
 
 export interface PlacementDayTimelinePoint {
@@ -459,10 +460,10 @@ export function analyzePlacementDay(input: PlacementDayInput) {
       id: sensor.id,
       name: sensor.name,
       isThermostat: false,
-      dayOffset: dayOffset === null ? null : Math.round(dayOffset * 10) / 10,
-      baselineOffset: baselineOffset === null ? null : Math.round(baselineOffset * 10) / 10,
-      deviation: deviation === null ? null : Math.round(deviation * 10) / 10,
-      unusual: deviation === null ? null : Math.abs(deviation) >= UNUSUAL_SHIFT_C,
+      dayOffset: input.incompleteSensorInventory || dayOffset === null ? null : Math.round(dayOffset * 10) / 10,
+      baselineOffset: input.incompleteSensorInventory || baselineOffset === null ? null : Math.round(baselineOffset * 10) / 10,
+      deviation: input.incompleteSensorInventory || deviation === null ? null : Math.round(deviation * 10) / 10,
+      unusual: input.incompleteSensorInventory || deviation === null ? null : Math.abs(deviation) >= UNUSUAL_SHIFT_C,
     };
   });
   const roomMetricsById = new Map(roomMetrics.map((sensor) => [sensor.id, sensor]));
@@ -520,6 +521,7 @@ export function analyzePlacementDay(input: PlacementDayInput) {
       occupancyKnownReadings: occupancyKnown,
       occupancyExpectedReadings: expected * input.sensors.length,
       baselineDays: 14,
+      incompleteSensorInventory: input.incompleteSensorInventory,
       unitAssumptions: input.unitAssumptions,
       averageIsApproximationWhenReportedUnavailable: true,
     },

@@ -864,6 +864,11 @@ export class ClimatePlacementService {
     }
     const status = indoorClimate.cachedStatus;
     const discovery = indoorClimate.placementDiscovery();
+    const incompleteSensorInventory = [...discovery.unclassifiedTemperatureIds].some((entityId) => {
+      const sensor = status.sensors.find((candidate) => candidate.entityId === entityId);
+      return SAFE_OBJECT_ID.test(objectId(entityId)) && !OUTDOOR_PATTERN.test(entityId)
+        && (!sensor || !OUTDOOR_PATTERN.test(sensor.name));
+    });
     const matchingClimate = !!status.thermostat && discovery.climateEntityId === status.thermostat.entityId;
     const primaryTemperatureEntity = matchingClimate ? discovery.thermostatTemperatureEntityId : null;
     const thermostatOccupancyEntity = matchingClimate
@@ -926,6 +931,7 @@ export class ClimatePlacementService {
       reportedTemperature: data.reported,
       participation: config,
       unknownUnitWindows: data.unknownUnitWindows,
+      incompleteSensorInventory,
       unitAssumptions: {
         setpoints: state?.targetUnitAssumed ?? false,
         reportedTemperature: data.reported?.assumedUnit ?? false,
@@ -933,7 +939,8 @@ export class ClimatePlacementService {
     });
     return {
       insights,
-      degraded: data.degraded || sensors.length === 0 || data.series.every((sensor) => sensor.points.length === 0),
+      degraded: data.degraded || incompleteSensorInventory || sensors.length === 0
+        || data.series.every((sensor) => sensor.points.length === 0),
     };
   }
 
