@@ -23,6 +23,13 @@ import {
   type ReportedTemperatureInput,
   type SensorSeriesInput,
 } from './climate-placement';
+import {
+  analyzePlacementDay,
+  isValidTimeZone,
+  placementDateBounds,
+  resolvePlacementDay,
+  type PlacementDayInsights,
+} from './climate-placement-day';
 import logger from './logger';
 
 const placementLogger = logger.child({ subsystem: 'climate-placement' });
@@ -41,6 +48,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 export const COOLING_LOOKBACK_DAYS = 365;
 const PRIOR_STATE_DAYS = 30;
 const COOLING_TAIL_MS = 2 * 60 * 60 * 1000;
+const HOUSE_CONFIG_TIMEOUT_MS = 15 * 1000;
 // Temperature sensors that aren't indoor rooms.
 const OUTDOOR_PATTERN = /outdoor|outside|patio|exterior|environment_canada/i;
 const SAFE_OBJECT_ID = /^[a-z0-9_]+$/;
@@ -136,6 +144,7 @@ export interface ClimatePlacementDeps {
   // The InfluxDB bucket Home Assistant writes its history to (INFLUXDB_BUCKET).
   bucket: string;
   indoorClimate: PlacementIndoorClimate;
+  homeAssistantConfig?: { getConfig(options?: { signal?: AbortSignal }): Promise<Record<string, unknown>> };
   timeZone?: string;
   now?: () => Date;
 }
@@ -730,6 +739,8 @@ export class ClimatePlacementService {
 
   private cache = new Map<string, { expires: number; result: Promise<PlacementInsights> }>();
 
+  private dayCache = new Map<string, { expires: number; result: Promise<PlacementDayInsights> }>();
+
   constructor(deps: ClimatePlacementDeps) {
     this.deps = deps;
   }
@@ -772,8 +783,158 @@ export class ClimatePlacementService {
     return result;
   }
 
+  public async getDayInsights(dateInput: unknown, query: Record<string, unknown> = {}): Promise<PlacementDayInsights> {
+    const config = parsePlacementConfig(query);
+    if (!this.configured) throw namedError('PlacementUnavailableError', 'InfluxDB is not configured');
+    let houseConfig: Record<string, unknown>;
+    const configAbort = new AbortController();
+    const configTimeout = setTimeout(() => configAbort.abort(), HOUSE_CONFIG_TIMEOUT_MS);
+    configTimeout.unref?.();
+    try {
+      if (!this.deps.homeAssistantConfig) throw new Error('Home Assistant config client is unavailable');
+      houseConfig = await this.deps.homeAssistantConfig.getConfig({ signal: configAbort.signal });
+    } catch {
+      throw namedError('PlacementUnavailableError', 'Home Assistant house time zone is unavailable');
+    } finally {
+      clearTimeout(configTimeout);
+    }
+    const timeZone = houseConfig.time_zone;
+    if (!isValidTimeZone(timeZone)) {
+      throw namedError('PlacementUnavailableError', 'Home Assistant house time zone is unavailable or invalid');
+    }
+    let resolved: ReturnType<typeof resolvePlacementDay>;
+    try {
+      resolved = resolvePlacementDay(dateInput, timeZone, this.now());
+    } catch (error) {
+      throw inputError((error as Error).message);
+    }
+    const key = `${resolved.date}|${timeZone}|${configKey(14, config)}`;
+    const now = this.now().getTime();
+    const cached = this.dayCache.get(key);
+    if (cached && cached.expires > now) {
+      this.dayCache.delete(key);
+      this.dayCache.set(key, cached);
+      return cached.result;
+    }
+    this.dayCache.delete(key);
+    this.dayCache.forEach((entry, cacheKey) => {
+      if (entry.expires <= now) this.dayCache.delete(cacheKey);
+    });
+    while (this.dayCache.size >= PLACEMENT_CACHE_MAX_ENTRIES) this.dayCache.delete(this.dayCache.keys().next().value!);
+    const start = resolved.start;
+    const end = new Date(Math.min(resolved.end.getTime(), now));
+    // House calendar days can cross DST; resolve the baseline's local midnight
+    // from fourteen calendar dates earlier rather than subtracting fixed days.
+    const utcDate = new Date(Date.parse(`${resolved.date}T00:00:00Z`) - 14 * DAY_MS)
+      .toISOString().slice(0, 10);
+    const rangeStart = placementDateBounds(utcDate, timeZone).start;
+    const historyEnd = new Date(Math.min(resolved.end.getTime() + 2 * 60 * 60 * 1000, now));
+    const ttl = resolved.date < resolved.today ? 24 * 60 * 60 * 1000 : 60 * 1000;
+    const entry = { expires: now + ttl, result: null as Promise<PlacementDayInsights> | null };
+    const result = this.computeDay(
+      resolved.date, timeZone, start, end, historyEnd, rangeStart, config,
+    ).then(({ insights, degraded }) => {
+      if (degraded) entry.expires = Math.min(entry.expires, this.now().getTime() + PLACEMENT_DEGRADED_TTL_MS);
+      return insights;
+    });
+    entry.result = result;
+    result.catch(() => {
+      if (this.dayCache.get(key) === entry) this.dayCache.delete(key);
+    });
+    this.dayCache.set(key, entry as { expires: number; result: Promise<PlacementDayInsights> });
+    return result;
+  }
+
   private now(): Date {
     return this.deps.now?.() ?? new Date();
+  }
+
+  private async computeDay(
+    date: string,
+    timeZone: string,
+    dayStart: Date,
+    dayEnd: Date,
+    historyEnd: Date,
+    rangeStart: Date,
+    config: ParticipationConfig | null,
+  ): Promise<{ insights: PlacementDayInsights; degraded: boolean }> {
+    const { indoorClimate } = this.deps;
+    if (!indoorClimate.cachedStatus.thermostat || indoorClimate.cachedStatus.sensors.length === 0) {
+      await indoorClimate.refresh().catch(() => {});
+    }
+    const status = indoorClimate.cachedStatus;
+    const discovery = indoorClimate.placementDiscovery();
+    const matchingClimate = !!status.thermostat && discovery.climateEntityId === status.thermostat.entityId;
+    const primaryTemperatureEntity = matchingClimate ? discovery.thermostatTemperatureEntityId : null;
+    const thermostatOccupancyEntity = matchingClimate
+      ? discovery.thermostatOccupancyEntityId === undefined && primaryTemperatureEntity
+        ? discovery.occupancyByTemperature.get(primaryTemperatureEntity)
+        : discovery.thermostatOccupancyEntityId
+      : null;
+    const thermostatOccupancyId = thermostatOccupancyEntity?.startsWith('binary_sensor.')
+      ? objectId(thermostatOccupancyEntity) : null;
+    const sensors: IndoorSensor[] = status.sensors
+      .filter((sensor) => !discovery.unclassifiedTemperatureIds.has(sensor.entityId))
+      .map((sensor) => {
+        const occupancy = sensor.entityId === primaryTemperatureEntity && thermostatOccupancyId
+          ? `binary_sensor.${thermostatOccupancyId}`
+          : matchingClimate ? discovery.occupancyByTemperature.get(sensor.entityId) : undefined;
+        const id = occupancy?.startsWith('binary_sensor.') ? objectId(occupancy) : undefined;
+        return {
+          id: objectId(sensor.entityId),
+          name: sensor.name,
+          isThermostat: sensor.isThermostat,
+          occupancyId: id && SAFE_OBJECT_ID.test(id) ? id : undefined,
+        };
+      })
+      .filter((sensor) => SAFE_OBJECT_ID.test(sensor.id)
+        && !OUTDOOR_PATTERN.test(sensor.id) && !OUTDOOR_PATTERN.test(sensor.name));
+    if (config) {
+      const selected = [config.home, config.sleep, config.away].flatMap((ids) => ids ?? []);
+      const thermostatIds = new Set(sensors.filter((sensor) => sensor.isThermostat).map((sensor) => sensor.id));
+      const thermostatMembers = selected.filter((id) => thermostatIds.has(id));
+      if (thermostatMembers.length > 0) {
+        throw inputError(`Thermostat-associated sensors cannot be listed as rooms: ${[...new Set(thermostatMembers)].join(', ')}. `
+          + 'Use thermostatHome, thermostatSleep or thermostatAway to configure the built-in sensor.');
+      }
+      const known = new Set(sensors.filter((sensor) => !sensor.isThermostat).map((sensor) => sensor.id));
+      const unknown = selected.filter((id) => !known.has(id));
+      if (unknown.length > 0) throw inputError(`Unknown sensor ids: ${[...new Set(unknown)].join(', ')}`);
+    }
+    const climateId = status.thermostat ? objectId(status.thermostat.entityId) : null;
+    const entities: StateEntities | null = climateId && SAFE_OBJECT_ID.test(climateId)
+      ? {
+        climate: climateId,
+        comfort: `${climateId}_current_mode`,
+        occupancy: [...new Set(sensors.map((sensor) => sensor.occupancyId).filter((id): id is string => !!id))],
+      }
+      : null;
+    const unit = status.thermostat?.temperatureUnit;
+    const reportedClimate = matchingClimate ? entities?.climate ?? null : null;
+    const data = await this.fetchWindow(sensors, entities, reportedClimate, unit, rangeStart, historyEnd);
+    const state = data.states;
+    const insights = analyzePlacementDay({
+      date,
+      timeZone,
+      start: dayStart.getTime(),
+      end: dayEnd.getTime(),
+      historyEnd: historyEnd.getTime(),
+      now: this.now().getTime(),
+      sensors: data.series,
+      hvac: state?.hvac ?? null,
+      comfort: state?.comfort ?? null,
+      reportedTemperature: data.reported,
+      participation: config,
+      unknownUnitWindows: data.unknownUnitWindows,
+      unitAssumptions: {
+        setpoints: state?.targetUnitAssumed ?? false,
+        reportedTemperature: data.reported?.assumedUnit ?? false,
+      },
+    });
+    return {
+      insights,
+      degraded: data.degraded || sensors.length === 0 || data.series.every((sensor) => sensor.points.length === 0),
+    };
   }
 
   private async compute(

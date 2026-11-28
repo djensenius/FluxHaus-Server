@@ -110,7 +110,9 @@ function makeDeps(overrides: Record<string, unknown> = {}) {
   };
   let now = NOW.getTime();
   const deps = {
-    influxdb, indoorClimate, bucket: 'fluxhaus', timeZone: 'UTC', now: () => new Date(now), ...overrides,
+    influxdb, indoorClimate,
+    homeAssistantConfig: { getConfig: vi.fn(async () => ({ time_zone: 'UTC' })) },
+    bucket: 'fluxhaus', timeZone: 'UTC', now: () => new Date(now), ...overrides,
   };
   const calls = (kind: string) => influxdb.query.mock.calls.filter(([flux]) => queryKind(flux) === kind).map(([flux]) => flux);
   return {
@@ -1534,6 +1536,58 @@ describe('ClimatePlacementService', () => {
       row.entity_id === 'home_current_temperature' ? { ...row, _value: '24' } : row
     ));
   }
+
+  it('resolves yesterday in the HA zone, rejects invalid house zones and validates explicit dates strictly', async () => {
+    const fixture = makeDeps();
+    fixture.advance(Date.parse('2026-01-20T12:00:00Z') - NOW.getTime());
+    const yesterday = await fixture.service.getDayInsights(undefined);
+    expect(yesterday).toMatchObject({ date: '2026-01-19', timeZone: 'UTC' });
+    await expect(fixture.service.getDayInsights('2026-02-29')).rejects.toThrow('valid YYYY-MM-DD');
+    await expect(fixture.service.getDayInsights('2026-01-21')).rejects.toThrow('today or within');
+    await expect(fixture.service.getDayInsights('2025-01-20')).rejects.toThrow('today or within');
+    fixture.deps.homeAssistantConfig.getConfig.mockResolvedValue({ time_zone: 'Invalid/HouseZone' });
+    await expect(fixture.service.getDayInsights('2026-01-19')).rejects.toThrow('unavailable or invalid');
+  });
+
+  it('queries one day plus 14 house-calendar baseline dates and passes participation through', async () => {
+    const fixture = makeDeps();
+    const response = await fixture.service.getDayInsights('2026-01-19', {
+      home: 'office_temperature,kitchen_temperature',
+      followMe: 'false',
+      thermostatHome: 'true',
+      thermostatSleep: 'false',
+    }) as {
+      timeline: { average: number | null; rooms: Record<string, number | null> }[];
+      date: string;
+      sensors: { id: string; isThermostat?: boolean; dayOffset: number | null; unusual: boolean | null }[];
+    };
+    expect(response.date).toBe('2026-01-19');
+    expect(response.timeline).toHaveLength(96);
+    expect(response.timeline[24].average).toBeCloseTo(59 / 3);
+    expect(response.timeline[24].rooms).not.toHaveProperty('home_current_temperature');
+    expect(response.sensors.find((sensor) => sensor.id === 'home_current_temperature'))
+      .toMatchObject({ isThermostat: true, dayOffset: null, unusual: null });
+    expect(response.sensors.find((sensor) => sensor.id === 'office_temperature')).toMatchObject({
+      dayOffset: null, unusual: null,
+    });
+    const temperatureQuery = fixture.calls('temperatures')[0];
+    expect(temperatureQuery).toContain('2026-01-05T00:00:00.000Z');
+    expect(temperatureQuery).toContain('2026-01-20T00:00:00.000Z');
+    expect(temperatureQuery).not.toContain('2026-01-04T');
+    const stateQuery = fixture.calls('states')[0];
+    expect(stateQuery).toContain('2026-01-05T00:00:00.000Z');
+    expect(stateQuery).toContain('office_occupancy');
+    expect(stateQuery).toContain('kitchen_occupancy');
+  });
+
+  it('caches completed past-day analysis longer than the 14-day endpoint', async () => {
+    const fixture = makeDeps();
+    await fixture.service.getDayInsights('2026-01-19');
+    const temperatureQueries = fixture.calls('temperatures').length;
+    fixture.advance(16 * 60 * 1000);
+    await fixture.service.getDayInsights('2026-01-19');
+    expect(fixture.calls('temperatures')).toHaveLength(temperatureQueries);
+  });
 
   it('queries the selected climate attribute without identifying a physical temperature entity', async () => {
     const fixture = makeDeps();
@@ -3795,6 +3849,24 @@ describe('GET /climate/placement-insights', () => {
     });
     expect(Array.isArray(response.body.sensors)).toBe(true);
     expect(Array.isArray(response.body.recommendations)).toBe(true);
+  });
+
+  it('serves the day endpoint to admin/demo and validates dates and house-zone availability', async () => {
+    const fixture = makeDeps();
+    const response = await request(buildApp(fixture.service, 'demo'))
+      .get('/climate/placement-insights/day?date=2026-01-19&thermostatHome=true')
+      .expect(200);
+    expect(response.body).toMatchObject({
+      date: '2026-01-19', timeZone: 'UTC', unit: '°C',
+    });
+    expect(response.body.timeline).toHaveLength(96);
+    await request(buildApp(fixture.service, 'user'))
+      .get('/climate/placement-insights/day').expect(403);
+    await request(buildApp(fixture.service))
+      .get('/climate/placement-insights/day?date=2026-02-30').expect(400);
+    fixture.deps.homeAssistantConfig.getConfig.mockRejectedValue(new Error('unavailable'));
+    await request(buildApp(fixture.service))
+      .get('/climate/placement-insights/day').expect(503);
   });
 
   it('returns reference provenance over HTTP even when a single room yields no recommendations', async () => {
